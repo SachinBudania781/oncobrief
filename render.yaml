@@ -1,0 +1,14 @@
+# One-click deploy on Render: Dashboard -> New -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: oncobrief
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: LLM_PROVIDER        # gemini | anthropic | openai | none
+        value: none
+      - key: LLM_API_KEY         # optional; set in the dashboard, never commit it
+        sync: false
+      - key: LLM_MODEL           # optional; provider default if empty
+        sync: false

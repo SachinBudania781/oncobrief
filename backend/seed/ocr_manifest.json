@@ -1,0 +1,87 @@
+{
+ "OB-2026-0001|-125|11:20|Mammogram|Bilateral mammogram": {
+  "text": "OncoBrief Demo Cancer Centre, Mumbai\nDemo document - fabricated data\nBILATERAL MAMMOGRAM\nName: Meera Kulkarni Age/Sex: 52 / F\nPatient ID: OB-2026-0001 ABHA: 91-4821-7730-5512\nReport date: 30/05/2026 11:20\nCLINICAL HISTORY:\nPalpable lump in the left breast for 2 months.\nFINDINGS:\nIrregular high-density mass with spiculated margins in the upper outer\nquadrant of the left breast measuring 3.2 x 2.8 cm, with associated\npleomorphic microcalcifications. Right breast is unremarkable.\nIMPRESSION:\nLeft breast upper outer quadrant spiculated mass, BI-RADS 5. Tissue\nsampling advised.\nElectronically signed: Dr. A. Joshi, MD (Radiodiagnosis)\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 92.5
+ },
+ "OB-2026-0001|-118|17:10|FNAC|FNAC - left axillary lymph node": {
+  "text": "OncoBrief Demo Cancer Centre, Mumbai\nDemo document - fabricated data\nFNAC - LEFT AXILLARY LYMPH NODE\nName: Meera Kulkarni Age/Sex: 52 / F\nPatient ID: OB-2026-0001 ABHA: 91-4821-7730-5512\nReport date: 06/06/2026 17:10\nee\nMICROSCOPY:\nSmears show clusters of atypical epithelial cells in a background of\nlymphocytes.\nDIAGNOSIS:\nMetastatic carcinoma in left axillary lymph node, consistent with breast\nprimary.\nElectronically signed: Dr. P. Deshmukh, MD (Pathology)\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 91.5
+ },
+ "OB-2026-0001|-110|09:15|Tumour marker|CA 15-3": {
+  "text": "OncoBrief Demo Cancer Centre, Mumbai\nDemo document - fabricated data\nCA 15-3\nName: Meera Kulkarni Age/Sex: 52 /F\nPatient ID: OB-2026-0001 ABHA: 91-4821-7730-5512\nReport date: 14/06/2026 09:15\nTest Result Unit Reference\nCA 15-3 48 U/mL < 30\nElectronically signed: Dr. M. Pillai, MD (Pathology) - Lab Director\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 93.3
+ },
+ "OB-2026-0001|-85|08:40|CBC|Complete blood count": {
+  "text": "OncoBrief Demo Cancer Centre, Mumbai\nDemo document - fabricated data\nCOMPLETE BLOOD COUNT\nName: Meera Kulkarni Age/Sex: 52 / F\nPatient ID: OB-2026-0001 ABHA: 91-4821-7730-5512\nReport date: 09/07/2026 08:40\nee\nTest Result Unit Reference\nHaemoglobin 12.6 g/dL 12.0 - 15.5\nTotal WBC 7.2 x10%3/uL 4.0-11.0\nAbsolute Neutrophil Count 4.6 x10%3/uL 2.0-7.5\nPlatelet Count 285 x10*%3/uL 150 - 410\nElectronicatiy signed: Dr. M. Pillai, MD (Pathology) - Lab Director\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 87.6
+ },
+ "OB-2026-0001|-43|08:50|CBC|Complete blood count": {
+  "text": "OncoBrief Deme Cancer Centre, Mumbai\nDemo document - fabricated data\nCOMPLETE BLOOD COUNT\nName: Meera Kulkarni Age/Sex: 52 /F\nPatient ID: OB-2026-0001 ABHA: 91-4821-7730-5512\nReport date: 20/08/2026 08:50\na\nTest Result Unit Reference\nHaemoglobin 10.9 g/dL 12.0-15.5\nTotal WBC 4 x10%3/uL 4.0-11.0\nAbsolute Neutrophil Count 2.1 x10%3/uL 2.0-7.5\nPlatelet Count 210 x10%3/uL 150 - 410\nElectronically signed: Dr. M. Pillai, MD (Pathology) - Lab Director\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 88.2
+ },
+ "OB-2026-0001|-22|08:45|CBC|Complete blood count": {
+  "text": "OncoBrief Demo Cancer Centre, Mumbai\nDemo document - fabricated data\nCOMPLETE BLOOD COUNT\nName: Meera Kulkarni Age/Sex: 52 /F\nPatient ID: OB-2026-0001 ABHA: 91-4821-7730-5512\nReport date: 10/09/2026 08:45\nee\nTest Result Unit Reference\nHaemoglobin 10.1 g/dL 12.0-15.5\nTotal WBC 3.6 x10*3/uL 4.0-11.0\nAbsolute Neutrophil Count 1.6 x10%3/uL 2.0-7.5\nPlatelet Count 180 x10%3/uL 150 - 410\nElectronically signed: Dr. M. Pillai, MD (Pathology) - Lab Director\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 89.8
+ },
+ "OB-2026-0001|-10|12:10|Ultrasound|USG left breast and axilla (response)": {
+  "text": "OncoBrief Demo Cancer Centre, Mumbai\nDemo document - fabricated data\nUSG LEFT BREAST AND AXILLA (RESPONSE)\nName: Meera Kulkarni Age/Sex: 52 / F\nPatient ID: OB-2026-0001 ABHA: 91-4821-7730-5512\nReport date: 22/09/2026 12:10\na\nFINDINGS:\nLeft breast mass now 1.9 x 1.5 cm (was 3.1 x 2.6 cmon 02/06/2026). Left\naxillary node 0.9 cm with partially restored fatty hilum.\nIMPRESSION:\nPartial response in the left breast mass and axillary node after 4\ncycles of AC.\nElectronically signed: Dr. A. Joshi, MD (Radiodiagnosis)\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 92.5
+ },
+ "OB-2026-0001|-6|19:20|Outside report photo|Blood sugar report (local lab)": {
+  "text": "are Demo Diagnostics, Thane\nPatient | Demo document - fabricated data\nBLOOD SUGAR REPORT (LOCAL LAB)\nName: Meera Kulkarni Age/Sex: 52 IF\nUHID: 705279 ABHA: 91-4821-7730-5512\nReport date: 26/09/2026 19:20\nTEST:\nRandom blood sugar: 168 mg/dL (reference 70-140).\nREMARK:\nSample collected at home on 26/09/2026.",
+  "method": "tesseract",
+  "confidence": 92.4
+ },
+ "OB-2026-0002|-298|16:00|Cytology|Pleural fluid cytology": {
+  "text": "Riverside Demo Hospital, Nashik\nDemo document - fabricated data\nPLEURAL FLUID CYTOLOGY\nName: Rajesh lyer Age/Sex: 61/M\nUHID: 170804 ABHA: 91-7702-3318-4409\nReport date: 08/12/2025 16:00\naoe\nDIAGNOSIS:\nPositive for malignant cells - metastatic adenocarcinoma. Cell block:\nTTF-1 positive, Napsin-A positive.\nElectronically signed: Dr. N. Gokhale, MD (Pathology)\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 89.4
+ },
+ "OB-2026-0002|-278|12:00|Discharge summary|Discharge summary": {
+  "text": "Riverside Demo Hospital, Nashik\nDemo document - fabricated data\nDISCHARGE SUMMARY\nName: Rajesh lyer Age/Sex: 61/M\nUHID: 170804 ABHA: 91-7702-3318-4409\nReport date: 28/12/2025 12:00\na\nSUMMARY:\nAdmitted 22/12/2025 with breathlessness. Therapeutic pleural tap (1.2 L)\nand pleurodesis done. Diagnosis: adenocarcinoma lung, EGFR exon 19\ndeletion, Stage IVA. Started osimertinib 80 mg once daily on 28/12/2025.\nDischarged stable.\nADVICE:\nReview in 4 weeks with CBC, LFT, ECG.\nElectronically signed: Dr. K. Rao, DM (Medical Oncology)\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 93.0
+ },
+ "OB-2026-0002|-100|13:00|CT|CECT thorax and abdomen": {
+  "text": "Riverside Demo Hospital, Nashik\nDemo document - fabricated data\nCECT THORAX AND ABDOMEN\nName: Rajesh lyer Age/Sex: 61/M\nUHID: 170804 ABHA: 91-7702-3318-4409\nReport date: 24/06/2026 13:00\nee\nIMPRESSION:\nStable disease compared with the study of 26/03/2026. No new lesion in\nthorax or abdomen.\nElectronically signed: Dr. S. Kale, MD (Radiology)\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 92.5
+ },
+ "OB-2026-0002|-60|09:00|LFT|Liver function test": {
+  "text": "Riverside Demo Hospital, Nashik\nDemo document - fabricated data\nLIVER FUNCTION TEST\nName: Rajesh lyer Age/Sex: 61/M\nUHID: 170804 ABHA: 91-7702-3318-4409\nReport date: 03/08/2026 09:00\n — —\nTest Result Unit Reference\nTotal Bilirubin On, mg/dL 0.2 -1.2\nALT (SGPT) 48 U/L 7-40\nAST (SGOT) 41 U/L 8-40\nAlbumin 4 g/dL 3.5-5.0\nElectronically signed: Riverside Demo Hospital Laboratory\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 89.7
+ },
+ "OB-2026-0003|-21|16:30|Referral letter|Referral letter from gynaecologist": {
+  "text": "Demo Women's Clinic, Thane\nFront desk / Records | Demo document - fabricated data\nREFERRAL LETTER FROM GYNAECOLOGIST\nName: Fatima Shaikh Age/Sex: 45 /F\nUHID: 239047\nReport date: 11/09/2026 16:30\nanit\nREASON FOR REFERRAL:\n45-year-old with post-coital bleeding for 3 months. Pap smear HSIL.\nColposcopy: exophytic growth on the anterior lip of the cervix; punch\nbiopsy taken. Kindly evaluate and manage.\nHISTORY:\nP2L2, both normal deliveries. No known comorbidities.\nElectronically signed: Dr. F. Siddiqui, MS (OBGY)\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 92.9
+ },
+ "OB-2026-0003|-16|20:15|Biopsy histopathology|Cervical punch biopsy (photo of outside report)": {
+  "text": "Demo Diagnostics, Thane\nsocnyeret = ‘etr« sted Sete\nPUNCH BIOPSY (PHOTO OF OUTSIDE REPORT)\nima Shaikh Age/Sex 45/F\n06515\ndate. 16/09/2026 20:15\nDIAGNOSIS:\nsquamous cel carcinoma, beratinizing, moderately\ndifferentiated, cervix.",
+  "method": "tesseract",
+  "confidence": 71.0
+ },
+ "OB-2026-0003|-5|09:10|CBC|Complete blood count": {
+  "text": "OncoBrief Demo Cancer Centre, Mumbai\nDemo document - fabricated data\nCOMPLETE BLOOD COUNT\nName: Fatima Shaikh Age/Sex: 45 / F\nPatient ID: OB-2026-0003\nReport date: 27/09/2026 09:10\nTest Result Unit Reference\nHaemoglobin 10.2 g/dL 12.0-15.5\nTotal WBC 7.9 x10%3/uL 4.0-11.0\nAbsolute Neutrophil Count 5 x10°3/uL 2.0-7.5\nPlatelet Count 312 x1073/uL 150 - 410\nElectronically signed: Dr. M. Pillai, MD (Pathology) - Lab Director\nOncoBrief pratotype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 90.6
+ },
+ "OB-2026-0005|-120|09:00|Tumour marker|CEA": {
+  "text": "OncoBrief Demo Cancer Centre, Mumbai\nDemo document - fabricated data\nCEA\nName: Lakshmi Narayanan Age/Sex: 67 / F\nPatient ID: OB-2026-0005 ABHA: 91-5512-0094-7781\nReport date: 04/06/2026 09:00\nee\nTest Result Unit Reference\nCEA 31 ng/mL <5.0\nElectronically signed: Dr. M. Pillai, MD (Pathology) - Lab Director\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 90.7
+ },
+ "OB-2026-0005|-6|09:00|Tumour marker|CEA": {
+  "text": "OncoBrief Demo Cancer Centre, Mumbai\nDemo document - fabricated data\nCEA\nName: Lakshmi Narayanan Age/Sex: 67 /F\nPatient ID: OB-2026-0005 ABHA: 91-5512-0094-7781\nReport date: 26/09/2026 09:00\neee\nTest Result Unit Reference\nCEA 5.9 ng/mL < 5.0\nElectronically signed: Dr. M. Pillai, MD (Pathology) - Lab Director\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "method": "tesseract",
+  "confidence": 92.0
+ }
+}
