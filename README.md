@@ -36,7 +36,7 @@ docker build -t oncobrief-round2 .
 docker run --rm -p 8000:8000 -v oncobrief-demo:/app/backend/data oncobrief-round2
 ```
 
-Open **http://localhost:8000/app**. In demo mode choose an account; the published fabricated-data password is **OncoDemo!2026**. `/docs` hosts local API documentation after the frontend is built.
+Open **http://localhost:8000/app**. In demo mode, open **Workspace information** to select a test ID; the published fabricated-data password is **OncoDemo!2026**. `/docs` hosts local API documentation after the frontend is built.
 
 For development, install `backend/requirements.txt`, run `uvicorn app.main:app` from `backend`, and run `npm ci && npm run dev` from `frontend` with Node 24. The full Windows commands are in the setup guide.
 

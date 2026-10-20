@@ -1,11 +1,11 @@
 .care-app,
 .care-login,
 .care-shared-page {
-  --care-purple: #65418f;
-  --care-deep: #392154;
-  --care-bg: #f6f5f9;
-  --care-border: #e8e3ef;
-  color: #302a3b;
+  --care-purple: #41818f;
+  --care-deep: #214b54;
+  --care-bg: #f5f8f9;
+  --care-border: #e3edef;
+  color: #2a383b;
   font-family: "IBM Plex Sans", sans-serif;
 }
 .care-app {
@@ -30,17 +30,17 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  color: #513172;
+  color: #316672;
   text-decoration: none;
   letter-spacing: -0.7px;
 }
 .care-logo svg {
-  color: #8154a9;
+  color: #5499a9;
 }
 .care-logo span {
   font-size: 10px;
   letter-spacing: 1px;
-  background: #f0e7f8;
+  background: #e7f5f8;
   padding: 3px 6px;
   border-radius: 4px;
   margin-left: auto;
@@ -57,8 +57,8 @@
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  background: #eee7f5;
-  color: #6c438f;
+  background: #e7f2f5;
+  color: #43818f;
   font-weight: 700;
 }
 .care-role b {
@@ -67,13 +67,13 @@
 }
 .care-role small {
   font-size: 11px;
-  color: #84798d;
+  color: #79898d;
   text-transform: capitalize;
 }
 .care-nav-label {
   font-size: 10px;
   letter-spacing: 1.5px;
-  color: #a49aaf;
+  color: #9aabaf;
   margin: 0 13px 9px;
 }
 .care-sidebar nav {
@@ -90,22 +90,22 @@
   padding: 10px 12px;
   border-radius: 8px;
   background: transparent;
-  color: #756b80;
+  color: #6b7c80;
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
   min-height: 38px;
 }
 .care-sidebar nav button:hover {
-  background: #f8f5fb;
+  background: #f5fafb;
 }
 .care-sidebar nav button.active {
-  background: #f0e8f7;
-  color: #68408f;
+  background: #e8f4f7;
+  color: #40818f;
   font-weight: 600;
 }
 .care-sidebar nav button.active svg {
-  color: #7542a5;
+  color: #4293a5;
 }
 .care-sidebar-foot {
   display: flex;
@@ -115,7 +115,7 @@
   padding: 20px 10px 0;
   font-size: 11px;
   line-height: 1.6;
-  color: #9b8ba7;
+  color: #8ba2a7;
 }
 .care-page {
   margin-left: 248px;
@@ -133,14 +133,14 @@
 }
 .care-breadcrumb {
   font-size: 12px;
-  color: #9c91a6;
+  color: #91a2a6;
 }
 .care-breadcrumb span {
   margin: 0 13px;
-  color: #ccc3d4;
+  color: #c3d1d4;
 }
 .care-breadcrumb b {
-  color: #65586e;
+  color: #586a6e;
   font-weight: 500;
 }
 .care-language {
@@ -166,8 +166,8 @@
   color: white;
 }
 .care-demo-strip {
-  background: #fcf5df;
-  color: #8e773f;
+  background: #e5eff6;
+  color: #3f6e8e;
   text-align: center;
   font-size: 10px;
   letter-spacing: 0.5px;
@@ -189,14 +189,14 @@
   font-size: 10px;
   letter-spacing: 1.3px;
   font-weight: 500;
-  color: #a395af;
+  color: #95aaaf;
   text-transform: uppercase;
   margin: 0 0 8px;
 }
 .care-page-heading h1 {
   font-size: 27px;
   letter-spacing: -0.8px;
-  color: #3d2f49;
+  color: #2f4449;
 }
 .care-patient-select {
   display: grid;
@@ -205,7 +205,7 @@
 }
 .care-patient-select > span {
   font-size: 10px;
-  color: #a395af;
+  color: #95aaaf;
 }
 .care-patient-select select {
   font-size: 12px !important;
@@ -258,7 +258,7 @@
 }
 .care-app .input,
 .care-app .select {
-  border: 1px solid #ddd5e5;
+  border: 1px solid #d5e2e5;
   background: #fff;
   border-radius: 7px;
   font-size: 13px;
@@ -276,12 +276,12 @@
   white-space: normal;
 }
 .care-app .btn.primary {
-  background: #6a4297;
+  background: #428797;
   color: #fff;
-  border-color: #6a4297;
+  border-color: #428797;
 }
 .care-app .btn.primary:hover {
-  background: #55347c;
+  background: #346f7c;
 }
 .care-app .btn.lg {
   min-height: 44px;
@@ -296,7 +296,7 @@
   margin-top: 0;
 }
 .care-welcome {
-  background: linear-gradient(112deg, #563278, #7f55a5);
+  background: linear-gradient(112deg, #326b78, #5596a5);
   border-radius: 14px;
   padding: 31px 36px;
   color: white;
@@ -316,7 +316,7 @@
 .care-welcome p {
   font-size: 12px;
   line-height: 1.8;
-  color: #e3d7ee;
+  color: #d7eaee;
   max-width: 570px;
   margin-bottom: 19px;
 }
@@ -327,18 +327,18 @@
   font-weight: 600;
   border-radius: 4px;
   padding: 5px 8px;
-  background: #f2eaf7;
-  color: #80559b;
+  background: #eaf5f7;
+  color: #558e9b;
   white-space: normal;
 }
 .care-welcome .care-pill {
   background: #ffffff1a;
-  color: #eadff2;
+  color: #dfeff2;
   letter-spacing: 1.2px;
 }
 .care-white {
   background: white !important;
-  color: #65438b !important;
+  color: #437e8b !important;
   border-color: white !important;
 }
 .care-outline-white {
@@ -353,7 +353,7 @@
   justify-content: center;
   flex-direction: column;
   gap: 17px;
-  color: #f3d195;
+  color: #a9c9df;
   position: relative;
 }
 .care-welcome-art:before {
@@ -374,7 +374,7 @@
 }
 .care-welcome-art span {
   font-size: 12px;
-  color: #e7dcf0;
+  color: #dcecf0;
   text-align: center;
 }
 .care-summary-grid {
@@ -392,12 +392,12 @@
   grid-template-columns: 1fr auto;
   gap: 5px;
   cursor: pointer;
-  color: #4a3b58;
+  color: #3b5358;
 }
 .care-stat svg {
   grid-column: 2;
   grid-row: 1 / 4;
-  color: #aa90bd;
+  color: #90b5bd;
   width: 20px;
 }
 .care-stat b {
@@ -407,11 +407,11 @@
 }
 .care-stat span {
   font-size: 11px;
-  color: #706079;
+  color: #607479;
 }
 .care-stat small {
   font-size: 10px;
-  color: #aa9ab6;
+  color: #9ab1b6;
 }
 .care-stat:disabled {
   opacity: 0.5;
@@ -424,8 +424,8 @@
   display: inline-flex;
   border-radius: 5px;
   padding: 3px 7px;
-  background: #f0edf5;
-  color: #8a7799;
+  background: #edf4f5;
+  color: #779399;
   white-space: normal;
 }
 .status-approved,
@@ -450,8 +450,8 @@
 .status-draft,
 .status-needs_setup,
 .status-pharmacist_review {
-  background: #fcf2d9;
-  color: #a98026;
+  background: #e1ecf4;
+  color: #387197;
 }
 .care-record {
   border: 1px solid var(--care-border);
@@ -484,10 +484,10 @@
   overflow: auto;
 }
 .care-notice {
-  background: #fbf5e8;
-  border: 1px solid #f2e5c8;
+  background: #ebf3f8;
+  border: 1px solid #cde0ed;
   border-radius: 8px;
-  color: #967536;
+  color: #376f95;
   font-size: 12px;
   line-height: 1.65;
   padding: 13px;
@@ -511,12 +511,12 @@
 .care-empty {
   padding: 30px 10px;
   text-align: center;
-  color: #aa9ab5;
+  color: #9ab0b5;
   font-size: 13px;
 }
 .care-loading {
   padding: 30px;
-  color: #9b87ac;
+  color: #87a5ac;
 }
 .care-action {
   display: inline-flex;
@@ -541,11 +541,11 @@
   gap: 8px;
   font-size: 12px;
   line-height: 1.6;
-  color: #796886;
+  color: #688086;
 }
 .care-check input {
   margin-top: 4px;
-  accent-color: #74509a;
+  accent-color: #508c9a;
 }
 .care-scopes {
   display: grid;
@@ -553,7 +553,7 @@
   gap: 9px;
 }
 .care-symptom {
-  border-bottom: 1px solid #eee9f2;
+  border-bottom: 1px solid #e9f0f2;
   padding-bottom: 18px;
 }
 .care-symptom > label {
@@ -568,18 +568,18 @@
   flex-wrap: wrap;
 }
 .care-grades button {
-  border: 1px solid #e4ddeb;
+  border: 1px solid #dde8eb;
   border-radius: 6px;
   background: #fff;
-  color: #a08cac;
+  color: #8ca6ac;
   padding: 8px 11px;
   font-size: 11px;
   cursor: pointer;
 }
 .care-grades button.selected {
-  background: #eee5f7;
-  border-color: #9878b7;
-  color: #6c418f;
+  background: #e5f4f7;
+  border-color: #78abb7;
+  color: #41818f;
 }
 .care-emergency {
   border: 1px solid #c74660;
@@ -606,28 +606,28 @@
 }
 .care-answer {
   padding: 16px 0;
-  border-bottom: 1px solid #eee6f4;
+  border-bottom: 1px solid #e6f1f4;
 }
 .care-question {
   padding: 12px;
-  background: #f3edf8;
+  background: #edf6f8;
   border-radius: 9px;
-  color: #6b4787;
+  color: #477b87;
   font-size: 13px;
 }
 .care-answer > p {
   padding: 10px 0;
 }
 .care-med {
-  border-top: 1px solid #ede7f2;
+  border-top: 1px solid #e7f0f2;
   padding: 18px 0;
 }
 .care-med:first-child {
   border-top: 0;
 }
 .care-dose {
-  background: #faf8fc;
-  border: 1px solid #eee6f4;
+  background: #f8fbfc;
+  border: 1px solid #e6f1f4;
   border-radius: 7px;
   padding: 9px 10px;
   margin-top: 8px;
@@ -646,10 +646,10 @@
 .care-tracker span {
   flex: 1;
   text-transform: capitalize;
-  border-top: 3px solid #e9e4ef;
+  border-top: 3px solid #e4edef;
   padding-top: 8px;
   font-size: 9px;
-  color: #ab9bb7;
+  color: #9bb2b7;
 }
 .care-tracker span.done {
   border-color: #81b396;
@@ -657,7 +657,7 @@
 }
 .care-library {
   padding: 15px 0;
-  border-top: 1px solid #eee8f3;
+  border-top: 1px solid #e8f1f3;
 }
 .care-library a {
   font-size: 11px;
@@ -687,11 +687,11 @@
 .care-metrics b {
   font-size: 25px;
   font-weight: 500;
-  color: #6b458a;
+  color: #457d8a;
 }
 .care-metrics span {
   font-size: 10px;
-  color: #93829f;
+  color: #829a9f;
 }
 .care-memory {
   display: grid;
@@ -699,21 +699,21 @@
   gap: 10px;
 }
 .care-memory button {
-  border: 1px solid #dfd0ea;
-  background: #f2ebf8;
-  color: #a184b6;
+  border: 1px solid #d0e5ea;
+  background: #ebf6f8;
+  color: #84adb6;
   border-radius: 8px;
   height: 70px;
   font-size: 25px;
   cursor: pointer;
 }
 .care-alert {
-  border: 1px solid #ecdfc9;
-  border-left: 4px solid #d7aa53;
+  border: 1px solid #cadeeb;
+  border-left: 4px solid #649fc6;
   padding: 20px;
   border-radius: 8px;
   margin: 14px 0;
-  background: #fffcf7;
+  background: #f9fbfd;
 }
 .care-alert.emergency {
   border-left-color: #ce5971;
@@ -725,7 +725,7 @@
 .care-link {
   border: 0;
   background: none;
-  color: #6a438f;
+  color: #43818f;
   cursor: pointer;
   font: inherit;
 }
@@ -743,7 +743,7 @@
   font-size: 10px;
 }
 .care-roadmap {
-  background: #f7f2fb;
+  background: #f2f9fb;
   border-radius: 10px;
   padding: 24px;
 }
@@ -758,19 +758,19 @@
   flex-wrap: wrap;
 }
 .care-cycles span {
-  border: 1px solid #d8c9e5;
+  border: 1px solid #c9e0e5;
   border-radius: 50%;
   width: 34px;
   height: 34px;
   display: grid;
   place-items: center;
   font-size: 12px;
-  color: #a38bb5;
+  color: #8badb5;
 }
 .care-cycles span.complete {
   color: white;
-  background: #926cb0;
-  border-color: #926cb0;
+  background: #6ca4b0;
+  border-color: #6ca4b0;
 }
 .care-bodymap {
   display: flex;
@@ -805,8 +805,8 @@
   color: #b85c72;
 }
 .care-message {
-  background: #faf8fc;
-  border: 1px solid #ede5f4;
+  background: #f8fbfc;
+  border: 1px solid #e5f1f4;
   border-radius: 9px;
   padding: 14px;
   margin: 10px 0;
@@ -842,10 +842,10 @@
   margin: 0;
 }
 .care-pass {
-  border: 1px dashed #baa3cf;
+  border: 1px dashed #a3c7cf;
   border-radius: 10px;
   padding: 24px;
-  background: #fcfaff;
+  background: #fbfefe;
   margin: 20px 0;
 }
 .care-pass > h2 {
@@ -862,8 +862,8 @@
   gap: 14px;
 }
 .care-step {
-  background: #eadff4;
-  color: #76508f;
+  background: #dff0f4;
+  color: #50838f;
   border-radius: 50%;
   width: 28px;
   height: 28px;
@@ -877,7 +877,7 @@
   gap: 12px;
   justify-items: center;
   text-align: center;
-  border: 1px dashed #ccb7df;
+  border: 1px dashed #b7d8df;
   padding: 24px;
   border-radius: 10px;
 }
@@ -898,9 +898,9 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border: 1px solid #eee6f5;
-  background: #fcfaff;
-  color: #82628f;
+  border: 1px solid #e6f2f5;
+  background: #fbfefe;
+  color: #62878f;
   padding: 15px;
   border-radius: 7px;
   font-size: 12px;
@@ -912,11 +912,11 @@
   align-items: center;
   gap: 15px;
   border: 0;
-  border-bottom: 1px solid #eee8f3;
+  border-bottom: 1px solid #e8f1f3;
   background: white;
   text-align: left;
   padding: 17px 2px;
-  color: #584264;
+  color: #425e64;
   cursor: pointer;
 }
 .care-risk-row b {
@@ -924,7 +924,7 @@
 }
 .care-risk-row p {
   font-size: 11px;
-  color: #a08bab;
+  color: #8ba5ab;
   margin: 5px 0;
 }
 .care-risk-dot {
@@ -938,7 +938,7 @@
   background: #cc667c;
 }
 .risk-amber .care-risk-dot {
-  background: #d1a44f;
+  background: #5d9ac3;
 }
 .care-live-dot {
   width: 5px;
@@ -951,7 +951,7 @@
   display: flex;
   justify-content: space-between;
   font-size: 9px;
-  color: #b2a4bd;
+  color: #a4b8bd;
   gap: 12px;
   margin: 30px 0 0;
 }
@@ -962,10 +962,10 @@
   min-height: 100vh;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  background: #faf8fc;
+  background: #f8fbfc;
 }
 .login-story {
-  background: linear-gradient(130deg, #3e2759, #734b95);
+  background: linear-gradient(130deg, #275059, #4b8795);
   padding: 50px 60px;
   color: #fff;
   display: flex;
@@ -977,11 +977,11 @@
   color: white;
 }
 .login-story .care-logo svg {
-  color: #d8bfef;
+  color: #bfe6ef;
 }
 .login-story .care-logo span {
   background: #ffffff15;
-  color: #d8bce9;
+  color: #bce1e9;
   max-width: 95px;
 }
 .login-story h1 {
@@ -993,7 +993,7 @@
 .login-story > div > p:not(.eyebrow) {
   font-size: 15px;
   line-height: 1.85;
-  color: #d6c6e3;
+  color: #c6dee3;
   max-width: 470px;
 }
 .login-proof {
@@ -1001,13 +1001,13 @@
   align-items: center;
   gap: 17px;
   margin-top: 45px;
-  color: #d6bee8;
+  color: #bee0e8;
   font-size: 12px;
   line-height: 1.8;
 }
 .login-story small {
   font-size: 11px;
-  color: #ac91c2;
+  color: #91b9c2;
 }
 .login-panel {
   display: grid;
@@ -1034,7 +1034,7 @@
   display: flex;
   gap: 6px;
   padding: 4px;
-  background: #f0eaf5;
+  background: #eaf3f5;
   border-radius: 8px;
   margin: 22px 0;
 }
@@ -1045,17 +1045,17 @@
   background: transparent;
   border-radius: 5px;
   font-size: 11px;
-  color: #a08aa8;
+  color: #8aa2a8;
   cursor: pointer;
 }
 .care-segment button.active {
   background: white;
-  color: #77518e;
-  box-shadow: 0 1px 4px #50306a10;
+  color: #51838e;
+  box-shadow: 0 1px 4px #305f6a10;
 }
 .login-form .btn.primary {
   width: 100%;
-  background: #6a4297;
+  background: #428797;
   color: white;
   border: 0;
 }
@@ -1125,7 +1125,7 @@
   .care-sidebar {
     transform: translateX(-100%);
     width: 250px;
-    box-shadow: 10px 0 50px #30204015;
+    box-shadow: 10px 0 50px #203a4015;
     transition: transform 0.2s;
   }
   .care-sidebar.open {
@@ -1264,7 +1264,7 @@
     margin: 15px 0;
   }
   .care-welcome {
-    background: #65418f !important;
+    background: #41818f !important;
     print-color-adjust: exact;
   }
 }

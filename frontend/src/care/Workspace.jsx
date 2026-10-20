@@ -13,17 +13,22 @@ import {
   Home,
   LayoutDashboard,
   LogOut,
-  Menu,
   MessageCircle,
   Pill,
   Settings2,
   ShieldCheck,
   Stethoscope,
   Users,
-  X,
   QrCode,
+  ArrowUpRight,
+  ArrowRight,
+  Search,
+  Info,
+  Ellipsis,
 } from "lucide-react";
-import { useAuth, Login } from "./Auth";
+import Modal from "./Modal";
+import { useAuth } from "./Auth";
+import Login from "./Login";
 import { request, useResource, dateTime, nice } from "./client";
 import {
   Action,
@@ -32,7 +37,6 @@ import {
   Load,
   Panel,
   SourceLinks,
-  Status,
   Voice,
 } from "./UI";
 import { CheckIn, Companion, Medicines, Wellness } from "./PatientTools";
@@ -61,21 +65,22 @@ import DocViewer from "../components/DocViewer";
 import QrScanner from "../components/QrScanner";
 import Brief from "../apps/doctor/Brief";
 import "./care.css";
+import "./interface.css";
 
 const NAV = [
-  ["home", "My care space", Home, "profile"],
+  ["home", "Overview", Home, "profile"],
   ["checkin", "Daily check-in", HeartPulse, "checkin"],
   ["companion", "Ask my records", MessageCircle, "documents"],
   ["medicines", "Medicines & requests", Pill, "medicines"],
-  ["clinical", "Journey & response", Stethoscope, "documents"],
+  ["clinical", "Care journey", Stethoscope, "documents"],
   ["journal", "Plans & journal", BookHeart, "notes"],
   ["chat", "Care circle chat", HeartHandshake, "chat"],
   ["day", "Hospital day pass", CalendarDays, "appointments"],
-  ["wellness", "Food, energy & play", Flower2, "nutrition"],
+  ["wellness", "Wellbeing", Flower2, "nutrition"],
   ["records", "Reports & uploads", FileStack, "documents"],
   ["money", "Money & schemes", CircleHelp, "finance"],
   ["circle", "Caregiver consent", Users, "patient"],
-  ["share", "Emergency QR & sharing", ShieldCheck, "patient"],
+  ["share", "Emergency card", ShieldCheck, "patient"],
   ["triage", "Nurse triage", HeartPulse, "clinician"],
   ["approvals", "Doctor approvals", ClipboardList, "doctor"],
   ["schedule", "Schedule & chairs", LayoutDashboard, "staff"],
@@ -104,6 +109,9 @@ function CareSpace() {
   const [qr, setQr] = useState(false),
     [qrError, setQrError] = useState("");
   const [focusedRecordId, setFocusedRecordId] = useState(null);
+  const [about, setAbout] = useState(false), [searchOpen, setSearchOpen] = useState(false), [query, setQuery] = useState("");
+  const [phoneCheckin, setPhoneCheckin] = useState(false);
+  const portal = ["patient", "caregiver"].includes(user.role) ? "patient" : user.role === "doctor" ? "doctor" : "staff";
   useEffect(() => setFocusedRecordId(null), [pid]);
   useEffect(() => {
     const open = (e) => {
@@ -163,29 +171,35 @@ function CareSpace() {
   const change = (value) => {
     setTab(value);
     setMenu(false);
+    setSearchOpen(false);
+    window.scrollTo({ top: 0, behavior: "instant" });
   };
   const unread = notes.data?.filter((n) => n.status === "unread").length || 0;
-  const title = nav.find((n) => n[0] === tab)?.[1] || "My care space";
+  const title = tab === "home" ? (portal === "patient" ? "Your care, connected." : portal === "doctor" ? "Your clinical workspace." : "Your hospital workspace.") : nav.find((n) => n[0] === tab)?.[1] || "Overview";
+  const dockKeys = portal === "patient" ? ["home", "checkin", "records", "chat"] : portal === "doctor" ? ["home", "clinical", "approvals", "records"] : ["home", "day", "schedule", "records", "triage", "journal", "privacy"];
+  const dock = dockKeys.map(k => nav.find(n => n[0] === k)).filter(Boolean).slice(0, 4);
   return (
-    <div className="care-app">
+    <div className={`care-app portal-${portal}`}>
       <aside className={`care-sidebar ${menu ? "open" : ""}`}>
         <Link to="/" className="care-logo">
-          <HeartPulse />
-          OncoBrief<span>2</span>
+          <span className="care-brand-mark"><HeartPulse size={23} /></span>
+          OncoBrief
         </Link>
+        <span className="care-workspace-label">{portal} workspace</span>
         <div className="care-role">
           <span className="care-avatar">{user.name.slice(0, 1)}</span>
           <div>
             <b>{user.name}</b>
-            <small>{nice(user.role)}</small>
+            <small>{user.sign_in_id || nice(user.role)}</small>
           </div>
         </div>
-        <p className="care-nav-label">CONNECTED CARE</p>
-        <nav>
+        <p className="care-nav-label">WORKSPACE</p>
+        <nav aria-label="Workspace navigation">
           {nav.map(([key, label, Icon]) => (
             <button
               key={key}
               className={tab === key ? "active" : ""}
+              aria-current={tab === key ? "page" : undefined}
               onClick={() => change(key)}
             >
               <Icon size={18} />
@@ -194,28 +208,16 @@ function CareSpace() {
             </button>
           ))}
         </nav>
-        <div className="care-sidebar-foot">
-          <ShieldCheck size={17} />
-          <span>
-            AI suggests.
-            <br />
-            Your doctor decides.
-          </span>
-        </div>
+        <button className="care-sidebar-foot" onClick={() => setAbout(true)}><ShieldCheck size={19} /><span>Made for connected care<small>Workspace information</small></span><ArrowUpRight size={15} /></button>
       </aside>
       <div className="care-page">
         <header className="care-top">
-          <button
-            className="btn care-menu"
-            aria-label="Toggle navigation"
-            onClick={() => setMenu((v) => !v)}
-          >
-            <Menu size={20} />
-          </button>
+          <div className="care-mobile-logo"><span className="care-brand-mark"><HeartPulse size={20} /></span><b>OncoBrief</b></div>
           <div className="care-breadcrumb">
-            Care space <span>/</span> <b>{title}</b>
+            <span className="care-connection-dot" />{nice(portal)} workspace <span>/</span> <b>{nav.find(n => n[0] === tab)?.[1]}</b>
           </div>
           <div className="spacer" />
+          <button className="care-search-trigger" onClick={() => { setQuery(""); setSearchOpen(true); }} aria-label="Find a feature"><Search size={16} /><span>Find anything</span></button>
           <select
             className="select care-language"
             aria-label="Language"
@@ -234,17 +236,12 @@ function CareSpace() {
             <Bell size={19} />
             {unread > 0 && <span>{unread}</span>}
           </button>
+          <button className="btn icon-btn care-hide-mobile" aria-label="Workspace information" onClick={() => setAbout(true)}><Info size={18} /></button>
           <button className="btn" aria-label="Sign out" onClick={logout}>
             <LogOut size={16} />
             <span className="care-hide-mobile">Sign out</span>
           </button>
         </header>
-        {user.demo && (
-          <div className="care-demo-strip">
-            DEMO ENVIRONMENT · Fabricated patients and reports · Use separate
-            browser profiles to demonstrate multiple roles
-          </div>
-        )}
         <main className="care-main">
           <div className="care-page-heading">
             <div>
@@ -256,16 +253,12 @@ function CareSpace() {
                 })}
               </p>
               <h1>{title}</h1>
-              {["doctor", "nurse", "frontdesk", "lab"].includes(user.role) && (
-                <button className="btn" onClick={() => setQr(true)}>
-                  <QrCode size={16} />
-                  Scan patient QR
-                </button>
-              )}
             </div>
+            <div className="care-heading-actions">
+            {["doctor", "nurse", "frontdesk", "lab"].includes(user.role) && <button className="btn care-scan" onClick={() => setQr(true)}><QrCode size={18} /><span>Scan patient</span></button>}
             {patients.data?.length > 0 && (
               <label className="care-patient-select">
-                <span>Patient folder</span>
+                <span>{portal === "patient" ? "Care profile" : "Active patient"}</span>
                 <select
                   className="select"
                   aria-label="Patient folder"
@@ -283,6 +276,7 @@ function CareSpace() {
                 </select>
               </label>
             )}
+            </div>
           </div>
           <Error message={patients.error} />
           <Error message={qrError} />
@@ -304,18 +298,7 @@ function CareSpace() {
             </Panel>
           )}
           {showNotifications && (
-            <Panel
-              title="Notifications"
-              action={
-                <button
-                  className="btn"
-                  aria-label="Close notifications"
-                  onClick={() => setShowNotifications(false)}
-                >
-                  <X size={16} />
-                </button>
-              }
-            >
+            <Modal title="Notifications" onClose={() => setShowNotifications(false)}>
               {notes.data?.length ? (
                 notes.data.map((n) => (
                   <article className="care-record" key={n.id}>
@@ -337,7 +320,7 @@ function CareSpace() {
               ) : (
                 <Empty>No notifications.</Empty>
               )}
-            </Panel>
+            </Modal>
           )}
           {!pid &&
           tab !== "settings" &&
@@ -361,7 +344,7 @@ function CareSpace() {
               </button>
             </Panel>
           ) : (
-            <div key={`${pid}-${tab}`}>
+            <div className="care-view" key={`${pid}-${tab}`}>
               {tab === "home" && (
                 <HomeSpace
                   pid={pid}
@@ -387,7 +370,7 @@ function CareSpace() {
                   />
                   <div className="stack">
                     {can("notes") && <VisitPrep pid={pid} />}
-                    <CheckIn pid={pid} language={language} phoneDemo />
+                    <Panel title="Prefer to speak?"><p className="muted small">A voice-guided check-in, at your pace.</p><button className="btn" onClick={() => setPhoneCheckin(true)}>Open voice check-in <ArrowUpRight size={16} /></button></Panel>
                   </div>
                 </div>
               )}
@@ -452,13 +435,15 @@ function CareSpace() {
             </div>
           )}
           <footer className="care-footer">
-            OncoBrief · Team TripleT{" "}
-            <span>
-              Clinical changes require the treating doctor's signature.
-            </span>
+            <span>OncoBrief <span className="footer-dot">·</span> Connected cancer care</span><button onClick={() => setAbout(true)}><ShieldCheck size={13} /> Privacy & workspace information</button>
           </footer>
         </main>
       </div>
+      <nav className="care-mobile-dock" aria-label="Mobile navigation">{dock.map(([key, label, Icon]) => <button key={key} className={tab === key ? "active" : ""} aria-current={tab === key ? "page" : undefined} onClick={() => change(key)}><Icon size={21} /><span>{({ home: "Home", checkin: "Check-in", records: "Records", chat: "Circle", clinical: "Journey", approvals: "Approvals", schedule: "Schedule", day: "Day pass", privacy: "Privacy", journal: "Plans", triage: "Triage" })[key] || label}</span></button>)}<button className={menu || !dock.some(n => n[0] === tab) ? "active" : ""} onClick={() => setMenu(true)}><Ellipsis size={23} /><span>More</span></button></nav>
+      {menu && <Modal title="Your workspace" className="care-more-sheet" onClose={() => setMenu(false)}><div className="care-sheet-profile"><span className="care-avatar">{user.name.slice(0, 1)}</span><div><b>{user.name}</b><small>{user.sign_in_id || nice(user.role)}</small></div></div><div className="care-feature-grid">{nav.map(([key, label, Icon]) => <button className={tab === key ? "active" : ""} key={key} onClick={() => change(key)}><Icon size={22} /><span>{label}</span></button>)}</div><div className="care-sheet-footer"><button className="btn" onClick={() => { setMenu(false); setAbout(true); }}><Info size={17} />Information</button><button className="btn" onClick={logout}><LogOut size={17} />Sign out</button></div></Modal>}
+      {searchOpen && <Modal title="Find a feature" onClose={() => setSearchOpen(false)}><input className="input care-command-input" type="search" data-autofocus placeholder="Search your workspace…" value={query} onChange={e => setQuery(e.target.value)} aria-label="Search features" /><div className="care-command-results">{nav.filter(n => n[1].toLowerCase().includes(query.toLowerCase())).map(([key, label, Icon]) => <button key={key} onClick={() => change(key)}><Icon size={19} />{label}<ArrowUpRight size={16} /></button>)}{!nav.some(n => n[1].toLowerCase().includes(query.toLowerCase())) && <Empty>No features found.</Empty>}</div></Modal>}
+      {about && <Modal title="About your workspace" onClose={() => setAbout(false)}><div className="care-information"><div className="care-modal-brand"><HeartPulse size={28} /><b>OncoBrief</b><span>Connected cancer care</span></div>{user.demo && <div className="care-notice"><b>Hackathon environment</b><p>All patients, reports and relationships here are fabricated. Please keep real patient information out of this workspace.</p></div>}<h3>Your information, shared with care</h3><p>Each account sees only its assigned patients and consented information. Caregivers have their own access. Record access is logged; you can review it in Privacy & devices.</p><h3>Your team makes clinical decisions</h3><p>AI-assisted explanations and drafts support the care team. Treatment changes require the treating doctor’s review and signature. Urgent symptoms need prompt medical attention.</p><p className="small muted">Connected services show their current availability in Settings. Browser voice may use your browser’s speech provider. Patient documents are not stored for offline use.</p></div></Modal>}
+      {phoneCheckin && <Modal title="Voice check-in" onClose={() => setPhoneCheckin(false)}><CheckIn pid={pid} language={language} phoneDemo onUpdate={() => setRevision(v => v + 1)} /></Modal>}
       {qr && (
         <QrScanner
           onClose={() => setQr(false)}
@@ -496,6 +481,7 @@ function HomeSpace({
     "frontdesk",
     "admin",
   ].includes(user.role);
+  const careTeam = !["patient", "caregiver"].includes(user.role);
   const command = useResource(clinician ? "/v2/command-centre" : null, 15000);
   const week = useResource(can("activity") ? `/v2/patients/${pid}/week` : null);
   const day = useResource(
@@ -504,6 +490,30 @@ function HomeSpace({
   const meds = useResource(
     can("medicines") ? `/patients/${pid}/medications` : null,
   );
+  const documents = useResource(visibleTabs.includes("records") && careTeam && !clinician ? `/patients/${pid}/documents` : null);
+  const stats = (clinician ? [
+    ["home", Users, command.data?.patients.length ?? "—", "assigned patients", "Care overview"],
+    ["approvals", ClipboardList, command.data?.awaiting_approval ?? "—", "decisions awaiting review", "Open approvals"],
+    ["triage", HeartPulse, command.data?.open_alerts ?? "—", "open care alerts", "Review triage"],
+    ["day", CalendarDays, day.data?.stops.length ?? "—", "patient stops today", "View day pass"],
+    ["schedule", LayoutDashboard, command.data?.chairs.length ?? "—", "chair assignments", "Open schedule"],
+    ["chat", HeartHandshake, "Connected", "care circle", "Open conversation"],
+    ["privacy", ShieldCheck, "Access", "devices & privacy", "Review access"],
+    ["settings", Settings2, "Services", "connected workspace", "Open settings"],
+  ] : careTeam ? [
+    ["records", FileStack, documents.data?.length ?? "—", "accessible reports", "Open records"],
+    ["wellness", Flower2, "Wellbeing", "patient support", "Open wellbeing"],
+    ["journal", BookHeart, "Care plans", "shared patient journal", "Open plans"],
+    ["privacy", ShieldCheck, "Access", "devices & privacy", "Review access"],
+    ["settings", Settings2, "Services", "connected workspace", "Open settings"],
+  ] : [
+    ["medicines", Pill, meds.data?.length ?? "—", "active medicines", "View prescriptions"],
+    ["day", CalendarDays, day.data?.stops.length ?? "—", "stops today", "View day pass"],
+    ["wellness", Flower2, week.data?.checkin_days ?? "—", "check-in days this week", "Your wellbeing"],
+    ["chat", HeartHandshake, "Together", "your care circle", "Stay connected"],
+  ]).filter(s => visibleTabs.includes(s[0])).slice(0, 4);
+  const primaryTab = careTeam ? ({doctor:"approvals",nurse:"triage",frontdesk:"schedule",admin:"schedule",lab:"records",navigator:"journal",dietitian:"wellness",privacy:"privacy"}[user.role]) : visibleTabs.includes("checkin") ? "checkin" : "day";
+  const primaryLabel = {approvals:"Review approvals",triage:"Open triage",schedule:"Open schedule",records:"Open reports",journal:"Open care plans",wellness:"Open wellbeing",privacy:"Review access",checkin:"Daily check-in",day:"Today’s appointments"}[primaryTab];
   const [brief, setBrief] = useState(null);
   const [commandAnswer, setCommandAnswer] = useState(null);
   const voiceCommand = async (text) => {
@@ -541,97 +551,52 @@ function HomeSpace({
       <section className="care-welcome">
         <div>
           <span className="care-pill">
-            {clinician ? "BETWEEN-VISIT COMMAND CENTRE" : "ONE DAY AT A TIME"}
+            <span className="care-connection-dot" />{careTeam ? "YOUR DAY, IN FOCUS" : "HERE FOR EVERY STEP"}
           </span>
           <h2>
-            {clinician
-              ? `Welcome, ${user.name}.`
+            {careTeam
+              ? `Welcome back, ${user.name.replace(/^Dr\.\s*/, "Dr. ").split(" ").slice(0, 3).join(" ")}.`
               : `Hello, ${patient?.name?.split(" ")[0] || user.name.split(" ")[0]}.`}
             <br />
-            {clinician
-              ? "See who needs your attention."
-              : "Let’s make today a little clearer."}
+            {careTeam
+              ? "Good care starts with a clear view."
+              : "A little clarity. A better day."}
           </h2>
           <p>
-            {clinician
-              ? "Home check-ins, recent changes and pending decisions in one connected care space."
-              : "Your check-in helps the team hear about changes between visits. Even the small things count."}
+            {careTeam
+              ? "Your patients, priorities and next decisions. Together in one place."
+              : "Your team is with you, between every visit. Let’s take the next step together."}
           </p>
           <div className="row wrap">
-            {can("checkin") && (
+            {visibleTabs.includes(primaryTab) && (
               <button
                 className="btn care-white"
-                onClick={() => onTab("checkin")}
+                onClick={() => onTab(primaryTab)}
               >
-                Start daily check-in <HeartPulse size={17} />
+                {primaryLabel} <ArrowUpRight size={17} />
               </button>
             )}
-            {can("appointments") && (
+            {visibleTabs.includes("day") && primaryTab !== "day" && (
               <button
                 className="btn care-outline-white"
                 onClick={() => onTab("day")}
               >
-                See my day pass
+                Today’s appointments <ArrowRight size={16} />
               </button>
             )}
           </div>
         </div>
         <div className="care-welcome-art" aria-hidden="true">
-          <HeartPulse size={92} />
-          <span>
-            Always part of
-            <br />
-            your care story.
-          </span>
+          <div className="hero-orbit hero-orbit-one" /><div className="hero-orbit hero-orbit-two" /><div className="hero-glass-core"><HeartPulse size={55} strokeWidth={1.15} /></div><div className="hero-care-tag"><span className="care-connection-dot" />A connected care story</div><svg className="hero-pulse" viewBox="0 0 300 60"><path d="M0 30H65L80 30 92 13 109 49 126 22 139 30H300" /></svg>
         </div>
       </section>
-      <div className="care-summary-grid">
-        <button
-          className="care-stat"
-          onClick={() => onTab("medicines")}
-          disabled={!can("medicines")}
-        >
-          <Pill />
-          <b>{meds.data?.length ?? "—"}</b>
-          <span>active medicines</span>
-          <small>Signed prescriptions</small>
-        </button>
-        <button
-          className="care-stat"
-          onClick={() => onTab("day")}
-          disabled={!can("appointments")}
-        >
-          <CalendarDays />
-          <b>{day.data?.stops.length ?? "—"}</b>
-          <span>stops today</span>
-          <small>One shared itinerary</small>
-        </button>
-        <button
-          className="care-stat"
-          onClick={() => onTab("wellness")}
-          disabled={!can("nutrition")}
-        >
-          <Flower2 />
-          <b>{week.data?.checkin_days ?? "—"}</b>
-          <span>check-in days this week</span>
-          <small>Your streak garden</small>
-        </button>
-        <button
-          className="care-stat"
-          onClick={() => onTab(clinician ? "triage" : "chat")}
-          disabled={clinician ? !can("clinician") : !can("chat")}
-        >
-          <HeartHandshake />
-          <b>{clinician ? (command.data?.open_alerts ?? "—") : "Together"}</b>
-          <span>{clinician ? "open care alerts" : "your care circle"}</span>
-          <small>
-            {clinician ? "Review and escalate" : "Ask, share, feel heard"}
-          </small>
-        </button>
+      <div className="care-section-label"><h2>{careTeam ? "At a glance" : "Your day, at a glance"}</h2><span>{patient?.id}</span></div>
+      <div className="care-summary-grid" style={{ "--stat-count": stats.length }}>
+        {stats.map(([key, Icon, value, label, detail]) => <button key={key} className="care-stat" onClick={() => onTab(key)}><Icon /><b className={typeof value === "string" && value.length > 6 ? "care-stat-word" : ""}>{value}</b><span>{label}</span><small>{detail}<ArrowUpRight size={13} /></small></button>)}
       </div>
       {clinician && (
         <Panel
-          title="Who needs a call today"
+          title={["doctor", "nurse"].includes(user.role) ? "Patient priorities" : "Patient coordination"}
           hint="Ranked by explicit check-ins, alerts, missed doses, visits and personal step changes. This is triage support, not a clinical prediction."
         >
           <Load resource={command}>
@@ -639,7 +604,7 @@ function HomeSpace({
               <>
                 {d.patients.map((p) => (
                   <button
-                    className={`care-risk-row risk-${p.risk || "green"}`}
+                    className={`care-risk-row risk-${p.risk || "neutral"}`}
                     key={p.patient_id}
                     onClick={() => onSelect(p.patient_id)}
                   >
@@ -647,8 +612,7 @@ function HomeSpace({
                     <div>
                       <b>{p.name}</b>
                       <p>
-                        {p.reasons?.join(" · ") ||
-                          "No current rule-based concern"}
+                        {p.reasons?.join(" · ") || (["doctor", "nurse", "admin"].includes(user.role) ? "No current rule-based concern" : `${p.patient_id} · Care coordination`)}
                       </p>
                     </div>
                     <span className="spacer" />
@@ -704,6 +668,9 @@ function HomeSpace({
               ["journal", "Visit takeaways & shared decisions"],
               ["companion", "Explain a report or find a result"],
               ["money", "Money and scheme support"],
+              ["records", "Patient reports & uploads"],
+              ["schedule", "Schedule & chair management"],
+              ["day", "Hospital day pass"],
             ]
               .filter(([k]) => visibleTabs.includes(k))
               .map(([key, label]) => (
@@ -718,7 +685,7 @@ function HomeSpace({
           title={
             user.role === "doctor"
               ? "One-page clinician brief"
-              : "Your care, your choices"
+              : careTeam ? "Your workspace" : "Your care, your choices"
           }
         >
           {user.role === "doctor" ? (
@@ -745,10 +712,10 @@ function HomeSpace({
                     .join(" ")}
                 />
               )}
-              <p className="small muted">
+              <details className="care-inline-help"><summary>Voice shortcuts</summary><p className="small muted">
                 Voice command: “build brief”, “show last three CBCs”, or ask the
                 chart. Audio reads an abbreviated summary.
-              </p>
+              </p></details>
               <Voice onText={voiceCommand} />
               {commandAnswer && (
                 <div className="care-notice">
@@ -770,12 +737,9 @@ function HomeSpace({
             </>
           ) : (
             <>
-              <p>
-                Invite someone you trust, write down your priorities and check
-                who has opened your records.
-              </p>
+              <p>{careTeam ? "Your assigned folders and hospital services, close at hand." : "Invite someone you trust, write down your priorities and check who has opened your records."}</p>
               <button className="btn" onClick={() => onTab("privacy")}>
-                Who opened my records
+                {careTeam ? "Privacy & devices" : "Who opened my records"}
               </button>
             </>
           )}

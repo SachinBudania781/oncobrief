@@ -118,6 +118,7 @@ export function CheckIn({ pid, language, onUpdate, phoneDemo = false }) {
                 <button
                   key={value}
                   type="button"
+                  aria-pressed={values[key] === value}
                   className={values[key] === value ? "selected" : ""}
                   onClick={() => setValues((v) => ({ ...v, [key]: value }))}
                 >

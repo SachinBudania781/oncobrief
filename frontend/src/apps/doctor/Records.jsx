@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Search } from "lucide-react";
+import { ArrowUpRight, FileText, Search } from "lucide-react";
 import { api, fmtDate, CATEGORY_COLORS } from "../../api";
 
 function highlight(text, q) {
@@ -134,7 +134,8 @@ export default function Records({ patientId, taxonomy, onOpen }) {
           />
         </label>
       </div>
-      <div className="panel" style={{ padding: 0, overflowX: "auto" }}>
+      <div className="records-mobile-list" aria-label="Patient reports">{rows.map(d => <button className="records-mobile-card" key={d.id} onClick={() => onOpen(d.tag)}><span className="records-mobile-icon"><FileText size={21} /></span><span className="records-mobile-copy"><small>{d.subtype} <span>· {fmtDate(d.record_date)}</span></small><b>{d.title}</b>{d.snippet && <span className="records-mobile-snippet">{highlight(d.snippet,q)}</span>}<em>{d.external_hospital || (d.source === "patient" ? "Patient app" : "This hospital")}</em></span><ArrowUpRight size={16} /></button>)}{loading && <p className="care-loading" role="status">Loading reports…</p>}{!loading && !rows.length && <div className="care-empty">No matching reports.</div>}</div>
+      <div className="panel records-desktop-table" style={{ padding: 0, overflowX: "auto" }}>
         <table className="list">
           <thead>
             <tr>
@@ -146,7 +147,7 @@ export default function Records({ patientId, taxonomy, onOpen }) {
           </thead>
           <tbody>
             {rows.map((d) => (
-              <tr key={d.id} className="click" onClick={() => onOpen(d.tag)}>
+              <tr key={d.id} className="click" tabIndex={0} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(d.tag); } }} onClick={() => onOpen(d.tag)}>
                 <td className="num" style={{ whiteSpace: "nowrap" }}>
                   {fmtDate(d.record_date)}
                 </td>

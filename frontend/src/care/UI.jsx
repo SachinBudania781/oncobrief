@@ -1,16 +1,21 @@
 import { useEffect, useRef, useState } from "react";
-import { Mic, Volume2 } from "lucide-react";
+import { Info, Mic, Volume2 } from "lucide-react";
+import Modal from "./Modal";
 import { dateTime, nice, request, speak } from "./client";
 import AudioRecorder from "./AudioRecorder";
+
+export function InfoButton({ title = "About this feature", children }) {
+  const [open, setOpen] = useState(false);
+  return <><button type="button" className="care-info-button" aria-label={`About ${title}`} onClick={() => setOpen(true)}><Info size={17} /></button>{open && <Modal title={title} onClose={() => setOpen(false)}><div className="care-information">{children}</div></Modal>}</>;
+}
 
 export const Panel = ({ title, hint, children, className = "", action }) => (
   <section className={`care-panel ${className}`}>
     <div className="care-panel-head">
       <div>
         {title && <h2>{title}</h2>}
-        {hint && <p className="muted small">{hint}</p>}
       </div>
-      {action}
+      <div className="row">{hint && <InfoButton title={title}>{hint}</InfoButton>}{action}</div>
     </div>
     {children}
   </section>
@@ -139,10 +144,10 @@ export function Voice({ language = "en", onText, text }) {
         )}
       </div>
       {onText && (
-        <small className="muted">
+        <InfoButton title="Voice input">
           Your browser asks for microphone permission. Browser speech may use
           its speech provider.
-        </small>
+        </InfoButton>
       )}
       <Error message={error} />
     </div>
@@ -226,11 +231,11 @@ export function RecordForm({ kind, spec, pid, onSaved }) {
   };
   return (
     <form className="stack care-record-form" onSubmit={submit}>
-      <p className="small muted">
+      <div className="row care-form-info"><span className="muted small">{spec.clinical ? "Clinical draft" : "Shared record"}</span><InfoButton title="Saving this record">
         {spec.clinical
           ? "Saved as a draft. Your treating doctor must review and sign before it becomes an active care plan."
           : "Saved to the shared patient folder with the author and time."}
-      </p>
+      </InfoButton></div>
       {spec.fields.map((f) => (
         <label
           className={`field ${f.type === "checkbox" ? "care-check" : ""}`}

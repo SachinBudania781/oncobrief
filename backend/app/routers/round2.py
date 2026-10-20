@@ -21,6 +21,7 @@ from ..services.companion import EMERGENCY, alert, answer, command_centre, livin
 from ..services.integrations import deliver, status as integration_status
 from ..workflows import WORKFLOWS
 from ..services.scheduling import serial_schedule
+from .auth import sign_in_id
 
 router = APIRouter(prefix="/api", tags=["connected care"])
 CLINICIANS = {"doctor", "nurse", "admin"}
@@ -552,7 +553,7 @@ class InviteIn(BaseModel):
 def circle(patient_id: str, request: Request, db=Depends(get_db)):
     user = patient_access(db, request, patient_id)
     roles(user, "patient", "doctor", "nurse", "admin")
-    return [{"id": g.id, "name": db.get(User, g.user_id).name, "username": db.get(User, g.user_id).username,
+    return [{"id": g.id, "name": db.get(User, g.user_id).name, "username": db.get(User, g.user_id).username, "sign_in_id": sign_in_id(db, db.get(User, g.user_id)),
              "role": db.get(User, g.user_id).role, "scopes": g.scopes, "active": g.active, "consent_by": g.consent_by}
             for g in db.scalars(select(AccessGrant).where(AccessGrant.patient_id == patient_id))]
 
@@ -574,7 +575,7 @@ def invite(patient_id: str, body: InviteIn, request: Request, db=Depends(get_db)
     db.add(g)
     db.commit()
     append_audit(db, user, "caregiver_consent", patient_id, body.username + ": " + ",".join(body.scopes))
-    return {"id": g.id, "username": u.username}
+    return {"id": g.id, "username": u.username, "sign_in_id": sign_in_id(db, u)}
 
 
 @router.delete("/v2/circle/{grant_id}")

@@ -41,6 +41,10 @@ For a local production-style build, run `npm run build` in `frontend`, restart t
 
 Password for every fabricated demo account: `OncoDemo!2026`.
 
+The app sign-in forms use issued IDs. Open **Workspace information** on the sign-in screen to select a test account and fill its ID. In the existing seed, the doctor is `DOC-0001`, the nurse is `STF-0002`, front desk is `STF-0004`, and the patients use `OB-2026-0001` and `OB-2026-0002`. New hospital and caregiver accounts return their issued ID when created. The usernames below still work for existing API clients.
+
+The patient portal offers ID/password in the test workspace and registered-phone verification. Doctor and staff portals offer their own ID or registered phone **with password**; production hospital sign-in still requires TOTP. Patient phone verification is not offered in the hospital portals.
+
 | Username | Role |
 | --- | --- |
 | `doctor` | Dr. R. Menon, assigned clinician |

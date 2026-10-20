@@ -14,9 +14,23 @@ from ..security import (COOKIE_SECURE, DEMO_MODE, SESSION_MINUTES, append_audit,
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
+PORTAL_ROLES = {
+    "patient": {"patient", "caregiver"}, "doctor": {"doctor"},
+    "staff": {"nurse", "lab", "frontdesk", "navigator", "dietitian", "privacy", "admin"},
+}
+
+
+def sign_in_id(db, user):
+    if user.role == "patient":
+        grant = db.scalar(select(AccessGrant).where(AccessGrant.user_id == user.id, AccessGrant.active.is_(True)))
+        if grant:
+            return grant.patient_id
+    prefix = "DOC" if user.role == "doctor" else "CG" if user.role == "caregiver" else "STF"
+    return f"{prefix}-{user.id:04d}"
+
 
 def user_dict(db, user):
-    return {"id": user.id, "username": user.username, "name": user.name, "role": user.role,
+    return {"id": user.id, "username": user.username, "sign_in_id": sign_in_id(db, user), "name": user.name, "role": user.role,
             "department": user.department, "patient_ids": visible_ids(db, user), "demo": DEMO_MODE,
             "permissions": {g.patient_id: g.scopes for g in db.scalars(select(AccessGrant).where(AccessGrant.user_id == user.id, AccessGrant.active.is_(True))) if not g.expires_at or g.expires_at > utcnow()}, "idle_minutes": SESSION_MINUTES}
 
@@ -35,7 +49,7 @@ def login_session(db, user, request, response):
 @router.get("/config")
 def config(db=Depends(get_db)):
     return {"demo": DEMO_MODE, "idle_minutes": SESSION_MINUTES,
-            "accounts": [{"username": u.username, "name": u.name, "role": u.role}
+            "accounts": [{"username": u.username, "sign_in_id": sign_in_id(db, u), "phone": u.phone, "name": u.name, "role": u.role}
                          for u in db.scalars(select(User).where(User.active.is_(True))) ] if DEMO_MODE else [],
             "demo_password": "OncoDemo!2026" if DEMO_MODE else None}
 
@@ -44,11 +58,35 @@ class LoginIn(BaseModel):
     username: str = Field(min_length=1, max_length=120)
     password: str = Field(min_length=1, max_length=200)
     totp: str = Field(default="", max_length=10)
+    portal: Literal["all", "patient", "doctor", "staff"] = "all"
+    identifier_type: Literal["id", "phone"] = "id"
 
 
 @router.post("/login")
 def login(body: LoginIn, request: Request, response: Response, db=Depends(get_db)):
-    user = db.scalar(select(User).where(User.username == body.username.lower().strip(), User.active.is_(True)))
+    value = body.username.strip()
+    user = None
+    if body.identifier_type == "phone":
+        # Staff phone sign-in still requires a password and, outside demo, TOTP.
+        # OTP remains patient-only. Never select a patient's account in a staff portal.
+        allowed = PORTAL_ROLES.get(body.portal, set()) if body.portal in {"doctor", "staff"} else set()
+        matches = [u for u in db.scalars(select(User).where(User.active.is_(True), User.role.in_(allowed)))
+                   if u.phone and u.phone == value]
+        user = matches[0] if len(matches) == 1 else None
+    elif value.upper().startswith(("DOC-", "STF-", "CG-")):
+        prefix, _, number = value.upper().partition("-")
+        candidate = db.get(User, int(number)) if number.isdigit() and len(number) <= 10 else None
+        if candidate and candidate.active and sign_in_id(db, candidate) == f"{prefix}-{int(number):04d}":
+            user = candidate
+    elif value.upper().startswith("OB-"):
+        user = db.scalar(select(User).join(AccessGrant, AccessGrant.user_id == User.id).where(
+            User.role == "patient", User.active.is_(True), AccessGrant.active.is_(True),
+            AccessGrant.patient_id == value.upper()))
+    else:
+        # Keep existing API clients and issued usernames working.
+        user = db.scalar(select(User).where(User.username == value.lower(), User.active.is_(True)))
+    if user and body.portal != "all" and user.role not in PORTAL_ROLES[body.portal]:
+        user = None
     if not user or not password_ok(body.password, user.password_hash):
         raise HTTPException(401, "Invalid sign-in details")
     if not DEMO_MODE:
@@ -169,14 +207,14 @@ def create_user(body: UserIn, request: Request, db=Depends(get_db)):
         db.add(AccessGrant(user_id=row.id, patient_id=pid, scopes=scopes, consent_by="Hospital administrator"))
     db.commit()
     append_audit(db, user, "create_user", detail=row.username)
-    return {"id": row.id, "totp_setup_uri": pyotp.TOTP(secret).provisioning_uri(row.username, issuer_name="OncoBrief"),
+    return {"id": row.id, "sign_in_id": sign_in_id(db, row), "totp_setup_uri": pyotp.TOTP(secret).provisioning_uri(row.username, issuer_name="OncoBrief"),
             "message": "Store this one-time authenticator setup securely. It will not be shown again."}
 
 
 @router.get("/users")
 def users(request: Request, db=Depends(get_db)):
     roles(identity(request), "admin")
-    return [{"id":u.id,"name":u.name,"username":u.username,"role":u.role,"ward":u.ward} for u in db.scalars(select(User).where(User.active.is_(True)))]
+    return [{"id":u.id,"sign_in_id":sign_in_id(db,u),"name":u.name,"username":u.username,"role":u.role,"ward":u.ward} for u in db.scalars(select(User).where(User.active.is_(True)))]
 
 
 class RelationshipIn(BaseModel):

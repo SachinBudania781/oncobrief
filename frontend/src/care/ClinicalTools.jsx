@@ -24,6 +24,7 @@ import {
   Empty,
   Error,
   Load,
+  InfoButton,
   Panel,
   SourceLinks,
   Status,
@@ -372,8 +373,7 @@ export function ClinicalChart({ pid, onOpen, user }) {
                       ),
                     )}
                   </div>
-                  <p>{d.roadmap.text}</p>
-                  <p className="small">{d.roadmap.side_effect_days}</p>
+                  <div className="row small muted">Plan notes<InfoButton title="Roadmap notes"><p>{d.roadmap.text}</p><p>{d.roadmap.side_effect_days}</p></InfoButton></div>
                 </div>
               </>
             ) : (
@@ -406,11 +406,10 @@ export function ClinicalChart({ pid, onOpen, user }) {
                 onChange={(e) => setMonth(Number(e.target.value))}
               />
               <p className="small muted">
-                {month}% through the recorded journey. Sites and sizes require
-                clinician confirmation.
+                {month}% through the recorded journey.
               </p>
             </Panel>
-            <Panel title="Response & lab trends">
+            <Panel title="Response & lab trends" hint="Tap a sourced value to open its report. Confirmed tumour measurements are separate from raw extraction suggestions. Body sites and sizes require clinician confirmation.">
               <select
                 className="select"
                 value={test}
@@ -449,7 +448,7 @@ export function ClinicalChart({ pid, onOpen, user }) {
                     <Line
                       type="monotone"
                       dataKey="value"
-                      stroke="#6943a5"
+                      stroke="#4393a5"
                       strokeWidth={3}
                       connectNulls={false}
                       dot={{ r: 5 }}
@@ -462,10 +461,6 @@ export function ClinicalChart({ pid, onOpen, user }) {
                   </LineChart>
                 </ResponsiveContainer>
               </div>
-              <p className="small muted">
-                Tap a sourced value to open the report. Confirmed tumour
-                measurements are separate from raw extraction suggestions.
-              </p>
             </Panel>
           </div>
           <Panel
@@ -488,13 +483,13 @@ export function ClinicalChart({ pid, onOpen, user }) {
                   <Legend />
                   <Line
                     dataKey="expected"
-                    stroke="#aa96c6"
+                    stroke="#96bdc6"
                     strokeDasharray="5 5"
                     connectNulls={false}
                   />
                   <Line
                     dataKey="actual"
-                    stroke="#ea9c35"
+                    stroke="#5c9ac3"
                     strokeWidth={3}
                     connectNulls={false}
                   />
@@ -645,7 +640,7 @@ export function ClinicalChart({ pid, onOpen, user }) {
                   </details>
                 ))}
               </Panel>
-              <Panel title="Evidence behind suggestions">
+              <Panel title="Evidence behind suggestions" hint="Drafts stay in Doctor approvals until the treating clinician reviews and signs them. Linked guidelines provide context for the treating team; demo outcomes are never used as evidence.">
                 <Action
                   className="btn primary"
                   run={() =>
@@ -655,11 +650,7 @@ export function ClinicalChart({ pid, onOpen, user }) {
                 >
                   Draft a care review for the approval queue
                 </Action>
-                <p className="small muted">
-                  The draft stays in Doctor approvals until the treating
-                  clinician reviews and signs it.
-                </p>
-                <p>{d.evidence.note}</p>
+                <div className="row small muted">{d.evidence.cohort ? "Local evidence" : "Local evidence unavailable"}<InfoButton title="Local evidence">{d.evidence.note}</InfoButton></div>
                 {d.evidence.cohort && (
                   <pre className="care-pre">
                     {JSON.stringify(d.evidence.cohort, null, 2)}
@@ -668,10 +659,6 @@ export function ClinicalChart({ pid, onOpen, user }) {
                 <a href={d.evidence.guideline} target="_blank" rel="noreferrer">
                   NCI treatment information
                 </a>
-                <p className="small">
-                  A linked guideline is context, not an individualized regimen
-                  recommendation. No outcomes are inferred from demo cohorts.
-                </p>
               </Panel>
             </>
           )}
@@ -716,11 +703,11 @@ export function BodyMap({ measurements = [], month = 100, onSite }) {
   return (
     <div className="care-bodymap">
       <svg viewBox="0 0 200 350" role="img" aria-label="Body map">
-        <circle cx="100" cy="35" r="25" fill="#efe9f6" stroke="#b9a5d2" />
+        <circle cx="100" cy="35" r="25" fill="#e9f4f6" stroke="#a5cad2" />
         <path
           d="M74 70 Q100 58 126 70 L151 143 Q156 159 146 165 L126 111 L128 195 L143 319 Q141 337 128 330 L104 224 L96 224 L72 330 Q58 337 57 319 L72 195 L74 111 L54 165 Q43 159 49 143Z"
-          fill="#efe9f6"
-          stroke="#b9a5d2"
+          fill="#e9f4f6"
+          stroke="#a5cad2"
           strokeWidth="2"
         />
         {Object.entries(sites).map(([site, [x, y]]) => (
@@ -750,7 +737,7 @@ export function BodyMap({ measurements = [], month = 100, onSite }) {
                     ? 8
                     : 0
               }
-              fill={latest[site] ? "#d56579" : "#9970c6"}
+              fill={latest[site] ? "#d56579" : "#70b6c6"}
               fillOpacity=".65"
               stroke="#fff"
             />

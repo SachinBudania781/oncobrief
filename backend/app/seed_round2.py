@@ -91,6 +91,11 @@ def initialise():
                     db.add(AccessGrant(user_id=u.id, patient_id=p.id, scopes=scopes, consent_by="Fabricated demo relationship"))
             db.commit()
         if DEMO_MODE:
+            # Fabricated hospital numbers, distinct from patient fixtures; no SMS in demo.
+            for index, username in enumerate(["doctor", "nurse", "lab", "frontdesk", "navigator", "dietitian", "privacy", "admin"], start=1):
+                member = db.scalar(select(User).where(User.username == username))
+                if member and not member.phone:
+                    member.phone = f"+9191000000{index:02d}"
             for username, pid in [("meera", "OB-2026-0001"), ("rajesh", "OB-2026-0002")]:
                 u, p = db.scalar(select(User).where(User.username == username)), db.get(Patient, pid)
                 if u and p and not u.phone:

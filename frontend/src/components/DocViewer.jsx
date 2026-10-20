@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { X, Download, ScanText } from "lucide-react";
-import { api, fmtDate, CATEGORY_COLORS } from "../api";
+import { Download, ScanText } from "lucide-react";
+import { api, fmtDate } from "../api";
 import { request } from "../care/client";
+import Modal from "../care/Modal";
 
 // Opens the ORIGINAL file next to its OCR text and tags — the brief is never the last word.
 export default function DocViewer({ docId, onClose }) {
@@ -10,6 +11,7 @@ export default function DocViewer({ docId, onClose }) {
   const [page, setPage] = useState(0);
   const [focus, setFocus] = useState("");
   const [explanation, setExplanation] = useState(null);
+  const [view, setView] = useState("original");
   useEffect(() => {
     if (!docId) return;
     setDoc(null);
@@ -17,6 +19,7 @@ export default function DocViewer({ docId, onClose }) {
     setPage(0);
     setFocus("");
     setExplanation(null);
+    setView("original");
     let live = true;
     const load = () =>
       api
@@ -34,11 +37,6 @@ export default function DocViewer({ docId, onClose }) {
       clearInterval(timer);
     };
   }, [docId]);
-  useEffect(() => {
-    const onKey = (e) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
   if (!docId) return null;
   const isPdf = doc?.mime === "application/pdf";
   const lowOcr = doc?.ocr_confidence != null && doc.ocr_confidence < 75;
@@ -50,65 +48,12 @@ export default function DocViewer({ docId, onClose }) {
       (w) => focus && w.text.toLowerCase().includes(focus.toLowerCase()),
     ) || [];
   return (
-    <>
-      <div className="drawer-back" onClick={onClose} />
-      <aside className="drawer" role="dialog" aria-label="Original document">
-        <div className="drawer-head">
-          <span
-            className="dot"
-            style={{
-              background: CATEGORY_COLORS[doc?.category] || "var(--ink-3)",
-              marginTop: 8,
-            }}
-          />
-          <div style={{ minWidth: 0 }}>
-            <h2 style={{ fontSize: 18 }}>
-              {doc ? doc.title : "Loading…"}{" "}
-              {doc && <span className="src static">{doc.tag}</span>}
-            </h2>
-            {doc && (
-              <div className="row wrap small muted" style={{ marginTop: 4 }}>
-                <span>
-                  {doc.category} / {doc.subtype}
-                </span>
-                <span>Report date {fmtDate(doc.record_date)}</span>
-                <span>Uploaded by {doc.uploaded_by}</span>
-                {doc.external_hospital && (
-                  <span className="chip">{doc.external_hospital}</span>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="spacer" />
-          {doc && (
-            <a
-              className="btn"
-              href={doc.file_url}
-              target="_blank"
-              rel="noreferrer"
-            >
-              <Download size={16} /> Original
-            </a>
-          )}
-          {doc && (
-            <button
-              className="btn"
-              onClick={() =>
-                request(`/v2/documents/${doc.id}/explain`)
-                  .then(setExplanation)
-                  .catch((e) => setErr(e.message))
-              }
-            >
-              Explain report
-            </button>
-          )}
-          <button className="btn ghost" onClick={onClose} aria-label="Close">
-            <X size={18} />
-          </button>
-        </div>
+    <Modal title={doc?.title || "Original document"} onClose={onClose} className="care-document-overlay">
+        {doc && <div className="document-heading"><div className="document-metadata"><span className="care-pill">{doc.tag} · {doc.subtype}</span><span>{fmtDate(doc.record_date)}</span><span>{doc.external_hospital || doc.uploaded_by}</span></div><div className="document-actions"><a className="btn" href={doc.file_url} target="_blank" rel="noreferrer"><Download size={16} />Original file</a><button className="btn primary" onClick={() => request(`/v2/documents/${doc.id}/explain`).then(result => {setExplanation(result); setView("text");}).catch(e => setErr(e.message))}><ScanText size={16} />Explain report</button></div></div>}
+        <div className="document-mobile-tabs" aria-label="Document view"><button aria-pressed={view === "original"} className={view === "original" ? "active" : ""} onClick={() => setView("original")}>Original</button><button aria-pressed={view === "text"} className={view === "text" ? "active" : ""} onClick={() => setView("text")}>Extracted text</button></div>
         {err && <div className="empty">{err}</div>}
         {doc && (
-          <div className="drawer-body">
+          <div className={`drawer-body document-view-${view}`}>
             <div className="drawer-file">
               {doc.mime.startsWith("audio/") ? (
                 <audio controls src={doc.file_url} />
@@ -164,8 +109,8 @@ export default function DocViewer({ docId, onClose }) {
                           top: `${b.y * 100}%`,
                           width: `${b.w * 100}%`,
                           height: `${b.h * 100}%`,
-                          background: "#ffe05280",
-                          outline: "2px solid #f1b922",
+                          background: "#49bdd44d",
+                          outline: "2px solid #298ba3",
                           pointerEvents: "none",
                         }}
                       />
@@ -202,7 +147,7 @@ export default function DocViewer({ docId, onClose }) {
                   className="small"
                   style={{ color: "var(--warning)", marginBottom: 8 }}
                 >
-                  Low-quality scan. Read the original on the left before relying
+                  Low-quality scan. Read the original document before relying
                   on this text.
                 </p>
               )}
@@ -259,13 +204,10 @@ export default function DocViewer({ docId, onClose }) {
               <div className="ocr">
                 {doc.ocr_text || "No text could be read from this file."}
               </div>
-              <p className="tiny muted" style={{ marginTop: 10 }}>
-                Filed at <code>{doc.folder_path}</code>
-              </p>
+
             </div>
           </div>
         )}
-      </aside>
-    </>
+    </Modal>
   );
 }

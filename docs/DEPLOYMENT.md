@@ -2,7 +2,7 @@
 
 Deploy five resources: patient website, doctor website, staff website, FastAPI backend, and PostgreSQL database. Each website also installs on Android and iPhone as a home-screen web app. All three websites use the same backend and records.
 
-The source is published on `deploy/round2-independent`. The existing `main` branch and Round 1 service are separate.
+The source is published on `deploy/round2-independent`. The old Round 1 and chatbot services have been removed; the five resources listed below are retained.
 
 | Resource | Address |
 | --- | --- |
@@ -54,7 +54,9 @@ The browser calls each website's own `/api` path. This preserves HTTP-only secur
 
 Once the three actual frontend URLs are known, set backend `ALLOWED_ORIGINS` to those three HTTPS origins, separated by commas. Set `PUBLIC_BASE_URL` to the patient website's origin so QR and shared-card links open the patient frontend. Redeploy the backend after updating its environment.
 
-App targeting chooses the starting screen, title, manifest, and demo sign-in choices. Backend account permissions remain authoritative. Each frontend still shares the care-workspace source, so fixes can reach all three without copying code.
+App targeting chooses the starting screen, title, manifest, portal accent and sign-in methods. Patient, doctor and staff IDs are checked against the selected portal by the backend. Doctor/staff phone sign-in uses a password and retains production TOTP; phone OTP remains patient-only. Each frontend shares the care-workspace source, so fixes can reach all three without copying code.
+
+Desktop uses a persistent navigation sidebar and tables; mobile uses a floating navigation dock, a feature sheet, report cards and tabbed document viewing. Motion respects the device's reduced-motion preference. Workspace provenance and feature guidance are available in information dialogs. Urgent clinical alerts remain visible in their workflows.
 
 ## Install on phones
 

@@ -244,6 +244,7 @@ export function CareChat({ pid }) {
 
 export function CareCircle({ pid }) {
   const resource = useResource(`/v2/patients/${pid}/circle`);
+  const [invitedId, setInvitedId] = useState("");
   const [v, setV] = useState({
       username: "",
       name: "",
@@ -278,7 +279,8 @@ export function CareCircle({ pid }) {
             setError("");
             setBusy(true);
             try {
-              await request(`/v2/patients/${pid}/circle`, "POST", v);
+              const invitation = await request(`/v2/patients/${pid}/circle`, "POST", v);
+              setInvitedId(invitation.sign_in_id);
               setV({
                 username: "",
                 name: "",
@@ -296,7 +298,7 @@ export function CareCircle({ pid }) {
         >
           {[
             ["name", "Their name"],
-            ["username", "New caregiver username"],
+            ["username", "Account reference (unique)"],
             ["password", "Initial password (12+ characters)"],
           ].map(([key, label]) => (
             <label className="field" key={key}>
@@ -340,6 +342,7 @@ export function CareCircle({ pid }) {
             I consent to this person accessing the selected information.
           </label>
           <Error message={error} />
+          {invitedId && <p className="care-success">Caregiver account created · ID <b>{invitedId}</b></p>}
           <button className="btn primary" disabled={busy}>
             Create caregiver invitation
           </button>
@@ -355,6 +358,7 @@ export function CareCircle({ pid }) {
                   <Status value={g.role} />
                   <Status value={g.active ? "active" : "revoked"} />
                 </div>
+                <p className="small muted">{g.sign_in_id}</p>
                 <p className="small">
                   {g.scopes.join(", ")} · {g.consent_by}
                 </p>
@@ -707,7 +711,7 @@ function AdminUserForm() {
           <label key={key} className="field">
             {key === "patient_ids"
               ? "Assigned patient IDs, comma-separated"
-              : nice(key)}
+              : key === "username" ? "Account reference (unique)" : nice(key)}
             <input
               className="input"
               type={key === "password" ? "password" : "text"}
@@ -753,6 +757,7 @@ function AdminUserForm() {
         </Action>
         {result && (
           <div className="care-notice">
+            <p>Account ID: <b>{result.sign_in_id}</b></p>
             <p>{result.message}</p>
             <code className="care-device">{result.totp_setup_uri}</code>
           </div>

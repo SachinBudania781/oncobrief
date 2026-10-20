@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import {
   QrCode,
-  ScanLine,
+  Camera,
   Upload,
   CheckCircle2,
   Loader2,
-  Bluetooth,
   FileText,
 } from "lucide-react";
 import { api, nowLocalInput } from "../api";
@@ -41,7 +40,6 @@ export default function UploadForm({
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState("");
   const [drag, setDrag] = useState(false);
-  const [scanning, setScanning] = useState(false);
   const [qr, setQr] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -50,7 +48,7 @@ export default function UploadForm({
   const [labs, setLabs] = useState({});
   const [identityConfirmed, setIdentityConfirmed] = useState(false);
   const [identityReason, setIdentityReason] = useState("");
-  const scanCount = useRef(0);
+  const camera = useRef(null);
 
   useEffect(() => {
     setCategory(defaultCat);
@@ -93,22 +91,6 @@ export default function UploadForm({
     setResult(null);
     setPreview(f.type.startsWith("image/") ? URL.createObjectURL(f) : "");
   };
-  const scan = async () => {
-    setScanning(true);
-    setErr("");
-    try {
-      await new Promise((r) => setTimeout(r, 900)); // the scanner feeding the page
-      const f = await api.scan(scanCount.current++);
-      pick(f);
-      setCategory("Lab report");
-      setSubtype("CBC");
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setScanning(false);
-    }
-  };
-
   const submit = async (e) => {
     e.preventDefault();
     if (!patient) {
@@ -133,11 +115,7 @@ export default function UploadForm({
     );
     form.append(
       "source",
-      mode === "patient"
-        ? "patient"
-        : scanCount.current && file.name.startsWith("scan_")
-          ? "scanner"
-          : "staff",
+      mode === "patient" ? "patient" : "staff",
     );
     const entered = Object.entries(labs)
       .filter(([, v]) => v !== "" && v != null)
@@ -249,25 +227,7 @@ export default function UploadForm({
         )}
       </div>
 
-      {mode === "staff" && (
-        <div className="scanner">
-          <Bluetooth size={16} /> Scanner “Ward-3 DS-940” connected (simulated)
-          <div className="spacer" />
-          <button
-            type="button"
-            className="btn"
-            onClick={scan}
-            disabled={scanning}
-          >
-            {scanning ? (
-              <Loader2 size={16} className="spin" />
-            ) : (
-              <ScanLine size={16} />
-            )}{" "}
-            {scanning ? "Scanning…" : "Scan page"}
-          </button>
-        </div>
-      )}
+      <div className="care-capture-row"><span>Document capture</span><button type="button" className="btn" onClick={() => camera.current?.click()}><Camera size={17} />Take a photo</button><input ref={camera} type="file" accept="image/*" capture="environment" hidden onChange={e => pick(e.target.files?.[0])} /></div>
       <label
         className={`dropzone ${drag ? "drag" : ""}`}
         onDragOver={(e) => {
