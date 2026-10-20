@@ -1,0 +1,32 @@
+{
+  "provider": "Render",
+  "workspace_id": "tea-d206357diees7394pnu0",
+  "repository": "https://github.com/SachinBudania781/oncobrief",
+  "branch": "deploy/round2-independent",
+  "mode": "fabricated-data development",
+  "patient": {
+    "id": "srv-dbbmvpvavr4c73856sog",
+    "url": "https://oncobrief-round2-patient.onrender.com"
+  },
+  "doctor": {
+    "id": "srv-dbbmvrbncjis739996mg",
+    "url": "https://oncobrief-round2-doctor.onrender.com"
+  },
+  "staff": {
+    "id": "srv-dbbmvspjfumc7388ja2g",
+    "url": "https://oncobrief-round2-staff.onrender.com"
+  },
+  "api": {
+    "id": "srv-dbbmvj0473hc73ct7k3g",
+    "url": "https://oncobrief-round2-api.onrender.com",
+    "plan": "free",
+    "region": "singapore"
+  },
+  "database": {
+    "id": "dpg-dbbmsqrbc2fs73bnhvb0-a",
+    "plan": "free",
+    "engine": "PostgreSQL 16",
+    "region": "singapore",
+    "expires_at": "2026-11-19T13:36:43.732011Z"
+  }
+}

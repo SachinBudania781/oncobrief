@@ -31,8 +31,8 @@ services:
         value: https://frontend-urls-not-configured.invalid
 databases:
   - name: oncobrief-round2-db
-    databaseName: oncobrief_round2
-    user: oncobrief
+    databaseName: oncobrief_round2_db
+    user: oncobrief_round2_db_user
     region: singapore
     plan: free
     postgresMajorVersion: "16"

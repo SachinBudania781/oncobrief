@@ -4,11 +4,23 @@ Deploy five resources: patient website, doctor website, staff website, FastAPI b
 
 The source is published on `deploy/round2-independent`. The existing `main` branch and Round 1 service are separate.
 
+| Resource | Address |
+| --- | --- |
+| Patient app | https://oncobrief-round2-patient.onrender.com |
+| Doctor app | https://oncobrief-round2-doctor.onrender.com |
+| Staff app | https://oncobrief-round2-staff.onrender.com |
+| Backend and API docs | https://oncobrief-round2-api.onrender.com/docs |
+| PostgreSQL dashboard | https://dashboard.render.com/d/dpg-dbbmsqrbc2fs73bnhvb0-a |
+
+Resource IDs are recorded in `deploy/resources.json`; it contains no passwords or connection strings. The database expires on **19 November 2026**.
+
 ## Free hosting limits
 
 This setup uses fabricated demo records and published demo accounts. Render's free backend sleeps when idle, and waking it can take a minute. Free PostgreSQL expires 30 days after creation. Free backend storage is temporary: uploaded files disappear on restart or redeploy even while their database records remain. The generated encryption and file-signing secrets must stay unchanged in the backend environment.
 
 Keep this environment for integration development and demos. For retained uploads, add persistent file storage. For a longer-lived free database, replace `DATABASE_URL` with a free external PostgreSQL service before the Render database expires. These are separate follow-up changes.
+
+The backend recreates missing fabricated sample documents after a restart while keeping their database rows and original dates. It cannot recreate uploaded files. This recovery runs only in demo mode and only for the known sample records.
 
 Current provider limits: [Render free services](https://render.com/docs/free), [static site routing](https://render.com/docs/redirects-rewrites), and [Blueprint configuration](https://render.com/docs/blueprint-spec).
 

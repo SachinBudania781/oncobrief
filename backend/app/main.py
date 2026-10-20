@@ -9,6 +9,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from .config import FRONTEND_DIST, HOSPITAL_NAME
 from .db import Base, SessionLocal, engine
 from . import round2_models
@@ -136,7 +138,13 @@ for router in (auth.router, round2.router, document_tools.router, operations.rou
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "hospital": HOSPITAL_NAME, "version": "2.0.0", "demo": DEMO_MODE}
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except SQLAlchemyError:
+        raise HTTPException(503, "Database is unavailable")
+    return {"status": "ok", "hospital": HOSPITAL_NAME, "version": "2.0.0", "demo": DEMO_MODE,
+            "database": engine.dialect.name}
 
 
 @app.get("/docs",include_in_schema=False,response_class=HTMLResponse)

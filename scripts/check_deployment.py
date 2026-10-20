@@ -20,7 +20,8 @@ def check_app(origin, target, username):
 
     page, _ = fetch("/")
     assert f"OncoBrief {target.title()}".encode() in page, "Wrong frontend build"
-    manifest, _ = fetch("/manifest.webmanifest")
+    manifest, manifest_headers = fetch("/manifest.webmanifest")
+    assert "json" in manifest_headers.get("Content-Type", ""), "Phone manifest must have a JSON content type"
     manifest = json.loads(manifest)
     assert manifest["name"] == f"OncoBrief {target.title()}", "Wrong phone app manifest"
     assert manifest["display"] == "standalone"
@@ -30,7 +31,9 @@ def check_app(origin, target, username):
     worker, _ = fetch("/sw.js")
     assert b"self.addEventListener" in worker, "Service worker missing"
     health, headers = fetch("/api/health")
-    assert json.loads(health)["status"] == "ok", "API proxy is not returning JSON"
+    health = json.loads(health)
+    assert health["status"] == "ok", "API proxy is not returning JSON"
+    assert health["database"] == "postgresql", "Backend is not using the separate PostgreSQL database"
     assert "no-store" in headers.get("Cache-Control", ""), "API caching must be disabled"
     config, _ = fetch("/api/auth/config")
     config = json.loads(config)
@@ -42,9 +45,19 @@ def check_app(origin, target, username):
     current, _ = fetch("/api/auth/me")
     assert json.loads(current)["username"] == username, "Proxy did not preserve session"
     patients, _ = fetch("/api/patients")
-    assert isinstance(json.loads(patients), list), "Authenticated data unavailable"
+    patients = json.loads(patients)
+    assert isinstance(patients, list) and patients, "Authenticated data unavailable"
+    if target in {"patient", "doctor"}:
+        documents, _ = fetch(f"/api/patients/{patients[0]['id']}/documents")
+        documents = json.loads(documents)
+        assert documents, "Seeded reports are unavailable"
+        document, _ = fetch(f"/api/documents/{documents[0]['id']}")
+        document = json.loads(document)
+        file, headers = fetch(document["file_url"])
+        assert file and "text/html" not in headers.get("Content-Type", ""), "Report download was replaced by the app shell"
+        assert "no-store" in headers.get("Cache-Control", ""), "Report downloads must not be cached"
     fetch("/api/auth/logout", {})
-    print(f"PASS {target}: app, manifest, icons, API GET/POST, secure cookie, session, patient list, logout")
+    print(f"PASS {target}: app, phone manifest/icons, PostgreSQL, API GET/POST, secure session, records, logout")
 
 
 if __name__ == "__main__":

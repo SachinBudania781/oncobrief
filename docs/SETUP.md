@@ -1,6 +1,6 @@
 # Setup and review checklist
 
-All repository changes are local. Use the Git commands at the end when you are ready to publish them.
+The expanded app is published on `deploy/round2-independent`. See [the independent deployment guide](DEPLOYMENT.md) for the three hosted apps, backend, database, and phone installation. The original prototype remains on `main`.
 
 ## Run the expanded app
 
