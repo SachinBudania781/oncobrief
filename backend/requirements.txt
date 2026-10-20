@@ -10,3 +10,8 @@ pdfplumber==0.11.10
 pypdfium2==5.13.0
 qrcode==8.2
 reportlab==5.0.1
+cryptography==50.0.2
+pyotp==2.10.0
+pypdf==6.19.0
+psycopg[binary]==3.3.4
+uharfbuzz==0.56.3

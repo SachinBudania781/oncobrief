@@ -17,7 +17,10 @@ DEFAULT_MODELS = {
 
 
 def enabled() -> bool:
-    return config.LLM_PROVIDER in DEFAULT_MODELS and bool(config.LLM_API_KEY)
+    import os
+    from ..security import DEMO_MODE
+    allowed = DEMO_MODE or os.getenv("LLM_DATA_PROCESSING_APPROVED") == "true"
+    return allowed and config.LLM_PROVIDER in DEFAULT_MODELS and bool(config.LLM_API_KEY)
 
 
 def model_name() -> str:
@@ -76,5 +79,5 @@ def complete_json(system: str, user: str, timeout: float = 25.0):
             text = r.json()["choices"][0]["message"]["content"]
         return _extract_json(text)
     except Exception as exc:  # network, quota, parsing — never break the demo
-        print(f"[llm] falling back: {exc!r}")
+        print(f"[llm] falling back ({type(exc).__name__})")
         return None

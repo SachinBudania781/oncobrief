@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,12 +9,16 @@ from ..db import get_db
 from ..models import Activity, Appointment, Medication, MedLog, Patient, SymptomReport
 from ..taxonomy import DEPARTMENTS, SYMPTOMS
 from .common import Actor, audit, get_actor, load_patient
+from ..services.scheduling import serial_schedule
 
 router = APIRouter(prefix="/api", tags=["care"])
 
 
 def day_bounds(d: str | None):
-    day = date.fromisoformat(d) if d else date.today()
+    try:
+        day = date.fromisoformat(d) if d else date.today()
+    except ValueError:
+        raise HTTPException(422, "Use YYYY-MM-DD")
     start = datetime.combine(day, datetime.min.time())
     return start, start + timedelta(days=1)
 
@@ -47,6 +51,14 @@ def log_med(body: MedLogIn, db: Session = Depends(get_db), actor: Actor = Depend
     m = db.get(Medication, body.medication_id)
     if not m:
         raise HTTPException(404, "Medication not found")
+    from ..round2_models import User
+    from ..security import require_patient, roles
+    user = db.get(User, actor.id)
+    require_patient(db, user, m.patient_id, "medicines")
+    roles(user, "patient", "caregiver", "nurse", "doctor")
+    import re
+    if body.status not in {"taken", "missed"} or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", body.time) or body.time not in m.times:
+        raise HTTPException(422, "Use an approved reminder time and taken/missed status")
     h, mi = map(int, body.time.split(":"))
     when = datetime.combine(date.today(), datetime.min.time()).replace(hour=h, minute=mi)
     existing = db.scalars(select(MedLog).where(MedLog.medication_id == m.id, MedLog.scheduled_for == when)).first()
@@ -55,6 +67,9 @@ def log_med(body: MedLogIn, db: Session = Depends(get_db), actor: Actor = Depend
     else:
         db.add(MedLog(medication_id=m.id, patient_id=m.patient_id, scheduled_for=when, status=body.status))
     db.commit()
+    if body.status == "missed":
+        from ..services.companion import alert
+        alert(db, m.patient_id, "Missed prescribed dose: " + m.name, "medicine log", "warning")
     audit(db, actor, f"medicine_{body.status}", m.patient_id, f"{m.name} {body.time}")
     return {"ok": True}
 
@@ -73,6 +88,13 @@ def report_symptoms(body: SymptomIn, db: Session = Depends(get_db), actor: Actor
     p = db.get(Patient, body.patient_id)
     if not p:
         raise HTTPException(404, "Patient not found")
+    from ..round2_models import User
+    from ..security import require_patient, roles
+    user = db.get(User, actor.id)
+    require_patient(db, user, p.id, "checkin")
+    roles(user, "patient", "caregiver", "nurse", "doctor")
+    if any(s.get("key") not in {x["key"] for x in SYMPTOMS} or not isinstance(s.get("grade"), int) or not 0 <= s["grade"] <= 4 for s in body.symptoms):
+        raise HTTPException(422, "Unknown symptom or invalid grade")
     names = {s["key"]: s["en"] for s in SYMPTOMS}
     sy = [{"key": s["key"], "name": names.get(s["key"], s["key"]), "grade": int(s.get("grade", 0))}
           for s in body.symptoms if int(s.get("grade", 0)) > 0]
@@ -82,7 +104,11 @@ def report_symptoms(body: SymptomIn, db: Session = Depends(get_db), actor: Actor
     db.add(r)
     db.commit()
     audit(db, actor, "symptom_report", p.id, ", ".join(f"{s['name']} g{s['grade']}" for s in sy))
-    return {"id": r.id, "flagged": flagged,
+    from ..services.companion import alert, red_flags
+    flag = red_flags(body.free_text, sy, on_treatment=bool(p.current_regimen))
+    if flagged or flag["level"] >= 2:
+        alert(db, p.id, flag["reason"] or "Severe patient symptom", "symptom report", "emergency" if flag["level"] == 3 else "urgent")
+    return {"id": r.id, "flagged": flagged or flag["level"] >= 2,
             "message": "Sent to your care team." + (" Because you reported a fever or a severe symptom, "
                                                     "please also call the hospital helpline now." if flagged else "")}
 
@@ -111,9 +137,10 @@ def appt_dict(a: Appointment, db: Session) -> dict:
 
 
 @router.get("/appointments")
-def appointments(day: str | None = None, department: str = "", patient_id: str = "", upcoming: bool = False,
+def appointments(request: Request, day: str | None = None, department: str = "", patient_id: str = "", upcoming: bool = False,
                  db: Session = Depends(get_db)):
-    stmt = select(Appointment).order_by(Appointment.start)
+    from ..security import identity, visible_ids
+    stmt = select(Appointment).where(Appointment.patient_id.in_(visible_ids(db, identity(request), "appointments"))).order_by(Appointment.start)
     if upcoming:
         stmt = stmt.where(Appointment.start >= datetime.now() - timedelta(hours=2))
     else:
@@ -142,9 +169,10 @@ def find_clashes(appts: list[Appointment]) -> list[dict]:
 
 
 @router.get("/schedule")
-def schedule(day: str | None = None, db: Session = Depends(get_db)):
+def schedule(request: Request, day: str | None = None, db: Session = Depends(get_db)):
     start, end = day_bounds(day)
-    appts = db.scalars(select(Appointment).where(Appointment.start >= start, Appointment.start < end)
+    from ..security import identity, visible_ids
+    appts = db.scalars(select(Appointment).where(Appointment.patient_id.in_(visible_ids(db, identity(request), "appointments")), Appointment.start >= start, Appointment.start < end)
                        .order_by(Appointment.start)).all()
     return {"date": start.date().isoformat(), "departments": [d["name"] for d in DEPARTMENTS],
             "appointments": [appt_dict(a, db) for a in appts], "clashes": find_clashes(appts)}
@@ -174,6 +202,7 @@ class AppointmentIn(BaseModel):
 
 
 @router.post("/appointments")
+@serial_schedule
 def book(body: AppointmentIn, db: Session = Depends(get_db), actor: Actor = Depends(get_actor)):
     p = db.get(Patient, body.patient_id)
     if not p:
@@ -181,9 +210,24 @@ def book(body: AppointmentIn, db: Session = Depends(get_db), actor: Actor = Depe
     dept = next((d for d in DEPARTMENTS if d["name"] == body.department), None)
     if not dept:
         raise HTTPException(422, "Unknown department")
-    start = datetime.fromisoformat(body.start)
+    from ..round2_models import User
+    from ..security import require_patient
+    require_patient(db, db.get(User, actor.id), p.id, "appointments")
+    try:
+        start = datetime.fromisoformat(body.start).replace(tzinfo=None)
+    except ValueError:
+        raise HTTPException(422, "Invalid start date")
+    if start < datetime.now() or not 8 <= start.hour < 17:
+        raise HTTPException(422, "Book a future appointment between 08:00 and 17:00")
+    end = start + timedelta(minutes=20)
+    overlapping = db.scalars(select(Appointment).where(Appointment.status != "cancelled", Appointment.start < end, Appointment.end > start)).all()
+    if any(a.patient_id == p.id for a in overlapping):
+        raise HTTPException(409, "The patient already has an appointment at this time. Choose another slot.")
+    room = next((r for r in dept["rooms"] if not any(a.room == r and a.department == dept["name"] for a in overlapping)), None)
+    if room is None:
+        raise HTTPException(409, "No room is free at this time. Choose another slot.")
     a = Appointment(patient_id=p.id, department=dept["name"], clinician=p.treating_oncologist or "Duty doctor",
-                    room=dept["rooms"][0], start=start, end=start + timedelta(minutes=20),
+                    room=room, start=start, end=end,
                     visit_type=body.visit_type, notes=body.notes)
     db.add(a)
     db.commit()

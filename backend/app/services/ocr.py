@@ -13,6 +13,9 @@ try:
     import pytesseract
     TESSERACT_OK = True
     try:
+        import os
+        if os.getenv("TESSERACT_CMD"):
+            pytesseract.pytesseract.tesseract_cmd = os.environ["TESSERACT_CMD"]
         pytesseract.get_tesseract_version()
     except Exception:  # binary missing
         TESSERACT_OK = False
@@ -29,7 +32,7 @@ def _prep(img: Image.Image) -> Image.Image:
 
 
 def _run(img: Image.Image) -> tuple[str, float]:
-    data = pytesseract.image_to_data(img, config="--psm 6", output_type=pytesseract.Output.DICT)
+    data = pytesseract.image_to_data(img, config="--psm 6", output_type=pytesseract.Output.DICT,timeout=30)
     words, confs, lines, key = [], [], {}, None
     for i, w in enumerate(data["text"]):
         if not w.strip():
@@ -60,29 +63,35 @@ def extract_text(path: Path, mime: str) -> tuple[str, str, float | None]:
     """Returns (text, method, confidence)."""
     path = Path(path)
     if mime == "application/pdf" or path.suffix.lower() == ".pdf":
-        text = ""
+        page_texts=[]
         try:
             import pdfplumber
             with pdfplumber.open(path) as pdf:
-                text = "\n".join((p.extract_text() or "") for p in pdf.pages)
+                page_texts=[p.extract_text() or "" for p in pdf.pages[:100]]
         except Exception:
-            text = ""
-        if len(text.strip()) > 40:
-            return text.strip(), "pdf-text", 99.0
-        # scanned PDF: render pages and OCR them
+            page_texts=[]
+        if page_texts and all(len(t.strip())>40 for t in page_texts):
+            return "\n".join(page_texts).strip(), "pdf-text", 99.0
+        # Mixed PDFs are processed page-by-page so scanned pages are not silently skipped.
         try:
             import pypdfium2 as pdfium
-            doc = pdfium.PdfDocument(str(path))
-            parts, confs = [], []
-            for i in range(min(len(doc), 5)):
-                img = doc[i].render(scale=2.5).to_pil()
-                t, c = ocr_image(img)
-                parts.append(t)
-                if c is not None:
-                    confs.append(c)
-            return "\n".join(parts).strip(), "tesseract", (round(sum(confs) / len(confs), 1) if confs else None)
+            parts, confs,missing=[],[],False
+            with pdfium.PdfDocument(str(path)) as doc:
+                for i in range(min(len(doc),100)):
+                    text=page_texts[i] if i<len(page_texts) else ""
+                    if len(text.strip())>40:
+                        parts.append(text);confs.append(99.0)
+                    else:
+                        t,c=ocr_image(doc[i].render(scale=2.5).to_pil())
+                        parts.append(t or f"[Page {i+1}: text could not be read; verify the original]")
+                        if c is not None:
+                            confs.append(c)
+                        else:
+                            missing=True
+            method="mixed-pdf" if any(t.strip() for t in page_texts) else "tesseract"
+            return "\n".join(parts).strip(),method,None if missing else round(sum(confs)/len(confs),1) if confs else None
         except Exception:
-            return "", "none", None
+            return "\n".join(page_texts).strip(), "partial-pdf", None
     if mime.startswith("image/") or path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
         try:
             t, c = ocr_image(Image.open(path))

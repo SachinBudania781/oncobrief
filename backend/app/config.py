@@ -1,6 +1,9 @@
 """Runtime configuration — everything comes from environment variables."""
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 BASE_DIR = Path(__file__).resolve().parent.parent          # backend/
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))  # db + patient folders
@@ -8,7 +11,9 @@ STORAGE_DIR = DATA_DIR / "storage"                          # storage/<patient_i
 SEED_DIR = BASE_DIR / "seed"
 FRONTEND_DIST = Path(os.getenv("FRONTEND_DIST", BASE_DIR.parent / "frontend" / "dist"))
 
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DATA_DIR / 'oncobrief.db'}")
+DATABASE_URL = os.getenv("DATABASE_URL") or f"sqlite:///{DATA_DIR / 'oncobrief.db'}"
+if DATABASE_URL.startswith(("postgres://", "postgresql://")):
+    DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL.split("://", 1)[1]
 
 # LLM is optional. Without a key the brief is written by the deterministic engine.
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "none").lower()   # gemini | anthropic | openai | none

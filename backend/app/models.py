@@ -5,6 +5,7 @@ from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, Stri
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
+from .encrypted_types import EncryptedText
 
 
 class Meta(Base):
@@ -16,11 +17,11 @@ class Meta(Base):
 class Patient(Base):
     __tablename__ = "patients"
     id: Mapped[str] = mapped_column(String, primary_key=True)            # OB-2026-0001
-    abha_id: Mapped[str | None] = mapped_column(String, nullable=True)   # optional, no Aadhaar stored
+    abha_id: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
     name: Mapped[str] = mapped_column(String)
     sex: Mapped[str] = mapped_column(String)
     age: Mapped[int] = mapped_column(Integer)
-    phone: Mapped[str | None] = mapped_column(String, nullable=True)
+    phone: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
     preferred_language: Mapped[str] = mapped_column(String, default="en")
     cancer_type: Mapped[str | None] = mapped_column(String, nullable=True)
     stage: Mapped[str | None] = mapped_column(String, nullable=True)

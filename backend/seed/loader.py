@@ -72,7 +72,7 @@ def ensure_seeded(force: bool = False):
     db = SessionLocal()
     try:
         stamp = db.get(Meta, "seed_date")
-        if stamp and stamp.value == date.today().isoformat() and not force:
+        if stamp and not force:
             return
     finally:
         db.close()

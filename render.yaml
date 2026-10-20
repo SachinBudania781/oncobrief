@@ -6,6 +6,10 @@ services:
     plan: free
     healthCheckPath: /api/health
     envVars:
+      - key: DEMO_MODE
+        value: "true"
+      - key: COOKIE_SECURE
+        value: "true"
       - key: LLM_PROVIDER        # gemini | anthropic | openai | none
         value: none
       - key: LLM_API_KEY         # optional; set in the dashboard, never commit it

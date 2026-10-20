@@ -1,24 +1,17 @@
 """End-to-end API checks on a freshly seeded demo database (run: cd backend && pytest -q)."""
-import os
-import tempfile
-
-os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="oncobrief-test-")
-
-from fastapi.testclient import TestClient  # noqa: E402
-
-from app.main import app  # noqa: E402
-
-client = TestClient(app)
-client.__enter__()  # runs startup -> seeds the demo world
+import pytest
 
 
-def test_health_and_seed():
+def test_health_and_seed(client):
     assert client.get("/api/health").json()["status"] == "ok"
     stats = client.get("/api/stats").json()
     assert stats["patients"] >= 5 and stats["documents"] > 40
 
 
-def test_upload_requires_type_and_files_into_patient_folder():
+def test_upload_requires_type_and_files_into_patient_folder(client):
+    from app.services.ocr import TESSERACT_OK
+    if not TESSERACT_OK:
+        pytest.skip("Tesseract executable required for live scan OCR; PDF and text uploads are tested separately")
     scan = client.get("/api/scanner/scan").content
     bad = client.post("/api/documents", data={"patient_id": "OB-2026-0001", "category": "Lab report",
                                               "subtype": "Not a real type", "record_date": "2026-10-02T08:40"},
@@ -32,7 +25,7 @@ def test_upload_requires_type_and_files_into_patient_folder():
     assert values["Haemoglobin"]["value"] == 9.4 and values["Haemoglobin"]["flag"] == "L"
 
 
-def test_brief_cites_only_this_patients_documents():
+def test_brief_cites_only_this_patients_documents(client):
     for pid, visit in [("OB-2026-0001", "follow_up"), ("OB-2026-0002", "transfer"), ("OB-2026-0003", "new")]:
         b = client.post("/api/brief", json={"patient_id": pid, "visit_type": visit}).json()
         own = {d["tag"] for d in client.get(f"/api/patients/{pid}/documents").json()}
@@ -45,22 +38,22 @@ def test_brief_cites_only_this_patients_documents():
                         assert s in own, f"{s} cited for {pid} but not in their folder"
 
 
-def test_new_patient_brief_lists_missing_documents():
+def test_new_patient_brief_lists_missing_documents(client):
     b = client.post("/api/brief", json={"patient_id": "OB-2026-0003", "visit_type": "new"}).json()
     assert "Imaging: MRI" in b["content"]["missing_documents"]
 
 
-def test_negated_imaging_is_not_flagged():
+def test_negated_imaging_is_not_flagged(client):
     b = client.post("/api/brief", json={"patient_id": "OB-2026-0005", "visit_type": "follow_up"}).json()
     assert not [a for a in b["content"]["alerts"] if a.get("kind") == "imaging"]
 
 
-def test_schedule_detects_clashes():
+def test_schedule_detects_clashes(client):
     clashes = client.get("/api/schedule").json()["clashes"]
     kinds = {c["type"] for c in clashes}
     assert {"patient", "room"} <= kinds
 
 
-def test_search_reads_ocr_text():
+def test_search_reads_ocr_text(client):
     hits = client.get("/api/patients/OB-2026-0002/documents", params={"q": "EGFR"}).json()
     assert any("EGFR" in (h.get("snippet") or "") for h in hits)

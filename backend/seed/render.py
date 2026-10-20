@@ -36,7 +36,10 @@ def _font(bold=False, size=24):
         p = Path(d) / name
         if p.exists():
             return ImageFont.truetype(str(p), size)
-    return ImageFont.load_default()
+    win = Path("C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf")
+    if win.exists():
+        return ImageFont.truetype(str(win), size)
+    return ImageFont.load_default(size=size)
 
 
 def ddmmyyyy(d: datetime) -> str:

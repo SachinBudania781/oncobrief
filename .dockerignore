@@ -5,3 +5,9 @@ backend/data
 **/.pytest_cache
 .git
 docs/video
+.venv
+**/.test-data
+**/.env*
+**/*.log
+test-results
+.tools
