@@ -73,7 +73,7 @@ Also supply hospital contact/address and room directions, verified clinical prot
 
 ## Render and persistence
 
-The existing `render.yaml` remains a free fabricated-data demonstration. It enables secure cookies and uses Render's service URL for same-origin checks and QR links. No Render service has been created or changed as part of this work.
+The root `render.yaml` describes the original combined demonstration. The separate Round 2 services are deployed using the files in `deploy/`; see `DEPLOYMENT.md` for their URLs and free-hosting limits.
 
 Free Render filesystems do not preserve changes across redeploys/restarts. A paid persistent disk or external persistent storage is required for saved records. This is a hosting limitation, separate from the app's removal of the old automatic midnight reset. See [Render persistent disks](https://render.com/docs/disks) and [free service limits](https://render.com/docs/free).
 
@@ -100,14 +100,16 @@ Install `pip-audit` in your development environment if needed. Tests use separat
 
 ## Push when you are ready
 
-The verified remote is `https://github.com/SachinBudania781/oncobrief.git` and the current branch is `main`.
+The verified remote is `https://github.com/SachinBudania781/oncobrief.git` and the deployment branch is `deploy/round2-independent`.
 
 ```powershell
 Set-Location "C:\Users\Sachin_Budania\Downloads\oncobrief-repo\oncobrief"
 git status
 git add .
 git commit -m "Implement OncoBrief Round 2 connected care workflows"
-git push origin main
+git push origin deploy/round2-independent
 ```
+
+After pushing, use **Manual Deploy → Deploy latest commit** on each service you want to update. Render's GitHub connection currently does not include this repository, so a push alone does not redeploy these services.
 
 The plan document lives outside the Git repository and is not included by these commands. `.env`, generated data, test artifacts, the local Python environment and built frontend are ignored.

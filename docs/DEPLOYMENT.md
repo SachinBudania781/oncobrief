@@ -75,4 +75,6 @@ cd ..
 
 The smoke check verifies branding, phone manifests and icons, API GET/POST forwarding, secure session cookies, an authenticated patient list, and logout. It deliberately refuses non-demo environments. The backend test suite runs against SQLite locally and PostgreSQL 16 in CI.
 
-Use backend `/docs` for API integration. Configure provider keys and adapter endpoints on the backend only; `docs/INTEGRATIONS.md` lists their contracts. Never put API secrets in frontend build variables. Follow-up code pushes to the deployment branch can update the new services independently. Check each service's deployed commit before handing out its URL.
+Use backend `/docs` for API integration. Configure provider keys and adapter endpoints on the backend only; `docs/INTEGRATIONS.md` lists their contracts. Never put API secrets in frontend build variables.
+
+For updates, push `deploy/round2-independent`, then choose **Manual Deploy → Deploy latest commit** for each service you want to update. Render's current GitHub connection does not include this repository; public-repository deployments do not receive automatic push triggers. Automatic redeployment requires adding this repository to Render's GitHub connection. Check each service's deployed commit before handing out its URL.
