@@ -136,6 +136,7 @@ for router in (auth.router, round2.router, document_tools.router, operations.rou
     app.include_router(router)
 
 
+@app.head("/api/health", include_in_schema=False)
 @app.get("/api/health")
 def health():
     try:
