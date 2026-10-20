@@ -39,6 +39,7 @@ def blueprint(api_origin):
                 {"path": "/manifest.webmanifest", "name": "Cache-Control", "value": "no-cache"},
                 {"path": "/manifest.webmanifest", "name": "Content-Type", "value": "application/manifest+json"},
                 {"path": "/index.html", "name": "Cache-Control", "value": "no-cache"},
+                {"path": "/", "name": "Cache-Control", "value": "no-store"},
             ],
         })
     return {"services": services}
