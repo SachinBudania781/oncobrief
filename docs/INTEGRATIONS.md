@@ -8,7 +8,7 @@ Copy `.env.example` to `backend/.env` for local configuration, or enter the vari
 
 | Feature | Settings / input | Without them |
 | --- | --- | --- |
-| Optional generative clinician brief | `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, optionally `LLM_BASE_URL` | Deterministic cited brief and extractive companion work |
+| Cited clinician briefs, Ask my records / Ask the chart, Explain report | `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, optionally `LLM_BASE_URL` | Deterministic briefs, extractive answers and local report explanations remain available |
 | Patient phone OTP / SMS | `SMS_ADAPTER_URL`, `SMS_ADAPTER_KEY` | Demo sign-ins work; production OTP returns a setup error |
 | WhatsApp reminders/check-ins | `WHATSAPP_ADAPTER_URL`, `WHATSAPP_ADAPTER_KEY` | In-app reminders work |
 | Ordinary phone calls | `TELEPHONY_ADAPTER_URL`, `TELEPHONY_ADAPTER_KEY`, public HTTPS `PUBLIC_BASE_URL` | Browser call demo works; no ordinary phone rings |
@@ -27,7 +27,13 @@ Copy `.env.example` to `backend/.env` for local configuration, or enter the vari
 | Survivor buddies | `BUDDY_DIRECTORY_PATH`, trained volunteers and a navigator | Requests are recorded; matches are not fabricated |
 | Live scan OCR on Windows | Install Tesseract, set `TESSERACT_CMD` if outside PATH | PDF text extraction works; unreadable images require manual identity verification. Docker includes Tesseract |
 
-An **adapter URL is an HTTPS JSON service**, not a vendor's web page. Vendor keys alone do not implement an adapter. Connect an existing hospital gateway, or have a provider implement the contract below. This avoids pretending that CTRI, Jan Aushadhi, Bhashini and every wearable share one API format. No external service was contacted to send patient data during implementation.
+An **adapter URL is an HTTPS JSON service**, not a vendor's web page. Vendor keys alone do not implement an adapter. Connect an existing hospital gateway, or have a provider implement the contract below.
+
+## Record explanations with the shared AI provider
+
+The same backend provider powers clinician briefs, `POST /api/v2/patients/{id}/companion`, and `POST /api/v2/documents/{id}/explain?language=en`. Record answers and report explanations support `en`, `hi`, and `mr`. The document viewer requests generation only when Explain report is selected; the existing GET endpoint returns the local extractive preview without contacting a provider.
+
+Access checks run before retrieval. Only the authorized patient's report passages and permitted signed notes/check-ins enter the model context. Known identifying details and detected instruction lines are removed first. Responses must cite supplied sources; unknown citations, unsupported numbers, malformed responses and provider failures use the original extractive fallback. Fever/emergency routing and patient treatment-change questions are handled before AI generation. Provider/model and generation metadata distinguish generated responses from fallbacks without exposing credentials.
 
 ## Adapter contract
 

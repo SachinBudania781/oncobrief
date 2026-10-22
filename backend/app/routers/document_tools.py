@@ -4,13 +4,14 @@ import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select
 from ..config import DATA_DIR, STORAGE_DIR
 from ..db import get_db
-from ..models import Document, Medication
+from ..models import Document, Medication, Patient
 from ..round2_models import BulkImport, CareRecord, DocumentOwner
 from ..security import append_audit, encrypt_file, identity, read_file, require_patient, roles
 from ..services.ocr import extract_text
@@ -111,7 +112,8 @@ async def medicine_scan(patient_id: str, request: Request, file: UploadFile = Fi
 
 
 @router.get("/documents/{document_id}/explain")
-def explain(document_id: int, request: Request, language: str = "en", db=Depends(get_db)):
+@router.post("/documents/{document_id}/explain")
+def explain(document_id: int, request: Request, language: Literal["en", "hi", "mr"] = "en", db=Depends(get_db)):
     doc = db.get(Document, document_id)
     if not doc:
         raise HTTPException(404, "Document not found")
@@ -123,11 +125,36 @@ def explain(document_id: int, request: Request, language: str = "en", db=Depends
     labs = db.scalars(select(LabValue).where(LabValue.document_id == doc.id)).all()
     terms = {"Haemoglobin": "Haemoglobin carries oxygen in the blood.", "ANC": "ANC counts infection-fighting neutrophils.", "Platelets": "Platelets help blood clot.", "Creatinine": "Creatinine is one marker used when checking kidney function."}
     explanation = [{"text": f"{l.test}: {l.value} {l.unit}. {terms.get(l.test, 'Ask your team how this result fits your plan.')} " + ("The value is outside this report's reference range; your doctor interprets it in context." if l.flag else "The value is within this report's recorded reference range."), "source": f"D{doc.id}"} for l in labs]
-    return {"document_id": doc.id, "title": doc.title, "language": "en", "requested_language": language,
+    result = {"document_id": doc.id, "title": doc.title, "language": "en", "requested_language": language,
             "explanation": explanation, "original_excerpt": safe_text(doc.ocr_text)[:4000],
             "questions": ["What does this result mean for my current plan?", "Do I need a repeat test?", "Which symptoms should I report?"],
             "translation_required": language != "en", "source": f"D{doc.id}",
-            "notice": "Original text is shown for scans. A configured translation adapter can translate it; no prognosis is generated."}
+            "model": "records", "generation": "extractive",
+            "notice": "Read alongside the original report. Your treating team interprets findings in context."}
+    # Generating an explanation is an explicit action. Legacy GET remains a local preview.
+    if request.method == "POST":
+        from ..services.record_ai import explain_sources
+        evidence = safe_text(doc.ocr_text or "")[:10000]
+        if labs:
+            evidence += "\nRecorded lab values:\n" + json.dumps([
+                {"test": l.test, "value": l.value, "unit": l.unit, "flag": l.flag,
+                 "ref_low": l.ref_low, "ref_high": l.ref_high} for l in labs], ensure_ascii=False)
+        if evidence.strip():
+            generated = explain_sources(db.get(Patient, doc.patient_id),
+                [{"tag": f"D{doc.id}", "title": doc.title,
+                  "text": f"Report date: {doc.record_date:%Y-%m-%d}\n{evidence}"}],
+                "Explain this report's recorded findings in plain language. State what is missing or unclear. "
+                "Do not infer conclusions from unreadable text or propose a treatment plan.", language)
+            if generated:
+                result.update({"explanation": [{**item, "source": f"D{doc.id}"} for item in generated["items"]],
+                               "language": language, "translation_required": False,
+                               "model": generated["model"], "generation": generated["generation"]})
+                result["questions"] = {
+                    "en": result["questions"],
+                    "hi": ["मेरी उपचार योजना में इस नतीजे का क्या अर्थ है?", "क्या जाँच दोबारा करानी है?", "कौन से लक्षण अपनी टीम को बताऊँ?"],
+                    "mr": ["माझ्या उपचार योजनेसाठी या निकालाचा अर्थ काय आहे?", "ही तपासणी पुन्हा करावी लागेल का?", "कोणती लक्षणे उपचार पथकाला सांगावीत?"],
+                }[language]
+    return result
 
 
 @router.post("/patients/{patient_id}/bulk-import")

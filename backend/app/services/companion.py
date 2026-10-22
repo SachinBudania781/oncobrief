@@ -1,11 +1,11 @@
 from ..timeutil import utcnow
-"""Deterministic safety routing and patient-grounded retrieval. Clinical outputs stay drafts."""
+"""Deterministic safety routing and cited record answers. Clinical outputs stay drafts."""
 import re
 from datetime import datetime, timedelta
 from sqlalchemy import select
 from ..models import Activity, Appointment, Document, LabValue, Medication, MedLog, Patient, SymptomReport
 from ..round2_models import AccessGrant, Alert, Approval, CareRecord, LibraryItem, Notification, User
-from .retrieval import search_documents
+from .retrieval import question_documents
 
 EMERGENCY = {
     "en": "Go to the nearest emergency department now. Contact your care team while arranging help.",
@@ -139,7 +139,7 @@ def answer(db, pid, question, language="en", clinical_user=False, allow_notes=Tr
     for local,english in {"सीबीसी":"CBC","हीमोग्लोबिन":"haemoglobin","खून की रिपोर्ट":"CBC","रक्त तपासणी":"CBC","स्कैन":"scan","रिपोर्ट":"report","अहवाल":"report","मतली":"nausea","मळमळ":"nausea","थकान":"fatigue","थकवा":"fatigue"}.items():
         translated_query=translated_query.replace(local,english)
     docs = db.scalars(select(Document).where(Document.patient_id == pid)).all()
-    hits = search_documents(docs, translated_query)[:3]
+    hits = question_documents(docs, translated_query)
     note_hits=[]
     if allow_notes:
         terms=set(re.findall(r"\w{3,}",translated_query.lower()))-{"the","what","was","were","show","find","last"}
@@ -156,12 +156,13 @@ def answer(db, pid, question, language="en", clinical_user=False, allow_notes=Tr
         note_hits.sort(key=lambda x:(x[0],x[1].id),reverse=True)
     if not hits and not note_hits:
         return {"level": 0, "answer": {"en": "I could not find that in your records. Please ask your care team or upload the relevant report.", "hi": "यह जानकारी आपके रिकॉर्ड में नहीं मिली। अपनी देखभाल टीम से पूछें या संबंधित रिपोर्ट जोड़ें।", "mr": "ही माहिती तुमच्या नोंदीत सापडली नाही. उपचार पथकाला विचारा किंवा संबंधित अहवाल जोडा."}.get(language, "Not found in your records."), "sources": []}
-    lines, sources = [], []
+    lines, sources, context = [], [], []
     for _,r,text in note_hits[:2]:
         lines.append(f"{r.kind.replace('_',' ')} [R{r.id}] ({r.approved_by or r.author_name}):\n{safe_text(text)[:700]}")
         sources.append({"tag":f"R{r.id}","record_id":r.id,"title":r.kind.replace('_',' ')})
+        context.append({"tag": f"R{r.id}", "title": r.kind.replace('_', ' '), "text": safe_text(text)[:1800]})
     for d, snippet in hits:
-        clean = safe_text(snippet)[:700]
+        clean = safe_text(snippet)[:1800]
         if not clinical_user:
             active = db.scalars(select(Medication).where(Medication.patient_id == pid, Medication.active.is_(True))).all()
             allowed = lambda line: any(m.name.lower() in line.lower() and m.dose.lower() in line.lower() for m in active)
@@ -170,10 +171,21 @@ def answer(db, pid, question, language="en", clinical_user=False, allow_notes=Tr
             continue
         lines.append(f"{d.title} ({d.record_date:%d %b %Y}) [D{d.id}]\n{clean}")
         sources.append({"tag": f"D{d.id}", "title": d.title, "id": d.id})
+        context.append({"tag": f"D{d.id}", "title": d.title,
+                        "text": f"Report date: {d.record_date:%Y-%m-%d}\n{clean}"})
     prefix = {"en": "These are excerpts from your reports, not a new clinical recommendation:", "hi": "ये आपकी रिपोर्ट के अंश हैं, नई चिकित्सीय सलाह नहीं। मूल रिपोर्ट का पाठ:", "mr": "हे तुमच्या अहवालातील उतारे आहेत, नवीन वैद्यकीय सल्ला नाही. मूळ अहवालाचा मजकूर:"}.get(language, "From your records:")
     if not lines:
         return {"level": 2, "answer": "This passage needs your doctor's explanation. Please open your original record and ask your treating team.", "sources": []}
+    from .record_ai import explain_sources
+    generated = explain_sources(p, context, question, language)
+    if generated:
+        cited = {tag for item in generated["items"] for tag in item["sources"]}
+        return {"level": 0, "answer": "\n\n".join(item["text"] for item in generated["items"]),
+                "sources": [s for s in sources if s["tag"] in cited],
+                "citations": generated["items"], "language": language,
+                "model": generated["model"], "generation": generated["generation"], "translation": None}
     return {"level": 0, "answer": prefix + "\n\n" + "\n\n".join(lines), "sources": sources,
+            "model": "records", "generation": "extractive", "language": "en",
             "translation": "Original report language. Use configured translation for a translated transcript." if language != "en" else None}
 
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Camera, CheckCircle2, Flower2, Heart, Send } from "lucide-react";
 import { request, useResource, dateTime, nice } from "./client";
 import {
@@ -223,26 +223,35 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
     [messages, setMessages] = useState([]),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const activeRequest = useRef(0);
   useEffect(() => {
+    activeRequest.current += 1;
     setMessages([]);
     setText("");
+    setBusy(false);
+    setError("");
+    return () => { activeRequest.current += 1; };
   }, [pid]);
   const send = async (e) => {
     e.preventDefault();
-    if (!text.trim()) return;
+    if (!text.trim() || busy) return;
+    const question = text.trim();
+    const current = ++activeRequest.current;
     setBusy(true);
     setError("");
     try {
       const r = await request(`/v2/patients/${pid}/companion`, "POST", {
-        text,
+        text: question,
         language,
       });
-      setMessages((m) => [...m, { question: text, ...r }]);
-      setText("");
+      if (current === activeRequest.current) {
+        setMessages((m) => [...m, { question, ...r }]);
+        setText("");
+      }
     } catch (e) {
-      setError(e.message);
+      if (current === activeRequest.current) setError(e.message);
     } finally {
-      setBusy(false);
+      if (current === activeRequest.current) setBusy(false);
     }
   };
   return (
@@ -264,8 +273,13 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
               <Emergency result={m} />
             ) : (
               <>
-                <p className="care-pre">{m.answer}</p>
-                <SourceLinks sources={m.sources} onOpen={onOpen} />
+                {m.citations?.length ? m.citations.map((item, index) => (
+                  <div key={index}>
+                    <p className="care-pre">{item.text}</p>
+                    <SourceLinks sources={m.sources.filter((s) => item.sources.includes(s.tag))} onOpen={onOpen} />
+                  </div>
+                )) : <><p className="care-pre">{m.answer}</p><SourceLinks sources={m.sources} onOpen={onOpen} /></>}
+                {m.generation && <span className="small muted">{m.generation === "ai" ? "AI-assisted" : "From your records"}</span>}
                 <Voice text={m.answer} language={language} />
                 {m.translation && (
                   <p className="small muted">{m.translation}</p>
@@ -291,6 +305,7 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
           <textarea
             className="input"
             required
+            disabled={busy}
             rows={3}
             value={text}
             onChange={(e) => setText(e.target.value)}

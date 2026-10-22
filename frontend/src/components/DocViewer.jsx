@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Download, ScanText } from "lucide-react";
 import { api, fmtDate } from "../api";
 import { request } from "../care/client";
@@ -11,6 +11,9 @@ export default function DocViewer({ docId, onClose }) {
   const [page, setPage] = useState(0);
   const [focus, setFocus] = useState("");
   const [explanation, setExplanation] = useState(null);
+  const [explaining, setExplaining] = useState(false);
+  const [language, setLanguage] = useState("en");
+  const explanationRequest = useRef(0);
   const [view, setView] = useState("original");
   useEffect(() => {
     if (!docId) return;
@@ -19,6 +22,9 @@ export default function DocViewer({ docId, onClose }) {
     setPage(0);
     setFocus("");
     setExplanation(null);
+    setExplaining(false);
+    setLanguage("en");
+    explanationRequest.current += 1;
     setView("original");
     let live = true;
     const load = () =>
@@ -34,9 +40,31 @@ export default function DocViewer({ docId, onClose }) {
     const timer = setInterval(load, 150000);
     return () => {
       live = false;
+      explanationRequest.current += 1;
       clearInterval(timer);
     };
   }, [docId]);
+  const explainReport = async () => {
+    if (!doc || explaining) return;
+    if (explanation?.requested_language === language) {
+      setView("text");
+      return;
+    }
+    const current = ++explanationRequest.current;
+    setExplaining(true);
+    setErr("");
+    try {
+      const result = await request(`/v2/documents/${doc.id}/explain?language=${language}`, "POST", {});
+      if (current === explanationRequest.current) {
+        setExplanation(result);
+        setView("text");
+      }
+    } catch (e) {
+      if (current === explanationRequest.current) setErr(e.message);
+    } finally {
+      if (current === explanationRequest.current) setExplaining(false);
+    }
+  };
   if (!docId) return null;
   const isPdf = doc?.mime === "application/pdf";
   const lowOcr = doc?.ocr_confidence != null && doc.ocr_confidence < 75;
@@ -49,7 +77,7 @@ export default function DocViewer({ docId, onClose }) {
     ) || [];
   return (
     <Modal title={doc?.title || "Original document"} onClose={onClose} className="care-document-overlay">
-        {doc && <div className="document-heading"><div className="document-metadata"><span className="care-pill">{doc.tag} · {doc.subtype}</span><span>{fmtDate(doc.record_date)}</span><span>{doc.external_hospital || doc.uploaded_by}</span></div><div className="document-actions"><a className="btn" href={doc.file_url} target="_blank" rel="noreferrer"><Download size={16} />Original file</a><button className="btn primary" onClick={() => request(`/v2/documents/${doc.id}/explain`).then(result => {setExplanation(result); setView("text");}).catch(e => setErr(e.message))}><ScanText size={16} />Explain report</button></div></div>}
+        {doc && <div className="document-heading"><div className="document-metadata"><span className="care-pill">{doc.tag} · {doc.subtype}</span><span>{fmtDate(doc.record_date)}</span><span>{doc.external_hospital || doc.uploaded_by}</span></div><div className="document-actions"><a className="btn" href={doc.file_url} target="_blank" rel="noreferrer"><Download size={16} />Original file</a><select className="select" aria-label="Explanation language" value={language} disabled={explaining} onChange={(e) => { setLanguage(e.target.value); setExplanation(null); }}><option value="en">English</option><option value="hi">हिंदी</option><option value="mr">मराठी</option></select><button className="btn primary" disabled={explaining} aria-busy={explaining} onClick={explainReport}><ScanText size={16} />{explaining ? "Explaining…" : "Explain report"}</button></div></div>}
         <div className="document-mobile-tabs" aria-label="Document view"><button aria-pressed={view === "original"} className={view === "original" ? "active" : ""} onClick={() => setView("original")}>Original</button><button aria-pressed={view === "text"} className={view === "text" ? "active" : ""} onClick={() => setView("text")}>Extracted text</button></div>
         {err && <div className="empty">{err}</div>}
         {doc && (
@@ -154,6 +182,7 @@ export default function DocViewer({ docId, onClose }) {
               {explanation && (
                 <div className="care-notice">
                   <h3>Plain-language explanation · {explanation.source}</h3>
+                  <span className="small muted">{explanation.generation === "ai" ? "AI-assisted" : "From your records"}</span>
                   {explanation.explanation.map((x, i) => (
                     <p key={i}>{x.text}</p>
                   ))}

@@ -1,4 +1,4 @@
-"""Provider-agnostic LLM call. Only used to write the narrative part of the doctor's brief.
+"""Provider-agnostic LLM call for cited briefs and record explanations.
 Returns None on any failure so the caller falls back to the deterministic writer."""
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import httpx
 from .. import config
 
 DEFAULT_MODELS = {
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3.5-flash-lite",
     "anthropic": "claude-haiku-4-5-20251001",
     "openai": "gpt-4o-mini",
 }

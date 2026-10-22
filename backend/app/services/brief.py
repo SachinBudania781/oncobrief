@@ -1,4 +1,4 @@
-"""The doctor's brief — the ONLY place AI is used.
+"""The doctor's brief — a cited narrative with deterministic clinical alerts.
 
 Pipeline (one request):
   1. structured pull (SQL)          — profile, labs, meds, symptoms, missed doses, appointments

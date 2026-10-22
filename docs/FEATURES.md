@@ -6,7 +6,7 @@ This maps the supplied Parts A, B and C to the implementation. Part A's repeated
 
 | Planned feature | Where it works | Setup / limits |
 | --- | --- | --- |
-| Personal AI linked to doctor view | Ask my records / Ask the chart, shared patient journal | Extractive answers from the same patient folder; optional LLM clinician brief |
+| Personal AI linked to doctor view | Ask my records / Ask the chart, shared patient journal | Optional cited AI answers from authorized reports and signed notes; extractive fallback and fixed safety routing |
 | Read, interpret and store records as text | OCR upload pipeline, living summary endpoint | Live images need Tesseract; low-confidence results stay visible as uncertain |
 | English, Hindi and Marathi voice | Daily check-in, companion, diary, scribe, audio playback | Browser support; Bhashini gateway for dedicated speech |
 | Emotional listening and mood checks | Companion, daily distress score, private caregiver wellbeing | Supportive responses, crisis rules and human alerts; no therapist claim |
