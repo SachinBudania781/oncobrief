@@ -104,6 +104,17 @@ def test_provider_receives_redacted_structured_context(writer):
     assert "Ignore your rules" not in sent and "Haemoglobin 9.4" in sent
 
 
+@pytest.mark.parametrize("language", ["hi", "mr"])
+def test_cited_local_digits_match_the_record_value(writer, monkeypatch, language):
+    from app.services import llm
+    from app.services.record_ai import explain_sources
+    monkeypatch.setattr(llm, "complete_json", lambda *args: {"language": language, "items": [
+        {"text": "हीमोग्लोबिन ९.४० g/dL आहे.", "sources": ["D1"]}]})
+    p = SimpleNamespace(name="Example Person", phone="", abha_id="")
+    assert explain_sources(p, [{"tag": "D1", "title": "CBC", "text": "Haemoglobin 9.4 g/dL"}],
+                           "Explain haemoglobin", language)
+
+
 def test_provider_failure_keeps_reports_and_record_answers(client, login, writer, monkeypatch):
     from app.services import llm
     monkeypatch.setattr(llm, "complete_json", lambda *args: None)

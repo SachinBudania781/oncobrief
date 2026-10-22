@@ -1,6 +1,9 @@
 """Cited explanations of authorized records, with extractive fallbacks in callers."""
 import json
+import logging
 import re
+import unicodedata
+from decimal import Decimal
 
 from . import llm
 from .deidentify import for_model
@@ -23,10 +26,22 @@ Keep source tags in the sources array, not inside text. If the sources cannot an
 the question, return an empty items array. Do not add unrelated education or advice.
 """
 NUMBER = re.compile(r"(?<!\w)\d+(?:\.\d+)?")
+logger = logging.getLogger(__name__)
 PRESCRIPTIVE = re.compile(
     r"\b(?:you (?:should|must|need to)|i (?:recommend|prescribe)|we recommend)\s+"
     r"(?:start|stop|take|change|increase|reduce|double|skip|switch)\b", re.I
 )
+
+
+def _numbers(text):
+    normalized = "".join(str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text)
+    return {Decimal(value) for value in NUMBER.findall(normalized)}
+
+
+def _fallback(reason):
+    # Only a category is logged: never prompts, reports, credentials or provider URLs.
+    logger.warning("Record AI fallback: %s", reason)
+    return None
 
 
 def explain_sources(patient, sources, question, language="en"):
@@ -42,25 +57,26 @@ def explain_sources(patient, sources, question, language="en"):
                           "SOURCES": context}, ensure_ascii=False, indent=2)
     result = llm.complete_json(SYSTEM + f"\nRespond in {LANGUAGES[language]} ({language}).", payload)
     if not isinstance(result, dict) or result.get("language") != language:
-        return None
+        return _fallback("unavailable_or_language")
     items = result.get("items")
     if not isinstance(items, list) or not 1 <= len(items) <= 6:
-        return None
+        return _fallback("response_shape")
     by_tag = {s["tag"]: s for s in context}
     clean = []
     for item in items:
         if not isinstance(item, dict):
-            return None
+            return _fallback("paragraph_shape")
         text, cited = item.get("text"), item.get("sources")
         if (not isinstance(text, str) or not text.strip() or len(text) > 1400
                 or not isinstance(cited, list) or not cited
                 or any(not isinstance(tag, str) or tag not in by_tag for tag in cited)):
-            return None
+            return _fallback("paragraph_or_citation")
         # A real citation does not make an invented lab value or dose acceptable.
         evidence = "\n".join(by_tag[tag]["text"] for tag in cited)
-        if (set(NUMBER.findall(text)) - set(NUMBER.findall(evidence))
-                or PRESCRIPTIVE.search(text) or re.search(r"https?://|<[^>]+>", text)):
-            return None
+        if _numbers(text) - _numbers(evidence):
+            return _fallback("unsupported_number")
+        if PRESCRIPTIVE.search(text) or re.search(r"https?://|<[^>]+>", text):
+            return _fallback("unsafe_content")
         clean.append({"text": text.strip(), "sources": list(dict.fromkeys(cited))})
     return {"items": clean, "model": f"{llm.config.LLM_PROVIDER}:{llm.model_name()}",
             "generation": "ai", "language": language}
