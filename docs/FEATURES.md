@@ -18,7 +18,7 @@ This maps the supplied Parts A, B and C to the implementation. Part A's repeated
 | Visit preparation and takeaways | Visit prep; Plans & journal → Visit takeaways | Patient/family/nurse can draft; doctor signs and creates next-step reminders |
 | Medicine request tracker | Medicines & requests / Doctor approvals | Sent → reviewing → approved; approved medicines create reminder times |
 | Safe Indian meal plan | Food, energy & play; preferences and nutrition journal | Curated vegetarian/Jain/non-vegetarian examples; doctor and dietitian approval in production; not an autonomous diet prescription |
-| Energy-based activity, hobbies and games | Wellness guidance, manual/wearable activity, memory game | Recorded fatigue/count flags constrain suggestions; signed guidance library |
+| Energy-based activity, hobbies and games | Wellness guidance, manual activity and consented Bluetooth wearable trends, memory game | Recorded fatigue/count flags constrain suggestions; signed guidance library |
 | Scheme and money navigator | Money & schemes + finance workflow | Official PM-JAY verification link and entered quote/confirmed-cover calculation; no eligibility or reimbursement guarantee |
 | One-trip planner and nearby stays | Day pass and booking | Shared date/department bookings; nearby search needs hospital address |
 | Trial matching and information | Connected services → trials; clinical trial review workflow | CTRI gateway or verified manual registry entry; doctor sees and signs first |

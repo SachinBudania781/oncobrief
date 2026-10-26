@@ -6,7 +6,7 @@ import math
 import os
 import re
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -14,7 +14,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from ..db import get_db
-from ..models import Activity, Appointment, Document, LabValue, Medication, MedLog, Patient, SymptomReport
+from ..models import Activity, Appointment, Document, LabValue, Medication, MedLog, Patient, SymptomReport, WearableReading
 from ..round2_models import AccessGrant, Alert, Approval, CareRecord, LibraryItem, Notification, ShareLink, User, TreatingClinician
 from ..security import DEMO_MODE, append_audit, digest, identity, password_hash, require_patient, roles, verify_chain, visible_ids
 from ..services.companion import EMERGENCY, alert, answer, command_centre, living_summary, notify_team, records, red_flags, safe_text
@@ -726,6 +726,73 @@ def add_activity(patient_id: str, body: ActivityIn, request: Request, db=Depends
     db.commit()
     return {"ok": True, "source": "manual entry"}
 
+
+class WearablePointIn(BaseModel):
+    observed_at: datetime
+    metric: Literal["heart_rate", "spo2", "systolic", "diastolic", "steps", "distance_km", "active_minutes", "sleep_hours", "temperature_c"]
+    value: float = Field(allow_inf_nan=False)
+    unit: str = Field(max_length=12)
+
+
+class WearableBatchIn(BaseModel):
+    consent: bool
+    source: Literal["bluetooth", "manual"] = "bluetooth"
+    device_name: str = Field(default="", max_length=100)
+    readings: list[WearablePointIn] = Field(min_length=1, max_length=100)
+
+
+WEARABLE_UNITS = {
+    "heart_rate": "bpm", "spo2": "%", "systolic": "mmHg", "diastolic": "mmHg",
+    "steps": "steps", "distance_km": "km", "active_minutes": "min",
+    "sleep_hours": "h", "temperature_c": "°C",
+}
+WEARABLE_RANGES = {
+    "heart_rate": (20, 260), "spo2": (50, 100), "systolic": (50, 280), "diastolic": (25, 180),
+    "steps": (0, 200000), "distance_km": (0, 150), "active_minutes": (0, 1440),
+    "sleep_hours": (0, 24), "temperature_c": (25, 45),
+}
+
+
+@router.get("/v2/patients/{patient_id}/wearables")
+def wearable_history(patient_id: str, request: Request, days: int = 30, db=Depends(get_db)):
+    patient_access(db, request, patient_id, "activity")
+    days = min(365, max(1, days))
+    since = utcnow() - timedelta(days=days)
+    rows = db.scalars(select(WearableReading).where(
+        WearableReading.patient_id == patient_id, WearableReading.observed_at >= since
+    ).order_by(WearableReading.observed_at.desc()).limit(5000)).all()
+    rows.reverse()
+    return {"days": days, "items": [serial(row) for row in rows]}
+
+
+@router.post("/v2/patients/{patient_id}/wearables")
+def save_wearable_readings(patient_id: str, body: WearableBatchIn, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "activity")
+    roles(user, "patient", "caregiver")
+    if not body.consent:
+        raise HTTPException(422, "Explicit consent is required before saving wearable readings")
+    saved = []
+    for point in body.readings:
+        if point.unit != WEARABLE_UNITS[point.metric]:
+            raise HTTPException(422, f"Use {WEARABLE_UNITS[point.metric]} for {point.metric}")
+        low, high = WEARABLE_RANGES[point.metric]
+        if point.value < low or point.value > high:
+            raise HTTPException(422, f"{point.metric} reading is outside the accepted storage range")
+        observed_at = point.observed_at
+        if observed_at.tzinfo is not None:
+            observed_at = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
+        if observed_at > utcnow() + timedelta(minutes=5):
+            raise HTTPException(422, "A wearable reading cannot be more than five minutes in the future")
+        row = WearableReading(
+            patient_id=patient_id, metric=point.metric, value=point.value, unit=point.unit,
+            observed_at=observed_at, source=body.source, device_name=body.device_name.strip()[:100],
+        )
+        db.add(row)
+        saved.append(row)
+    append_audit(db, user, "wearable_readings_saved", patient_id,
+                 f"{len(saved)} {body.source} readings; device name only")
+    db.commit()
+    return {"saved": len(saved), "source": body.source}
 
 @router.get("/v2/patients/{patient_id}/clinical")
 def clinical_dashboard(patient_id: str, request: Request, db=Depends(get_db)):

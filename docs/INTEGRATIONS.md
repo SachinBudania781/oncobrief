@@ -20,7 +20,7 @@ Copy `.env.example` to `backend/.env` for local configuration, or enter the vari
 | Cross-hospital evidence | `EVIDENCE_ADAPTER_URL`, `EVIDENCE_ADAPTER_KEY` | No invented cohort evidence; consented local cohorts require at least 10 matching real records |
 | Photo severity / meal estimates | `VISION_ADAPTER_URL`, `VISION_API_KEY` | Photo history and manual clinician/dietitian entries work; AI output remains a review draft |
 | AQI / weather | `ENVIRONMENT_ADAPTER_URL`, `ENVIRONMENT_API_KEY` | Approved seasonal advice works; no live AQI or forecast is invented |
-| Wearables | `WEARABLE_ADAPTER_URL`, `WEARABLE_API_KEY` | Explicitly labelled manual activity entry works |
+| Wearables | Standard BLE GATT profiles can be read directly in supported secure browsers; `WEARABLE_ADAPTER_URL`, `WEARABLE_API_KEY` remain for vendor/hospital adapters | Patient-consented live capture supports standard heart-rate, blood-pressure, pulse-oximeter and thermometer services while the page stays open; steps/distance/sleep need manual entry or a vendor/phone-health feed. WHOOP history requires a separately registered OAuth app. |
 | Video visits | `TELEMEDICINE_ADAPTER_URL`, `TELEMEDICINE_API_KEY` | Scheduling and care chat work |
 | ER pre-alert | `ER_ALERT_ADAPTER_URL`, `ER_ALERT_ADAPTER_KEY` | Emergency instructions, nurse triage, share card and maps link work; ER delivery is not claimed |
 | Navigation and care contact | `HOSPITAL_ADDRESS`, `HOSPITAL_EMERGENCY_PHONE`, `PUBLIC_BASE_URL` | No invented hospital address, phone or indoor route |

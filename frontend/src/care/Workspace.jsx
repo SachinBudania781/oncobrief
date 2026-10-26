@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   Stethoscope,
   Users,
+  Watch,
   QrCode,
   ArrowUpRight,
   ArrowRight,
@@ -65,6 +66,8 @@ import DocViewer from "../components/DocViewer";
 import QrScanner from "../components/QrScanner";
 import Brief from "../apps/doctor/Brief";
 import "./care.css";
+import AIAssistantWidget from "./AIAssistantWidget";
+import Wearables from "./Wearables";
 import "./interface.css";
 
 const NAV = [
@@ -77,6 +80,7 @@ const NAV = [
   ["chat", "Care circle chat", HeartHandshake, "chat"],
   ["day", "Hospital day pass", CalendarDays, "appointments"],
   ["wellness", "Wellbeing", Flower2, "nutrition"],
+  ["wearables", "Wearables", Watch, "activity"],
   ["records", "Reports & uploads", FileStack, "documents"],
   ["money", "Money & schemes", CircleHelp, "finance"],
   ["circle", "Caregiver consent", Users, "patient"],
@@ -160,7 +164,7 @@ function CareSpace() {
   };
   const nav = NAV.filter(
     (n) =>
-      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])),
+      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])) && (n[0] !== "wearables" || ["patient", "caregiver"].includes(user.role)),
   );
   useEffect(() => {
     if (!nav.some((n) => n[0] === tab)) setTab("home");
@@ -410,6 +414,7 @@ function CareSpace() {
                   canTeachBack={can("notes")}
                 />
               )}
+              {tab === "wearables" && <Wearables pid={pid} demo={Boolean(user.demo)} />}
               {tab === "records" && (
                 <RecordsDesk pid={pid} user={user} onOpen={setDocId} />
               )}
@@ -460,6 +465,7 @@ function CareSpace() {
         />
       )}
       {docId && <DocViewer docId={docId} onClose={() => setDocId(null)} />}
+      {portal === "patient" && can("documents") && pid && <AIAssistantWidget pid={pid} language={language} onOpen={setDocId} />}
     </div>
   );
 }

@@ -129,6 +129,19 @@ class Activity(Base):
     resting_hr: Mapped[int] = mapped_column(Integer)
 
 
+class WearableReading(Base):
+    __tablename__ = 'wearable_readings'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    patient_id: Mapped[str] = mapped_column(ForeignKey('patients.id'), index=True)
+    metric: Mapped[str] = mapped_column(String, index=True)
+    value: Mapped[float] = mapped_column(Float)
+    unit: Mapped[str] = mapped_column(String)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    source: Mapped[str] = mapped_column(String, default='bluetooth')
+    device_name: Mapped[str] = mapped_column(String, default='')
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
 class Brief(Base):
     __tablename__ = "briefs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
