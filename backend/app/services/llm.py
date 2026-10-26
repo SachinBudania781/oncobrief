@@ -1,4 +1,4 @@
-"""Provider-agnostic LLM call. Only used to write the narrative part of the doctor's brief.
+"""Provider-agnostic LLM call for cited briefs and record explanations.
 Returns None on any failure so the caller falls back to the deterministic writer."""
 from __future__ import annotations
 
@@ -10,14 +10,17 @@ import httpx
 from .. import config
 
 DEFAULT_MODELS = {
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3.5-flash-lite",
     "anthropic": "claude-haiku-4-5-20251001",
     "openai": "gpt-4o-mini",
 }
 
 
 def enabled() -> bool:
-    return config.LLM_PROVIDER in DEFAULT_MODELS and bool(config.LLM_API_KEY)
+    import os
+    from ..security import DEMO_MODE
+    allowed = DEMO_MODE or os.getenv("LLM_DATA_PROCESSING_APPROVED") == "true"
+    return allowed and config.LLM_PROVIDER in DEFAULT_MODELS and bool(config.LLM_API_KEY)
 
 
 def model_name() -> str:
@@ -76,5 +79,5 @@ def complete_json(system: str, user: str, timeout: float = 25.0):
             text = r.json()["choices"][0]["message"]["content"]
         return _extract_json(text)
     except Exception as exc:  # network, quota, parsing — never break the demo
-        print(f"[llm] falling back: {exc!r}")
+        print(f"[llm] falling back ({type(exc).__name__})")
         return None

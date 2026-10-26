@@ -5,6 +5,14 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
+.env.*
+!.env.example
+.venv/
+.test-data/
+test-results/
+playwright-report/
+frontend/public/swagger/
+*.log
 .DS_Store
 .vscode/
 .idea/

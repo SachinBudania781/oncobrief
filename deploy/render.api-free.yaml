@@ -1,0 +1,39 @@
+# Development only. Free Postgres expires after 30 days; uploads are ephemeral.
+# This creates separate services and does not replace the Round 1 prototype.
+services:
+  - type: web
+    name: oncobrief-round2-api
+    runtime: docker
+    dockerfilePath: ./deploy/api.Dockerfile
+    dockerContext: .
+    region: singapore
+    plan: free
+    healthCheckPath: /api/health
+    numInstances: 1
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: DEMO_MODE
+        value: "true"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: LLM_PROVIDER
+        value: none
+      - key: DATABASE_URL
+        fromDatabase:
+          name: oncobrief-round2-db
+          property: connectionString
+      - key: DATA_ENCRYPTION_KEY
+        generateValue: true
+      - key: FILE_SIGNING_KEY
+        generateValue: true
+      # Fill these with the actual frontend URLs after Render assigns them.
+      - key: ALLOWED_ORIGINS
+        value: https://frontend-urls-not-configured.invalid
+databases:
+  - name: oncobrief-round2-db
+    databaseName: oncobrief_round2_db
+    user: oncobrief_round2_db_user
+    region: singapore
+    plan: free
+    postgresMajorVersion: "16"
+    ipAllowList: []

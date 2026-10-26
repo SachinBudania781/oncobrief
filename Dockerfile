@@ -1,5 +1,6 @@
 # ---- 1. build the React frontend (three apps in one SPA) ----
-FROM node:20-slim AS web
+FROM node:24-slim AS web
+ENV SCARF_ANALYTICS=false
 WORKDIR /web
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund

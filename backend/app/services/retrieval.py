@@ -103,3 +103,34 @@ def search_documents(docs: list[Document], query: str) -> list[tuple[Document, s
             s = max(idx - 60, 0)
             out.append((d, hay[s: idx + len(q) + 80].replace("\n", " ")))
     return out
+
+
+def question_documents(docs: list[Document], query: str, limit: int = 3) -> list[tuple[Document, str]]:
+    """Retrieve relevant passages from this patient's folder for a natural question."""
+    stop = {"what", "does", "did", "the", "this", "that", "these", "those", "my", "your",
+            "about", "say", "says", "show", "shows", "find", "please", "explain", "help",
+            "have", "has", "had", "are", "was", "were", "can", "could", "would", "tell",
+            "report", "reports", "record", "records", "latest", "last", "recent", "mean",
+            "means", "meaning", "result", "results", "and", "for", "with", "from", "how",
+            "me", "do", "is", "in", "of", "to", "on", "history", "information", "details"}
+    aliases = {"hemoglobin": "haemoglobin", "hb": "haemoglobin", "blood": "cbc",
+               "heart": "echo", "platelet": "platelets", "neutrophils": "anc"}
+    terms = {aliases.get(t, t) for t in tokenize(query)} - stop
+    exact = search_documents(docs, query)
+    exact_ids = {d.id for d, _ in exact}
+    ranked = []
+    for doc in docs:
+        passages = chunk(doc, size=1800, overlap=250)
+        best = None
+        for passage in passages:
+            hay = f"{doc.title} {doc.subtype} {passage['text']}".lower()
+            words = {aliases.get(t, t) for t in tokenize(hay)}
+            score = len(terms & words) + (3 if doc.id in exact_ids else 0)
+            if not terms:
+                score = 1
+            if score and (best is None or score > best[0]):
+                best = (score, passage["text"])
+        if best:
+            ranked.append((best[0], doc.record_date, doc.id, doc, best[1]))
+    ranked.sort(key=lambda row: row[:3], reverse=True)
+    return [(row[3], row[4]) for row in ranked[:limit]]

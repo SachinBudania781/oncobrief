@@ -1,11 +1,18 @@
 {
   "name": "oncobrief-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "2.0.0",
   "type": "module",
+  "scarfSettings": { "enabled": false },
   "scripts": {
+    "prebuild": "node scripts/copy-swagger.mjs",
+    "predev": "node scripts/copy-swagger.mjs",
     "dev": "vite",
     "build": "vite build",
+    "build:patient": "node scripts/build-apps.mjs patient",
+    "build:doctor": "node scripts/build-apps.mjs doctor",
+    "build:staff": "node scripts/build-apps.mjs staff",
+    "build:apps": "node scripts/build-apps.mjs all",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -15,11 +22,12 @@
     "lucide-react": "^1.50.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.30.6",
+    "react-router-dom": "^7.18.4",
     "recharts": "^2.15.4"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.7.0",
-    "vite": "^5.4.21"
+    "@vitejs/plugin-react": "^5.0.0",
+    "vite": "^7.3.0",
+    "swagger-ui-dist": "^5.29.0"
   }
 }

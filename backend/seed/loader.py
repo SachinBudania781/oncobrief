@@ -1,4 +1,4 @@
-"""Seeds the demo database on startup (and every new day, so 'today's clinic' is always today).
+"""Seed a new demo once and recover fabricated source files on ephemeral hosts.
 
 Scanned demo pages are OCR'd once at build time (python -m seed.loader --build-ocr) and the text is stored in
 seed/ocr_manifest.json; at seed time the pages are re-rendered with today's dates and the stored OCR text gets
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from app.config import DATA_DIR, STORAGE_DIR
 from app.db import Base, SessionLocal, engine
-from app.models import Activity, Appointment, Medication, MedLog, Meta, Patient, SymptomReport
+from app.models import Activity, Appointment, Document, Medication, MedLog, Meta, Patient, SymptomReport
 from app.routers.documents import store_document
 from app.services.ocr import extract_text
 from app.taxonomy import CATEGORIES, SYMPTOMS
@@ -67,12 +67,48 @@ def _at(day_offset: int, hhmm: str, today: datetime) -> datetime:
     return (today + timedelta(days=day_offset)).replace(hour=int(hhmm[:2]), minute=int(hhmm[3:]))
 
 
+def restore_demo_files(db):
+    """Recreate only known seed fixtures; never reset rows or recreate user uploads."""
+    from app.security import DEMO_MODE, encrypt_file
+    if not DEMO_MODE:
+        return
+    patients = {patient["id"]: patient for patient in data.PATIENTS}
+    restored = 0
+    seed_day = None
+    with tempfile.TemporaryDirectory() as tmp:
+        # A fresh seed inserts these fixtures first, in this fixed order. Require
+        # their full identity too, so later uploads cannot become seed fixtures.
+        for document_id, spec in enumerate(data.DOCUMENTS, 1):
+            doc = db.get(Document, document_id)
+            if not doc or (doc.patient_id, doc.title, doc.category, doc.subtype, doc.source) != (
+                    spec["pid"], spec["title"], spec["category"], spec["subtype"], spec["source"]):
+                continue
+            day = datetime.combine((doc.record_date - timedelta(days=spec["day"])).date(), datetime.min.time())
+            seed_day = seed_day or day
+            dest = (DATA_DIR / doc.file_path).resolve()
+            if not dest.is_relative_to(STORAGE_DIR.resolve()) or dest.exists():
+                continue
+            rendered = render(spec, patients[spec["pid"]], day, Path(tmp) / f"d{document_id}")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(rendered, dest)
+            encrypt_file(dest)
+            restored += 1
+        SCANNER_DIR.mkdir(parents=True, exist_ok=True)
+        for index, spec in enumerate(data.SCANNER_SAMPLES):
+            stem = SCANNER_DIR / f"scan_{index:02d}_{spec['subtype'].lower()}"
+            if not any(SCANNER_DIR.glob(stem.name + ".*")):
+                render(spec, patients[spec["pid"]], seed_day or datetime.combine(date.today(), datetime.min.time()), stem)
+    if restored:
+        print(f"[seed] restored {restored} fabricated demo source files; database unchanged")
+
+
 def ensure_seeded(force: bool = False):
     Base.metadata.create_all(engine)
     db = SessionLocal()
     try:
         stamp = db.get(Meta, "seed_date")
-        if stamp and stamp.value == date.today().isoformat() and not force:
+        if stamp and not force:
+            restore_demo_files(db)
             return
     finally:
         db.close()

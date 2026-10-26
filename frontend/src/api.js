@@ -1,11 +1,11 @@
 // Thin API client. The acting role is sent with every request so the backend can keep an audit log.
-let actor = { role: 'anonymous', name: 'Demo user' }
-export const setActor = (role, name) => { actor = { role, name } }
+export const setActor = () => {} // identity comes exclusively from the server session
 
 async function req(path, opts = {}) {
-  const headers = { 'X-Actor-Role': actor.role, 'X-Actor-Name': actor.name, ...(opts.headers || {}) }
+  const headers = { ...(opts.headers || {}) }
   const res = await fetch(path, { ...opts, headers })
   if (!res.ok) {
+    if (res.status === 401) window.dispatchEvent(new Event('ob-session-expired'))
     let msg = `${res.status} ${res.statusText}`
     try { const j = await res.json(); msg = j.detail || msg } catch { /* not json */ }
     throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
