@@ -112,7 +112,8 @@ function CareSpace() {
     [language, setLanguage] = useState("en"),
     [menu, setMenu] = useState(false),
     [showNotifications, setShowNotifications] = useState(false),
-    [revision, setRevision] = useState(0);
+    [revision, setRevision] = useState(0),
+    [activityFocus, setActivityFocus] = useState(0);
   const [qr, setQr] = useState(false),
     [qrError, setQrError] = useState("");
   const [focusedRecordId, setFocusedRecordId] = useState(null);
@@ -153,7 +154,7 @@ function CareSpace() {
       "privacy",
       "settings",
     ],
-    frontdesk: ["home", "day", "transport", "schedule", "privacy", "settings"],
+    frontdesk: ["home", "day", "transport", "schedule", "wearables", "privacy", "settings"],
     navigator: [
       "home",
       "journal",
@@ -161,15 +162,16 @@ function CareSpace() {
       "day",
       "transport",
       "money",
+      "wearables",
       "privacy",
       "settings",
     ],
     privacy: ["home", "privacy", "settings"],
-    admin: ["home", "transport", "schedule", "privacy", "settings"],
+    admin: ["home", "transport", "schedule", "wearables", "privacy", "settings"],
   };
   const nav = NAV.filter(
     (n) =>
-      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])) && (n[0] !== "wearables" || ["patient", "caregiver"].includes(user.role)) &&
+      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])) && (n[0] !== "wearables" || ["patient", "caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(user.role)) &&
       (n[0] !== "transport" || ["patient", "caregiver", "frontdesk", "navigator", "nurse", "admin"].includes(user.role)),
   );
   useEffect(() => {
@@ -316,6 +318,16 @@ function CareSpace() {
                     <b>{n.title}</b>
                     <p>{n.body}</p>
                     <small className="muted">{dateTime(n.created_at)}</small>
+                    {n.channel === "activity" && n.patient_id && (
+                      <button className="btn" onClick={() => {
+                        setPid(n.patient_id);
+                        setActivityFocus((value) => value + 1);
+                        change("wearables");
+                        setShowNotifications(false);
+                      }}>
+                        View activity trend
+                      </button>
+                    )}
                     {n.status === "unread" && (
                       <Action
                         run={() =>
@@ -422,7 +434,7 @@ function CareSpace() {
                 />
               )}
               {(tab === "transport" || transportOpened) && <Transport pid={pid} user={user} active={tab === "transport"} />}
-              {tab === "wearables" && <Wearables pid={pid} demo={Boolean(user.demo)} />}
+              {tab === "wearables" && <Wearables pid={pid} demo={Boolean(user.demo)} viewerRole={user.role} activityFocus={activityFocus} />}
               {tab === "records" && (
                 <RecordsDesk pid={pid} user={user} onOpen={setDocId} />
               )}
