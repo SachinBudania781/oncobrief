@@ -116,6 +116,7 @@ function CareSpace() {
   const [qr, setQr] = useState(false),
     [qrError, setQrError] = useState("");
   const [focusedRecordId, setFocusedRecordId] = useState(null);
+  const [transportOpened, setTransportOpened] = useState(false);
   const [about, setAbout] = useState(false), [searchOpen, setSearchOpen] = useState(false), [query, setQuery] = useState("");
   const [phoneCheckin, setPhoneCheckin] = useState(false);
   const portal = ["patient", "caregiver"].includes(user.role) ? "patient" : user.role === "doctor" ? "doctor" : "staff";
@@ -178,6 +179,7 @@ function CareSpace() {
     if (patient?.preferred_language) setLanguage(patient.preferred_language);
   }, [patient?.id]);
   const change = (value) => {
+    if (value === "transport") setTransportOpened(true);
     setTab(value);
     setMenu(false);
     setSearchOpen(false);
@@ -419,7 +421,7 @@ function CareSpace() {
                   canTeachBack={can("notes")}
                 />
               )}
-              {tab === "transport" && <Transport pid={pid} user={user} />}
+              {(tab === "transport" || transportOpened) && <Transport pid={pid} user={user} active={tab === "transport"} />}
               {tab === "wearables" && <Wearables pid={pid} demo={Boolean(user.demo)} />}
               {tab === "records" && (
                 <RecordsDesk pid={pid} user={user} onOpen={setDocId} />
@@ -814,3 +816,4 @@ export function SharedCard() {
     </div>
   );
 }
+

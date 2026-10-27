@@ -1,17 +1,17 @@
-import { useState } from "react";
-import { Accessibility, CalendarDays, Car, Check, MapPin, Users } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Accessibility, CalendarDays, Car, Check, ExternalLink, MapPin, Users } from "lucide-react";
 import { request, useResource, dateTime } from "./client";
 import { Empty, Error, Load, Panel, Status } from "./UI";
 
 const RIDE_TYPES = {
-  standard: "Standard ride",
-  wheelchair_accessible: "Wheelchair-accessible ride",
-  hospital_shuttle: "Hospital shuttle",
-  family_or_self: "Family or own transport",
-  other: "Other",
+  uber: "Uber",
+  rapido: "Rapido",
+  hospital: "Ask the hospital to arrange",
+  caregiver: "Ask my caregiver to arrange",
 };
 const SUPPORT_LABELS = {
   mobility_assistance: "Help with walking or getting in/out",
+  wheelchair_accessible: "Wheelchair-accessible vehicle",
   caregiver_accompanying: "Caregiver will travel with me",
 };
 const STATUS_LABELS = {
@@ -36,7 +36,7 @@ function defaultPickup(appointment) {
   return localInput(new Date(Math.min(suggested, visit - 60000)).toISOString());
 }
 
-export default function Transport({ pid, user }) {
+export default function Transport({ pid, user, active = true }) {
   const patientMode = ["patient", "caregiver"].includes(user.role);
   const appointments = useResource(patientMode ? `/appointments?upcoming=true&patient_id=${encodeURIComponent(pid)}` : null, 30000);
   const requests = useResource(patientMode ? `/v2/patients/${encodeURIComponent(pid)}/transport-requests` : "/v2/transport-requests", 20000);
@@ -44,12 +44,13 @@ export default function Transport({ pid, user }) {
   const [pickupAt, setPickupAt] = useState("");
   const [pickupAddress, setPickupAddress] = useState("");
   const [landmark, setLandmark] = useState("");
-  const [rideType, setRideType] = useState("standard");
+  const [rideType, setRideType] = useState("uber");
   const [support, setSupport] = useState([]);
   const [companionCount, setCompanionCount] = useState(0);
   const [fareSupport, setFareSupport] = useState(false);
   const [notes, setNotes] = useState("");
   const [consent, setConsent] = useState(false);
+  const [locationConsent, setLocationConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -60,7 +61,7 @@ export default function Transport({ pid, user }) {
     setError("");
     setSuccess("");
     try {
-      await request(`/v2/patients/${encodeURIComponent(pid)}/transport-requests`, "POST", {
+      const saved = await request(`/v2/patients/${encodeURIComponent(pid)}/transport-requests`, "POST", {
         appointment_id: Number(appointmentId),
         pickup_at: pickupAt,
         pickup_address: pickupAddress,
@@ -71,18 +72,31 @@ export default function Transport({ pid, user }) {
         fare_support: fareSupport,
         notes,
         consent,
+        location_consent: locationConsent,
       });
-      setSuccess("Your request is with the care team. They will update it here.");
+      const accepted = saved.delivery_summary?.external_accepted || 0;
+      const pending = saved.delivery_summary?.external_pending || 0;
+      const failed = saved.delivery_summary?.external_failed || 0;
+      setSuccess(accepted && pending
+        ? `Request saved. The messaging service accepted SMS/email for ${accepted} contact${accepted === 1 ? "" : "s"}; another contact still needs verified details or setup. Delivery is not confirmed.`
+        : accepted
+          ? `Request saved. The messaging service accepted SMS/email for ${accepted} contact${accepted === 1 ? "" : "s"}. Delivery is not confirmed.`
+          : pending
+            ? "Request saved and shown in-app. SMS/email needs a configured messaging service and verified contact."
+            : failed
+              ? "Request saved and shown in-app, but an external message failed."
+              : "Request saved. Your assigned care team has been notified in-app.");
       setAppointmentId("");
       setPickupAt("");
       setPickupAddress("");
       setLandmark("");
-      setRideType("standard");
+      setRideType("uber");
       setSupport([]);
       setCompanionCount(0);
       setFareSupport(false);
       setNotes("");
       setConsent(false);
+      setLocationConsent(false);
       requests.refresh();
     } catch (e) {
       setError(e.message);
@@ -92,9 +106,9 @@ export default function Transport({ pid, user }) {
   };
 
   return (
-    <div className="stack ob-transport">
+    <div className={`stack ob-transport ${active ? "" : "ob-transport-hidden"}`}>
       {patientMode ? (
-        <Panel title="Request transport" hint="Share a pickup request for an upcoming hospital visit. Your care team will coordinate a ride and post updates here.">
+        <Panel title="Plan transport" hint="Choose one of four ways to get to an upcoming hospital visit. Uber and Rapido open their booking service; hospital or caregiver requests are sent for coordination.">
           <Load resource={appointments}>
             {(items) => items.some((item) => item.status === "booked" && new Date(item.start).getTime() > Date.now()) ? (
               <form className="stack" onSubmit={submit}>
@@ -114,8 +128,10 @@ export default function Transport({ pid, user }) {
                 </label>
                 <div className="grid2">
                   <label className="field">Requested pickup time<input className="input" type="datetime-local" required value={pickupAt} onChange={(event) => setPickupAt(event.target.value)} /></label>
-                  <label className="field">Ride type<select className="select" value={rideType} onChange={(event) => setRideType(event.target.value)}>{Object.entries(RIDE_TYPES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+                  <label className="field">How should the ride be arranged?<select className="select" value={rideType} onChange={(event) => setRideType(event.target.value)}>{Object.entries(RIDE_TYPES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
                 </div>
+                {rideType === "uber" && <a className="btn ob-transport-app-link" href="https://m.uber.com/ul/" target="_blank" rel="noopener noreferrer">Open Uber <ExternalLink size={15} /></a>}
+                {rideType === "rapido" && <a className="btn ob-transport-app-link" href="https://www.rapido.bike/" target="_blank" rel="noopener noreferrer">Open Rapido <ExternalLink size={15} /></a>}
                 <label className="field">Pickup address<textarea className="input" rows={2} minLength={5} maxLength={300} required value={pickupAddress} onChange={(event) => setPickupAddress(event.target.value)} placeholder="House/building, street, area, city" /></label>
                 <label className="field">Landmark (optional)<input className="input" maxLength={150} value={landmark} onChange={(event) => setLandmark(event.target.value)} placeholder="Nearby landmark or gate" /></label>
                 <div className="ob-transport-options">
@@ -127,9 +143,11 @@ export default function Transport({ pid, user }) {
                   <label className="ob-transport-check ob-fare-check"><input type="checkbox" checked={fareSupport} onChange={(event) => setFareSupport(event.target.checked)} />I would like help exploring travel-cost support</label>
                 </div>
                 <label className="field">Anything else the coordinator should know? (optional)<textarea className="input" rows={2} maxLength={500} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Keep this to transport needs; do not enter urgent medical symptoms here." /></label>
-                <label className="ob-transport-check ob-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} required />I agree to share these pickup and support details with my assigned care team for coordination.</label>
-                <p className="small muted">This sends a request to your care team; it does not book a vehicle or guarantee a ride. For urgent or emergency transport, contact local emergency services.</p>
-                <div className="row wrap"><button className="btn primary" type="submit" disabled={busy || !consent}><Car size={16} />{busy ? "Sending…" : "Send transport request"}</button>{success && <span className="care-success">{success}</span>}</div>
+                <label className="ob-transport-check ob-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} required />I agree to share these pickup and support details with the hospital transport team and/or my linked caregiver, based on the option I selected.</label>
+                <label className="ob-transport-check ob-consent"><input type="checkbox" checked={locationConsent} onChange={(event) => setLocationConsent(event.target.checked)} />Share my live trip location with the hospital transport team and linked caregiver(s). Location starts only when I press Start trip and can be stopped at any time.</label>
+                {locationConsent && <p className="small muted">A private link is sent to these contacts. Anyone with the link can see your current location until it expires; keep this page open during the trip. Browser tracking may pause if the app closes or your device sleeps.</p>}
+                <p className="small muted">Uber and Rapido booking happens in their service. OncoBrief does not book or pay for rides. For urgent or emergency transport, contact local emergency services.</p>
+                <div className="row wrap"><button className="btn primary" type="submit" disabled={busy || !consent}><Car size={16} />{busy ? "Sending…" : "Save transport plan"}</button>{success && <span className="care-success">{success}</span>}</div>
                 <Error message={error} />
               </form>
             ) : <Empty>No upcoming booked visits found. Book a visit in Hospital day pass first.</Empty>}
@@ -155,8 +173,62 @@ export default function Transport({ pid, user }) {
 
 function PatientRequestCard({ item, onUpdate }) {
   const [error, setError] = useState("");
+  const [trackingError, setTrackingError] = useState("");
+  const [trackingBusy, setTrackingBusy] = useState(false);
+  const [watchId, setWatchId] = useState(null);
   const data = item.data || {};
   const appointment = item.appointment;
+  const startSharing = async () => {
+    setTrackingError("");
+    setTrackingBusy(true);
+    try {
+      if (!navigator.geolocation) throw new Error("Location sharing is not supported in this browser.");
+      const first = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true, maximumAge: 10000, timeout: 20000,
+      }));
+      await request(`/v2/transport-requests/${item.id}/location/start`, "POST");
+      await request(`/v2/transport-requests/${item.id}/location`, "POST", {
+        latitude: first.coords.latitude,
+        longitude: first.coords.longitude,
+        accuracy_m: first.coords.accuracy,
+      });
+      let lastSent = Date.now();
+      const id = navigator.geolocation.watchPosition((position) => {
+        if (Date.now() - lastSent < 20000) return;
+        lastSent = Date.now();
+        request(`/v2/transport-requests/${item.id}/location`, "POST", {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy_m: position.coords.accuracy,
+        }).catch((e) => setTrackingError(e.message));
+      }, (geoError) => setTrackingError(geoError.message || "Location updates paused. Check your browser permission."), {
+        enableHighAccuracy: true, maximumAge: 10000, timeout: 20000,
+      });
+      setWatchId(id);
+      onUpdate();
+    } catch (e) {
+      setTrackingError(e.code ? "Location permission was denied or unavailable. Allow location access and try again." : e.message);
+    } finally {
+      setTrackingBusy(false);
+    }
+  };
+  const stopSharing = async () => {
+    setTrackingError("");
+    setTrackingBusy(true);
+    try {
+      if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
+      setWatchId(null);
+      await request(`/v2/transport-requests/${item.id}/location/stop`, "POST");
+      onUpdate();
+    } catch (e) {
+      setTrackingError(e.message);
+    } finally {
+      setTrackingBusy(false);
+    }
+  };
+  useEffect(() => () => {
+    if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
+  }, [watchId]);
   return (
     <article className="ob-transport-card">
       <div className="row wrap ob-transport-title"><div><b><CalendarDays size={16} />{appointment ? `${dateTime(appointment.start)} · ${appointment.department}` : "Appointment details unavailable"}</b><small>Pickup requested for {dateTime(data.pickup_at)}</small></div><Status value={item.status} /></div>
@@ -164,7 +236,14 @@ function PatientRequestCard({ item, onUpdate }) {
       {data.arranged_via && <p><b>Arranged via:</b> {data.arranged_via}{data.confirmed_pickup_at ? ` · Pickup ${dateTime(data.confirmed_pickup_at)}` : ""}</p>}
       {data.coordination_note && <p className="ob-transport-note"><b>Care-team update:</b> {data.coordination_note}</p>}
       {data.notes && <p><b>Your note:</b> {data.notes}</p>}
-      {!['completed', 'cancelled'].includes(item.status) && <><button className="btn" type="button" onClick={async () => { setError(""); try { await request(`/v2/transport-requests/${item.id}/cancel`, "POST"); onUpdate(); } catch (e) { setError(e.message); } }}>Cancel request</button><Error message={error} /></>}
+      {data.location_consent && !["completed", "cancelled", "unable"].includes(item.status) && <div className="ob-live-location-controls">
+        <p className="small muted">Trip location: {watchId !== null ? "sharing from this page" : data.location_sharing === "active" ? "active; resume updates here if this page was reopened" : "not started"}. Updates stop when you stop sharing or the link expires.</p>
+        {watchId === null
+          ? <button className="btn" type="button" disabled={trackingBusy} onClick={startSharing}><MapPin size={16} />{trackingBusy ? "Starting…" : data.location_sharing === "active" ? "Resume trip location" : "Start trip location"}</button>
+          : <button className="btn" type="button" disabled={trackingBusy} onClick={stopSharing}><Check size={16} />{trackingBusy ? "Stopping…" : "Stop sharing"}</button>}
+        <Error message={trackingError} />
+      </div>}
+      {!['completed', 'cancelled'].includes(item.status) && <><button className="btn" type="button" onClick={async () => { setError(""); try { if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId); await request(`/v2/transport-requests/${item.id}/cancel`, "POST"); onUpdate(); } catch (e) { setError(e.message); } }}>Cancel request</button><Error message={error} /></>}
     </article>
   );
 }
@@ -218,3 +297,4 @@ function CoordinatorCard({ item, onUpdate }) {
     </article>
   );
 }
+

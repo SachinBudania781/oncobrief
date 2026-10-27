@@ -940,12 +940,19 @@ class TransportRequestIn(BaseModel):
     pickup_at: datetime
     pickup_address: str = Field(min_length=5, max_length=300)
     landmark: str = Field(default="", max_length=150)
-    ride_type: Literal["standard", "wheelchair_accessible", "hospital_shuttle", "family_or_self", "other"] = "standard"
-    support: list[Literal["mobility_assistance", "caregiver_accompanying"]] = Field(default_factory=list, max_length=2)
+    ride_type: Literal["uber", "rapido", "hospital", "caregiver"] = "uber"
+    support: list[Literal["mobility_assistance", "caregiver_accompanying", "wheelchair_accessible"]] = Field(default_factory=list, max_length=3)
     companion_count: int = Field(default=0, ge=0, le=4)
     fare_support: bool = False
     notes: str = Field(default="", max_length=500)
     consent: bool
+    location_consent: bool = False
+
+
+class TransportLocationIn(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_m: float | None = Field(default=None, ge=0, le=100000)
 
 
 class TransportUpdateIn(BaseModel):
@@ -956,26 +963,222 @@ class TransportUpdateIn(BaseModel):
 
 
 def transport_payload(db, row):
-    data = row.data or {}
+    data = dict(row.data or {})
+    # Precise coordinates are available only through the consented live-share endpoint.
+    data.pop("location", None)
+    data.pop("location_share_id", None)
     appointment = db.get(Appointment, data.get("appointment_id")) if data.get("appointment_id") else None
     patient = db.get(Patient, row.patient_id)
-    out = serial(row) | {"patient_name": patient.name if patient else ""}
+    out = serial(row) | {"data": data, "patient_name": patient.name if patient else ""}
     out["appointment"] = ({"id": appointment.id, "department": appointment.department,
                            "room": appointment.room, "start": appointment.start.isoformat(),
                            "status": appointment.status} if appointment else None)
+    out["delivery_summary"] = (row.data or {}).get("delivery_summary", {})
     return out
 
 
 def notify_transport_coordinators(db, patient_id, title, body):
     now = utcnow()
     grants = db.scalars(select(AccessGrant).where(AccessGrant.patient_id == patient_id, AccessGrant.active.is_(True))).all()
+    count = 0
     for grant in grants:
         coordinator = db.get(User, grant.user_id)
         if (coordinator and coordinator.active and coordinator.role in TRANSPORT_ROLES
                 and (not grant.expires_at or grant.expires_at > now)
                 and ("all" in grant.scopes or "appointments" in grant.scopes)):
             db.add(Notification(user_id=coordinator.id, patient_id=patient_id, channel="transport", title=title, body=body))
+            count += 1
     db.commit()
+    return count
+
+
+def transport_caregivers(db, patient_id):
+    now = utcnow()
+    grants = db.scalars(select(AccessGrant).where(
+        AccessGrant.patient_id == patient_id, AccessGrant.active.is_(True)
+    )).all()
+    people = []
+    for grant in grants:
+        caregiver = db.get(User, grant.user_id)
+        if (caregiver and caregiver.active and caregiver.role == "caregiver"
+                and (not grant.expires_at or grant.expires_at > now)
+                and ("all" in grant.scopes or "appointments" in grant.scopes)):
+            people.append(caregiver)
+    return people
+
+
+def transport_external_recipients(db, patient_id, target):
+    recipients = []
+    sms_ready = bool(os.getenv("SMS_ADAPTER_URL") and os.getenv("SMS_ADAPTER_KEY"))
+    email_ready = bool(os.getenv("EMAIL_ADAPTER_URL") and os.getenv("EMAIL_ADAPTER_KEY"))
+
+    def add_contact(phone, email, name):
+        if phone and sms_ready:
+            recipients.append(("sms", phone, name))
+        elif email and email_ready:
+            recipients.append(("email", email, name))
+        elif phone:
+            recipients.append(("sms", phone, name))
+        elif email:
+            recipients.append(("email", email, name))
+
+    if target in {"hospital", "both"}:
+        phone = os.getenv("HOSPITAL_TRANSPORT_PHONE", "").strip()
+        email = os.getenv("HOSPITAL_TRANSPORT_EMAIL", "").strip()
+        if phone or email:
+            add_contact(phone, email, "Hospital transport desk")
+        else:
+            recipients.append(("pending", "", "Hospital transport desk"))
+    if target in {"caregiver", "both"}:
+        caregivers = transport_caregivers(db, patient_id)
+        if not caregivers:
+            recipients.append(("pending", "", "Linked caregiver"))
+        for caregiver in caregivers:
+            phone = (caregiver.phone or "").strip()
+            email = caregiver.username.strip() if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", caregiver.username.strip()) else ""
+            if phone or email:
+                add_contact(phone, email, caregiver.name)
+            else:
+                recipients.append(("pending", "", caregiver.name))
+    return list({(channel, address): (channel, address, name)
+                 for channel, address, name in recipients}.values())
+
+
+def notify_transport_caregivers(db, patient_id, title, body):
+    for caregiver in transport_caregivers(db, patient_id):
+        db.add(Notification(user_id=caregiver.id, patient_id=patient_id, channel="transport",
+                            title=title, body=body))
+    db.commit()
+
+
+def revoke_transport_location(db, row, status="stopped"):
+    data = dict(row.data or {})
+    data["location_sharing"] = status
+    data.pop("location", None)
+    share_id = data.get("location_share_id")
+    if share_id:
+        share = db.get(ShareLink, share_id)
+        if share:
+            share.revoked = True
+    row.data = data
+
+
+def send_transport_messages(db, patient_id, appointment, pickup_at, target, location_url, request_data):
+    results = []
+    recipients = transport_external_recipients(db, patient_id, target)
+    for channel, address, name in recipients:
+        if channel == "pending":
+            results.append({"recipient": name, "channel": "sms/email", "status": "not_configured"})
+            continue
+        text = (f"OncoBrief transport request for patient {patient_id}. "
+                f"Pickup requested {pickup_at:%d %b %Y at %H:%M}. "
+                f"Pickup address: {request_data.get('pickup_address', '')}. "
+                f"Appointment: {appointment.department} on {appointment.start:%d %b %Y at %H:%M}.")
+        if request_data.get("landmark"):
+            text += f" Landmark: {request_data['landmark']}."
+        support = request_data.get("support", [])
+        support_labels = {"mobility_assistance": "mobility assistance",
+                          "wheelchair_accessible": "wheelchair-accessible vehicle",
+                          "caregiver_accompanying": "caregiver travelling"}
+        if support:
+            text += " Accessibility/support: " + ", ".join(support_labels.get(value, value) for value in support) + "."
+        if request_data.get("fare_support"):
+            text += " Travel-cost support requested."
+        if location_url:
+            text += f" Live trip location (available only while sharing): {location_url}"
+        try:
+            if channel == "sms":
+                deliver("sms", {"to": address, "body": text})
+            else:
+                deliver("email", {"to": address, "subject": "OncoBrief transport request", "body": text})
+            results.append({"recipient": name, "channel": channel, "status": "accepted"})
+        except HTTPException as exc:
+            results.append({"recipient": name, "channel": channel,
+                            "status": "not_configured" if exc.status_code == 503 else "failed"})
+        except Exception:
+            results.append({"recipient": name, "channel": channel, "status": "failed"})
+    return results
+
+
+@router.post("/v2/transport-requests/{request_id}/location/start")
+def start_transport_location(request_id: int, request: Request, db=Depends(get_db)):
+    row = db.get(CareRecord, request_id)
+    if not row or row.kind != "transport_request":
+        raise HTTPException(404, "Transport request not found")
+    user = patient_access(db, request, row.patient_id, "appointments")
+    roles(user, "patient", "caregiver")
+    data = dict(row.data or {})
+    if not data.get("location_consent"):
+        raise HTTPException(403, "The patient has not consented to live-location sharing")
+    if row.status in {"completed", "cancelled", "unable"}:
+        raise HTTPException(409, "This transport request is closed")
+    share = db.get(ShareLink, data.get("location_share_id")) if data.get("location_share_id") else None
+    if not share or share.revoked or share.expires_at < utcnow():
+        raise HTTPException(410, "The trip location link has expired")
+    data["location_sharing"] = "active"
+    data["location_started_at"] = utcnow().isoformat()
+    data.pop("location", None)
+    row.data, row.updated_at = data, utcnow()
+    db.commit()
+    append_audit(db, user, "transport_location_started", row.patient_id, f"Request {row.id}")
+    return {"status": "active"}
+
+
+@router.post("/v2/transport-requests/{request_id}/location")
+def update_transport_location(request_id: int, body: TransportLocationIn, request: Request, db=Depends(get_db)):
+    row = db.get(CareRecord, request_id)
+    if not row or row.kind != "transport_request":
+        raise HTTPException(404, "Transport request not found")
+    user = patient_access(db, request, row.patient_id, "appointments")
+    roles(user, "patient", "caregiver")
+    data = dict(row.data or {})
+    if not data.get("location_consent") or data.get("location_sharing") != "active":
+        raise HTTPException(409, "Start consented trip sharing before sending a location")
+    share = db.get(ShareLink, data.get("location_share_id")) if data.get("location_share_id") else None
+    if not share or share.revoked or share.expires_at < utcnow():
+        raise HTTPException(410, "The trip location link has expired")
+    observed_at = utcnow()
+    data["location"] = {"latitude": body.latitude, "longitude": body.longitude,
+                        "accuracy_m": body.accuracy_m, "observed_at": observed_at.isoformat()}
+    row.data, row.updated_at = data, observed_at
+    db.commit()
+    return {"status": "active", "updated_at": observed_at.isoformat()}
+
+
+@router.post("/v2/transport-requests/{request_id}/location/stop")
+def stop_transport_location(request_id: int, request: Request, db=Depends(get_db)):
+    row = db.get(CareRecord, request_id)
+    if not row or row.kind != "transport_request":
+        raise HTTPException(404, "Transport request not found")
+    user = patient_access(db, request, row.patient_id, "appointments")
+    roles(user, "patient", "caregiver")
+    data = dict(row.data or {})
+    if data.get("location_consent"):
+        revoke_transport_location(db, row)
+        row.updated_at = utcnow()
+        db.commit()
+        append_audit(db, user, "transport_location_stopped", row.patient_id, f"Request {row.id}")
+    return {"status": "stopped"}
+
+
+@router.get("/shared/transport/{token}")
+def shared_transport_location(token: str, db=Depends(get_db)):
+    share = db.scalar(select(ShareLink).where(ShareLink.token_hash == digest(token),
+                                             ShareLink.kind == "transport_location"))
+    if not share or share.revoked or share.expires_at < utcnow():
+        raise HTTPException(404, "This trip location link has expired or was withdrawn")
+    try:
+        request_id = int((share.fields or ["request:0"])[0].split(":", 1)[1])
+    except (IndexError, ValueError):
+        raise HTTPException(404, "This trip location link is invalid")
+    row = db.get(CareRecord, request_id)
+    if not row or row.patient_id != share.patient_id or row.kind != "transport_request":
+        raise HTTPException(404, "This trip location is unavailable")
+    data = row.data or {}
+    status = data.get("location_sharing", "available")
+    return {"status": status, "location": data.get("location") if status == "active" else None,
+            "updated_at": (data.get("location") or {}).get("observed_at"),
+            "expires_at": share.expires_at.isoformat()}
 
 
 @router.get("/v2/patients/{patient_id}/transport-requests")
@@ -1017,6 +1220,8 @@ def create_transport_request(patient_id: str, body: TransportRequestIn, request:
         "companion_count": body.companion_count,
         "fare_support": body.fare_support,
         "notes": body.notes.strip(),
+        "location_consent": body.location_consent,
+        "location_sharing": "available" if body.location_consent else "not_requested",
         "arranged_via": "",
         "confirmed_pickup_at": "",
         "coordination_note": "",
@@ -1026,10 +1231,56 @@ def create_transport_request(patient_id: str, body: TransportRequestIn, request:
                      author_name=user.name, author_role=user.role, status="requested", data=data)
     db.add(row)
     db.commit()
+
+    location_url = ""
+    if body.location_consent:
+        token = secrets.token_urlsafe(32)
+        share = ShareLink(patient_id=patient_id, token_hash=digest(token), kind="transport_location",
+                          fields=[f"request:{row.id}"], expires_at=appointment.end + timedelta(hours=2),
+                          created_by=user.id, recipient="Hospital transport team and linked caregiver")
+        db.add(share)
+        db.flush()
+        data = dict(row.data or {})
+        data["location_share_id"] = share.id
+        row.data = data
+        db.commit()
+        base = os.getenv("PUBLIC_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or str(request.base_url).rstrip("/")
+        location_url = base.rstrip("/") + "/transport-track/" + token
+
+    target = body.ride_type if body.ride_type in {"hospital", "caregiver"} else ""
+    if body.location_consent:
+        target = "both"
+    external_results = send_transport_messages(db, patient_id, appointment, pickup_at, target, location_url, row.data or {})
+    data = dict(row.data or {})
+    data["delivery_summary"] = {
+        "external_accepted": sum(result["status"] == "accepted" for result in external_results),
+        "external_pending": sum(result["status"] == "not_configured" for result in external_results),
+        "external_failed": sum(result["status"] == "failed" for result in external_results),
+        "location_consent": body.location_consent,
+    }
+    row.data = data
+    db.commit()
+
     append_audit(db, user, "transport_request_created", patient_id,
-                 f"Appointment {appointment.id}; {body.ride_type}; fare support={body.fare_support}")
-    notify_transport_coordinators(db, patient_id, "Transport help requested",
-                                  f"A ride request was submitted for {appointment.department} on {appointment.start:%d %b at %H:%M}.")
+                 f"Appointment {appointment.id}; {body.ride_type}; location consent={body.location_consent}")
+    share_note = f" Live trip link: {location_url}" if location_url else ""
+    coordinator_count = notify_transport_coordinators(
+        db, patient_id, "Transport help requested",
+        f"A {body.ride_type} request was submitted for {appointment.department} on {appointment.start:%d %b at %H:%M}.{share_note}"
+    )
+    caregiver_count = 0
+    if body.ride_type == "caregiver" or body.location_consent:
+        notify_transport_caregivers(
+            db, patient_id, "Transport help requested",
+            f"A transport request was submitted for {appointment.department} on {appointment.start:%d %b at %H:%M}.{share_note}"
+        )
+        caregiver_count = len(transport_caregivers(db, patient_id))
+    data = dict(row.data or {})
+    data["delivery_summary"] = data.get("delivery_summary", {}) | {
+        "in_app_hospital": coordinator_count, "in_app_caregiver": caregiver_count
+    }
+    row.data = data
+    db.commit()
     return transport_payload(db, row)
 
 
@@ -1092,6 +1343,8 @@ def update_transport_request(request_id: int, body: TransportUpdateIn, request: 
         history.append({"status": body.status, "by": user.name, "at": utcnow().isoformat()})
     data["status_history"] = history[-20:]
     row.data, row.status, row.updated_at = data, body.status, utcnow()
+    if body.status in {"completed", "unable"} and data.get("location_sharing") == "active":
+        revoke_transport_location(db, row)
     db.commit()
     db.add(Notification(user_id=row.author_id, patient_id=row.patient_id,
                         channel="transport", title="Transport request update", body=f"Your ride request is {body.status.replace('_', ' ')}."))
@@ -1115,6 +1368,8 @@ def cancel_transport_request(request_id: int, request: Request, db=Depends(get_d
     history.append({"status": "cancelled", "by": user.name, "at": utcnow().isoformat()})
     data["status_history"] = history[-20:]
     row.data, row.status, row.updated_at = data, "cancelled", utcnow()
+    if data.get("location_sharing") == "active":
+        revoke_transport_location(db, row)
     db.commit()
     append_audit(db, user, "transport_request_cancelled", row.patient_id, f"Request {row.id}")
     notify_transport_coordinators(db, row.patient_id, "Transport request cancelled", f"A ride request for {row.patient_id} was cancelled.")
@@ -1557,3 +1812,4 @@ def care_review(patient_id:str,request:Request,db=Depends(get_db)):
     db.commit()
     append_audit(db,user,"draft_care_review",patient_id,f"Approval {row.id}")
     return serial(row)
+

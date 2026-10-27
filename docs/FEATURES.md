@@ -66,7 +66,7 @@ This maps the supplied Parts A, B and C to the implementation. Part A's repeated
 | Individual staff logins and restricted roles | Auth and patient grants | Staff password + TOTP in production; lab uploads restricted to own author; front desk schedule scope |
 | Wrong-patient guard | Upload and bulk confirmation | Printed ID/name mismatch blocks filing; unreadable identity requires an auditable manual verification |
 | Queue / wait-time messages | Day pass and arrival/status updates | Estimate based on queue and 20-minute slots, not a guaranteed time |
-| Patient transport coordination | Transport tab for patients/caregivers; assigned staff queue | Staff records coordination status and ride details; vehicle dispatch, fare payment and provider booking are not integrated |
+| Patient transport coordination | Transport tab for patients/caregivers; Uber, Rapido, hospital-arranged, caregiver-arranged; assigned staff queue; optional consented live trip location | Ride-app launch only; booking/payment are outside OncoBrief. External hospital/caregiver messages need verified contacts and an SMS/email adapter. Location sharing is opt-in, starts on a patient action, and can be stopped/revoked. |
 | Clash fix | Schedule desk | Preview nearest free slot; rechecks patient and room overlap on approval |
 | Day-care chair / preparation board | Chair workflow and hospital overview | Requires signed approved order; rejects recorded chair overlaps |
 | Approved multilingual leaflets | Wellness → Patient leaflets | English/Hindi/Marathi where approved; missing translations explicitly fall back to the original |
@@ -103,3 +103,4 @@ Sessions are server-side and cookie-protected; browser role headers are ignored.
 Documents use encrypted storage, short-lived viewer-bound links, watermarks and restricted download actions. Phone/ABHA fields are separately encrypted. The wider database and backups require hosting-layer encryption. Audit records are chained by SHA-256; a configured independent daily anchor protects against whole-chain replacement. HTTPS, database retention, India residency and operational availability require deployment setup.
 
 The API has origin checks, bounded uploads, content validation, rate limits, security headers and access logs. CI runs API tests, a production frontend build and dependency advisories. None of these substitute for a hospital security assessment or clinical validation. The 100-question suite is an engineering regression set; clinician review is explicitly pending.
+

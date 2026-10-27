@@ -660,3 +660,49 @@ button:not(:disabled):active { transform: scale(.975); }
   .ob-wear-stat { padding: 12px; }
   .ob-wear-stat b { font-size: 19px; }
 }
+
+
+.ob-transport-hidden {
+  display: none !important;
+}
+
+.ob-transport-app-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: fit-content;
+  text-decoration: none;
+}
+
+.ob-live-location-controls {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 12px;
+  padding: 0.85rem;
+}
+
+.ob-live-location-controls .btn {
+  width: fit-content;
+}
+
+.ob-tracker-pin {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 1rem;
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 14px;
+  color: var(--brand, #315f56);
+}
+
+.ob-tracker-pin div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.ob-tracker-pin span {
+  color: var(--muted, #667085);
+  font-size: 0.9rem;
+}
+
