@@ -19,6 +19,7 @@ from ..round2_models import AccessGrant, Alert, Approval, CareRecord, LibraryIte
 from ..security import DEMO_MODE, append_audit, digest, identity, password_hash, require_patient, roles, verify_chain, visible_ids
 from ..services.companion import EMERGENCY, alert, answer, command_centre, living_summary, notify_team, records, red_flags, safe_text
 from ..services.integrations import deliver, status as integration_status
+from ..services.activity import low_activity_steps_threshold
 from ..workflows import WORKFLOWS
 from ..services.scheduling import serial_schedule
 from .auth import sign_in_id
@@ -60,8 +61,13 @@ def notifications(request: Request, db=Depends(get_db)):
     user = identity(request)
     alert_ids = set(visible_ids(db, user, "alerts"))
     appointment_ids = set(visible_ids(db, user, "appointments"))
+    activity_ids = set(visible_ids(db, user, "activity"))
     return [serial(n) for n in db.scalars(select(Notification).where(Notification.user_id == user.id).order_by(Notification.id.desc()).limit(100))
-            if not n.patient_id or n.patient_id in (appointment_ids if n.channel == "transport" else alert_ids)]
+            if not n.patient_id or n.patient_id in (
+                appointment_ids if n.channel == "transport"
+                else activity_ids if n.channel == "activity"
+                else alert_ids
+            )]
 
 
 @router.post("/v2/notifications/{nid}/read")
@@ -756,14 +762,17 @@ WEARABLE_RANGES = {
 
 @router.get("/v2/patients/{patient_id}/wearables")
 def wearable_history(patient_id: str, request: Request, days: int = 30, db=Depends(get_db)):
-    patient_access(db, request, patient_id, "activity")
+    user = patient_access(db, request, patient_id, "activity")
     days = min(365, max(1, days))
     since = utcnow() - timedelta(days=days)
     rows = db.scalars(select(WearableReading).where(
         WearableReading.patient_id == patient_id, WearableReading.observed_at >= since
     ).order_by(WearableReading.observed_at.desc()).limit(5000)).all()
     rows.reverse()
-    return {"days": days, "items": [serial(row) for row in rows]}
+    payload = {"days": days, "items": [serial(row) for row in rows]}
+    if user.role != "patient":
+        payload["activity_threshold_steps"] = low_activity_steps_threshold()
+    return payload
 
 
 @router.post("/v2/patients/{patient_id}/wearables")
