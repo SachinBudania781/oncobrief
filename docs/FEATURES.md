@@ -104,3 +104,6 @@ Documents use encrypted storage, short-lived viewer-bound links, watermarks and 
 
 The API has origin checks, bounded uploads, content validation, rate limits, security headers and access logs. CI runs API tests, a production frontend build and dependency advisories. None of these substitute for a hospital security assessment or clinical validation. The 100-question suite is an engineering regression set; clinician review is explicitly pending.
 
+## Wearable activity review
+
+The wearable history graph is available to patients and authorized caregivers and care staff with the activity scope. Care staff and caregivers see a configurable daily-step review line (default 3,000 steps; set LOW_ACTIVITY_STEPS_THRESHOLD). The background job checks the latest recorded step total for the previous completed day and sends an in-app notice only to active, assigned caregiver/staff accounts with activity access. It does not send low-activity notices to patient accounts, does not infer zero activity when no data arrived, and presents the threshold as a coordination prompt rather than a clinical guideline. Daily steps require a phone-health or device-vendor feed, or a daily entry; generic browser Bluetooth capture does not currently read step counts.
