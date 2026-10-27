@@ -16,6 +16,7 @@ import {
   AreaChart,
   CartesianGrid,
   ResponsiveContainer,
+  ReferenceLine,
   Tooltip as ChartTooltip,
   XAxis,
   YAxis,
@@ -100,11 +101,17 @@ function latestValue(readings, metric, fallback) {
   return rows.length ? rows[rows.length - 1] : fallback?.[fallback.length - 1];
 }
 
-export default function Wearables({ pid, demo = false }) {
+export default function Wearables({ pid, demo = false, viewerRole = "patient", activityFocus = 0 }) {
   const resource = useResource("/v2/patients/" + encodeURIComponent(pid) + "/wearables?days=365", 30000);
   const readings = resource.data?.items || [];
+  const canCapture = ["patient", "caregiver"].includes(viewerRole);
+  const canReviewActivity = ["caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(viewerRole);
+  const activityThreshold = resource.data?.activity_threshold_steps;
   const [days, setDays] = useState(30);
-  const [metric, setMetric] = useState("heart_rate");
+  const [metric, setMetric] = useState(viewerRole === "patient" ? "heart_rate" : "steps");
+  useEffect(() => {
+    if (activityFocus) setMetric("steps");
+  }, [activityFocus]);
   const [consent, setConsent] = useState(false);
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -158,6 +165,7 @@ export default function Wearables({ pid, demo = false }) {
     const batch = queueRef.current.splice(0, 100);
     try {
       await request("/v2/patients/" + encodeURIComponent(pid) + "/wearables", "POST", {
+        consent: true,
         source: "bluetooth",
         device_name: deviceName,
         readings: batch,
@@ -311,6 +319,10 @@ export default function Wearables({ pid, demo = false }) {
   const saveManualActivity = async (event) => {
     event.preventDefault();
     setError("");
+    if (!consent) {
+      setError("Please agree before saving activity readings to this patient record.");
+      return;
+    }
     const now = new Date().toISOString();
     const units = { steps: "steps", distance_km: "km", active_minutes: "min", sleep_hours: "h" };
     const points = Object.entries(manual)
@@ -322,6 +334,7 @@ export default function Wearables({ pid, demo = false }) {
     }
     try {
       await request("/v2/patients/" + encodeURIComponent(pid) + "/wearables", "POST", {
+        consent: true,
         source: "manual",
         device_name: "Manual activity entry",
         readings: points,
@@ -367,7 +380,7 @@ export default function Wearables({ pid, demo = false }) {
         </div>
         <div className={"ob-wear-device-state " + (connected ? "is-connected" : "")}>
           <span className="ob-wear-dot" />
-          <span>{connected ? "Live device connected" : "No device connected"}</span>
+          <span>{connected ? "Live device connected" : canCapture ? "No device connected" : "Patient trend history"}</span>
         </div>
       </header>
 
@@ -376,7 +389,7 @@ export default function Wearables({ pid, demo = false }) {
         <span>Trends are for discussion with your care team, not diagnosis or emergency monitoring. Your watch may not measure every metric shown.</span>
       </div>
 
-      <Panel title="Connect a Bluetooth device" hint="Only standard Bluetooth health services are read. The browser asks you to choose a nearby device.">
+      {canCapture && <Panel title="Connect a Bluetooth device" hint="Only standard Bluetooth health services are read. The browser asks you to choose a nearby device.">
         <div className="ob-wear-connect">
           <div className="ob-wear-device-icon"><Watch size={24} /></div>
           <div className="ob-wear-connect-copy">
@@ -400,7 +413,7 @@ export default function Wearables({ pid, demo = false }) {
         <p className="ob-wear-caption">Bluetooth capture stops when you close this page or the device disconnects. No device identifier is stored.</p>
         {message && <p className="ob-wear-message" role="status">{message}</p>}
         {error && <p className="care-error" role="alert">{error}</p>}
-      </Panel>
+      </Panel>}
 
       <section className="ob-wear-stats" aria-label="Latest health and activity readings">
         {stats.map(({ label, point, unit, icon: Icon, value }) => (
@@ -413,7 +426,9 @@ export default function Wearables({ pid, demo = false }) {
         ))}
       </section>
 
-      <Panel title="Longitudinal trends" hint="Review readings over time. The chart uses saved patient data when available.">
+      <Panel title="Longitudinal trends" hint={canReviewActivity && activityThreshold != null
+        ? "Review saved readings over time. The dashed steps line is the " + activityThreshold.toLocaleString("en-IN") + " daily-step review threshold; low-activity notices go to assigned care team members only."
+        : "Review readings over time. The chart uses saved patient data when available."}>
         <div className="ob-wear-chart-tools">
           <label className="field">
             Measure
@@ -447,7 +462,24 @@ export default function Wearables({ pid, demo = false }) {
                 </defs>
                 <CartesianGrid strokeDasharray="3 5" vertical={false} stroke="#e6ece8" />
                 <XAxis dataKey="time" type="number" domain={["dataMin", "dataMax"]} tickFormatter={shortDate} tickCount={6} axisLine={false} tickLine={false} fontSize={11} />
-                <YAxis dataKey="value" width={42} axisLine={false} tickLine={false} fontSize={11} />
+                <YAxis
+                  dataKey="value"
+                  domain={metric === "steps" && canReviewActivity && activityThreshold != null
+                    ? [0, (dataMax) => Math.ceil(Math.max(dataMax, activityThreshold) * 1.1)]
+                    : ["auto", "auto"]}
+                  width={42}
+                  axisLine={false}
+                  tickLine={false}
+                  fontSize={11}
+                />
+                {metric === "steps" && canReviewActivity && activityThreshold != null && (
+                  <ReferenceLine
+                    y={activityThreshold}
+                    stroke="#b65c53"
+                    strokeDasharray="6 5"
+                    label={{ value: "Review line · " + activityThreshold.toLocaleString("en-IN"), position: "insideTopRight", fill: "#98463e", fontSize: 11 }}
+                  />
+                )}
                 <ChartTooltip
                   labelFormatter={(value) => new Date(value).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}
                   formatter={(value) => [Number(value).toLocaleString("en-IN") + " " + METRICS[metric].unit, METRICS[metric].label]}
@@ -463,7 +495,7 @@ export default function Wearables({ pid, demo = false }) {
         {liveValues[metric] && <p className="ob-wear-live-line"><span className="ob-wear-live-pulse" />Live {METRICS[metric].label.toLowerCase()}: <b>{liveValues[metric].value} {liveValues[metric].unit}</b></p>}
       </Panel>
 
-      <Panel title="Add daily activity" hint="Steps, walking distance, active time and sleep usually come from a phone health platform or the device maker's account sync. Enter a daily total here if your device does not expose it over Bluetooth.">
+      {canCapture && <Panel title="Add daily activity" hint="Steps, walking distance, active time and sleep usually come from a phone health platform or the device maker's account sync. Enter a daily total here if your device does not expose it over Bluetooth.">
         <form className="ob-wear-manual" onSubmit={saveManualActivity}>
           {[
             ["steps", "Steps", "steps", "200000", "1"],
@@ -478,7 +510,7 @@ export default function Wearables({ pid, demo = false }) {
           ))}
           <button className="btn ob-wear-primary" type="submit">Save daily activity</button>
         </form>
-      </Panel>
+      </Panel>}
 
       <div className="ob-wear-compat">
         <div><Bluetooth size={19} /><p><b>Bluetooth standards</b><span>BLE devices exposing the standard heart-rate, blood-pressure, pulse-oximeter or thermometer service can stream while connected.</span></p></div>
