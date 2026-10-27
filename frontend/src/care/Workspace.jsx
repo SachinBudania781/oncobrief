@@ -113,7 +113,7 @@ function CareSpace() {
     [menu, setMenu] = useState(false),
     [showNotifications, setShowNotifications] = useState(false),
     [revision, setRevision] = useState(0),
-    [activityFocus, setActivityFocus] = useState(0);
+    [wearableFocus, setWearableFocus] = useState({ metric: "steps", revision: 0 });
   const [qr, setQr] = useState(false),
     [qrError, setQrError] = useState("");
   const [focusedRecordId, setFocusedRecordId] = useState(null);
@@ -318,14 +318,23 @@ function CareSpace() {
                     <b>{n.title}</b>
                     <p>{n.body}</p>
                     <small className="muted">{dateTime(n.created_at)}</small>
-                    {n.channel === "activity" && n.patient_id && (
+                    {["activity", "vitals"].includes(n.channel) && n.patient_id && (
                       <button className="btn" onClick={() => {
                         setPid(n.patient_id);
-                        setActivityFocus((value) => value + 1);
+                        const metric = n.channel === "activity"
+                          ? "steps"
+                          : n.title.toLowerCase().includes("oxygen")
+                            ? "spo2"
+                            : n.title.toLowerCase().includes("blood pressure")
+                              ? (n.title.toLowerCase().includes("diastolic") ? "diastolic" : "systolic")
+                              : n.title.toLowerCase().includes("temperature")
+                                ? "temperature_c"
+                                : "heart_rate";
+                        setWearableFocus((current) => ({ metric, revision: current.revision + 1 }));
                         change("wearables");
                         setShowNotifications(false);
                       }}>
-                        View activity trend
+                        {n.channel === "activity" ? "View activity trend" : "View vital trend"}
                       </button>
                     )}
                     {n.status === "unread" && (
@@ -434,7 +443,7 @@ function CareSpace() {
                 />
               )}
               {(tab === "transport" || transportOpened) && <Transport pid={pid} user={user} active={tab === "transport"} />}
-              {tab === "wearables" && <Wearables pid={pid} demo={Boolean(user.demo)} viewerRole={user.role} activityFocus={activityFocus} />}
+              {tab === "wearables" && <Wearables pid={pid} demo={Boolean(user.demo)} viewerRole={user.role} focusMetric={wearableFocus.metric} focusRevision={wearableFocus.revision} />}
               {tab === "records" && (
                 <RecordsDesk pid={pid} user={user} onOpen={setDocId} />
               )}
@@ -828,4 +837,3 @@ export function SharedCard() {
     </div>
   );
 }
-

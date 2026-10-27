@@ -9,13 +9,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from .config import FRONTEND_DIST, HOSPITAL_NAME
 from .db import Base, SessionLocal, engine
 from . import round2_models
 from .routers import auth, brief, care, documents, patients, round2, document_tools, operations
-from .security import DEMO_MODE, append_audit, require_patient, roles, session_user
+from .security import DEMO_MODE, append_audit, digest, require_patient, roles, session_user
+from .round2_models import User, WearableDeviceCredential
+from .timeutil import utcnow
 
 
 @asynccontextmanager
@@ -81,9 +83,32 @@ async def boundaries(request: Request, call_next):
             if path not in PUBLIC and path != "/api/webhooks/telephony" and not path.startswith("/api/shared/") and request.method != "OPTIONS":
                 db = SessionLocal()
                 user = session_user(db, request)
+                wearable_credential = None
+                if not user and request.method == "POST":
+                    match = re.fullmatch(r"/api/v2/patients/([^/]+)/wearables", path)
+                    authorization = request.headers.get("authorization", "")
+                    scheme, _, bearer = authorization.partition(" ")
+                    if match and scheme.lower() == "bearer" and bearer:
+                        pid_for_device = match.group(1).strip().upper()
+                        wearable_credential = db.scalar(select(WearableDeviceCredential).where(
+                            WearableDeviceCredential.token_hash == digest(bearer),
+                            WearableDeviceCredential.patient_id == pid_for_device,
+                            WearableDeviceCredential.revoked.is_(False),
+                        ))
+                        if (wearable_credential and wearable_credential.expires_at > utcnow()):
+                            user = db.get(User, wearable_credential.user_id)
+                            if user and user.active:
+                                wearable_credential.last_seen = utcnow()
+                                db.commit()
+                            else:
+                                user = None
+                        else:
+                            wearable_credential = None
                 if not user:
                     raise HTTPException(401, "Please sign in")
                 request.state.user = user
+                if wearable_credential:
+                    request.state.wearable_device_id = wearable_credential.id
                 pid = None
                 match = re.search(r"/patients/([^/]+)", path)
                 if match:

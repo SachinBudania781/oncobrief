@@ -104,6 +104,14 @@ Documents use encrypted storage, short-lived viewer-bound links, watermarks and 
 
 The API has origin checks, bounded uploads, content validation, rate limits, security headers and access logs. CI runs API tests, a production frontend build and dependency advisories. None of these substitute for a hospital security assessment or clinical validation. The 100-question suite is an engineering regression set; clinician review is explicitly pending.
 
+
 ## Wearable activity review
 
 The wearable history graph is available to patients and authorized caregivers and care staff with the activity scope. Care staff and caregivers see a configurable daily-step review line (default 3,000 steps; set LOW_ACTIVITY_STEPS_THRESHOLD). The background job checks the latest recorded step total for the previous completed day and sends an in-app notice only to active, assigned caregiver/staff accounts with activity access. It does not send low-activity notices to patient accounts, does not infer zero activity when no data arrived, and presents the threshold as a coordination prompt rather than a clinical guideline. Daily steps require a phone-health or device-vendor feed, or a daily entry; generic browser Bluetooth capture does not currently read step counts.
+
+
+## Wearable vitals monitoring
+
+The Android Bluetooth foreground companion uploads supported standard GATT heart-rate, SpO₂, blood-pressure, and temperature samples while its visible service is running. Patient-scoped 90-day bearer credentials are revocable and can write only wearable data for their patient. Doctors can sign per-patient minimum vital review thresholds with a source and rationale. Two recent sensor samples below a configured minimum create an in-app notice for assigned caregivers and staff with activity access; two subsequent samples at or above the minimum resolve the active alert. SMS/push delivery is not configured. Patient accounts do not receive those notices or threshold lines.
+
+The web app alone cannot keep Bluetooth sensing alive in the background. Android's operating system, sensor availability, permissions, battery policies, connectivity and restarts can interrupt the companion. Standard BLE profiles are device-dependent; this does not implement WHOOP account history or proprietary watch APIs. This prototype does not guarantee 24/7 monitoring and is not a clinical alarm system.

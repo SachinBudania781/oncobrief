@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Bluetooth,
+  Copy,
   Footprints,
   HeartPulse,
   Info,
@@ -101,8 +102,96 @@ function latestValue(readings, metric, fallback) {
   return rows.length ? rows[rows.length - 1] : fallback?.[fallback.length - 1];
 }
 
-export default function Wearables({ pid, demo = false, viewerRole = "patient", activityFocus = 0 }) {
+function VitalAlertProtocolEditor({ pid, thresholds, protocol, onSaved }) {
+  const metrics = [
+    ["heart_rate", "Heart rate", "bpm"],
+    ["spo2", "Oxygen saturation (SpO₂)", "%"],
+    ["systolic", "Systolic blood pressure", "mmHg"],
+    ["diastolic", "Diastolic blood pressure", "mmHg"],
+    ["temperature_c", "Body temperature", "°C"],
+  ];
+  const [values, setValues] = useState(() => Object.fromEntries(
+    metrics.map(([key]) => [key, thresholds[key] == null ? "" : String(thresholds[key])]),
+  ));
+  const [source, setSource] = useState(protocol?.source_url || "");
+  const [rationale, setRationale] = useState(protocol?.rationale || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  const save = async (event) => {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+    const selected = Object.fromEntries(Object.entries(values)
+      .filter(([, value]) => value !== "")
+      .map(([key, value]) => [key, Number(value)]));
+    if (!Object.keys(selected).length) {
+      setError("Enter at least one minimum from the patient's signed local protocol.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await request("/v2/patients/" + encodeURIComponent(pid) + "/vital-alert-protocol", "POST", {
+        thresholds: selected,
+        source_url: source,
+        rationale,
+      });
+      setMessage("Patient-specific vital review limits saved and signed.");
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Panel
+      title="Clinician-signed vital review limits"
+      hint="Set only minima from the treating clinician’s patient-specific protocol. No universal medical cutoffs are prefilled."
+    >
+      <form className="ob-wear-manual" onSubmit={save}>
+        {metrics.map(([key, label, unit]) => (
+          <label className="field" key={key}>
+            {label} <span className="ob-wear-unit">({unit})</span>
+            <input
+              className="input"
+              type="number"
+              step="any"
+              value={values[key]}
+              onChange={(event) => setValues((old) => ({ ...old, [key]: event.target.value }))}
+              placeholder="Not configured"
+            />
+          </label>
+        ))}
+        <label className="field">
+          Signed local protocol source URL
+          <input className="input" type="url" required value={source} onChange={(event) => setSource(event.target.value)} placeholder="https://…" />
+        </label>
+        <label className="field">
+          Clinical rationale
+          <input className="input" required minLength="10" maxLength="3000" value={rationale} onChange={(event) => setRationale(event.target.value)} placeholder="Document the patient-specific review plan" />
+        </label>
+        <button className="btn ob-wear-primary" type="submit" disabled={saving}>
+          {saving ? "Saving…" : "Sign vital alert limits"}
+        </button>
+      </form>
+      {protocol?.approved_by && <p className="ob-wear-caption">Current limits signed by {protocol.approved_by} on {new Date(protocol.approved_at).toLocaleString("en-IN")}.</p>}
+      {error && <p className="care-error" role="alert">{error}</p>}
+      {message && <p className="ob-wear-message" role="status">{message}</p>}
+    </Panel>
+  );
+}
+
+export default function Wearables({ pid, demo = false, viewerRole = "patient", focusMetric = "steps", focusRevision = 0 }) {
   const resource = useResource("/v2/patients/" + encodeURIComponent(pid) + "/wearables?days=365", 30000);
+  const deviceResource = useResource(
+    ["patient", "caregiver"].includes(viewerRole)
+      ? "/v2/patients/" + encodeURIComponent(pid) + "/wearable-devices"
+      : "",
+    30000,
+  );
   const readings = resource.data?.items || [];
   const canCapture = ["patient", "caregiver"].includes(viewerRole);
   const canReviewActivity = ["caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(viewerRole);
@@ -110,8 +199,8 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", a
   const [days, setDays] = useState(30);
   const [metric, setMetric] = useState(viewerRole === "patient" ? "heart_rate" : "steps");
   useEffect(() => {
-    if (activityFocus) setMetric("steps");
-  }, [activityFocus]);
+    if (focusRevision) setMetric(focusMetric);
+  }, [focusMetric, focusRevision]);
   const [consent, setConsent] = useState(false);
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -120,6 +209,7 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", a
   const [error, setError] = useState("");
   const [liveValues, setLiveValues] = useState({});
   const [manual, setManual] = useState({ steps: "", distance_km: "", active_minutes: "", sleep_hours: "" });
+  const [androidToken, setAndroidToken] = useState(null);
   const queueRef = useRef([]);
   const lastSavedAtRef = useRef({});
   const deviceRef = useRef(null);
@@ -316,6 +406,40 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", a
     }
   };
 
+  const createAndroidToken = async () => {
+    setError("");
+    setMessage("");
+    if (!consent) {
+      setError("Please agree before linking an Android wearable companion.");
+      return;
+    }
+    try {
+      const issued = await request(
+        "/v2/patients/" + encodeURIComponent(pid) + "/wearable-devices",
+        "POST",
+        { consent: true, device_name: "OncoBrief Android companion" },
+      );
+      setAndroidToken(issued);
+      deviceResource.refresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const revokeAndroidDevice = async (deviceId) => {
+    if (!window.confirm("Stop this Android companion from uploading wearable readings?")) return;
+    try {
+      await request(
+        "/v2/patients/" + encodeURIComponent(pid) + "/wearable-devices/" + deviceId,
+        "DELETE",
+      );
+      deviceResource.refresh();
+      setMessage("Android companion access revoked.");
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const saveManualActivity = async (event) => {
     event.preventDefault();
     setError("");
@@ -349,6 +473,9 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", a
 
   const chartIsDemo = demo && !readings.some((row) => row.metric === metric);
   const activeReadings = readings;
+  const reviewLine = metric === "steps"
+    ? (canReviewActivity ? activityThreshold : null)
+    : (canReviewActivity ? resource.data?.vital_thresholds?.[metric] : null);
   const heart = latestValue(activeReadings, "heart_rate", demo ? latestDemo.heart_rate : undefined);
   const oxygen = latestValue(activeReadings, "spo2", demo ? latestDemo.spo2 : undefined);
   const systolic = latestValue(activeReadings, "systolic", demo ? latestDemo.systolic : undefined);
@@ -415,13 +542,52 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", a
         {error && <p className="care-error" role="alert">{error}</p>}
       </Panel>}
 
+      {canCapture && <Panel
+        title="Android background sensor companion"
+        hint="Generate a patient-scoped setup code for the Android companion. Android keeps a visible monitoring notification while it listens to compatible Bluetooth devices."
+      >
+        <p className="ob-wear-caption">
+          Background capture requires the companion app, Bluetooth permission, a nearby compatible sensor, and an active Android foreground service. It can pause if Android stops the service, the phone restarts, the device disconnects, or the phone loses network. Care-team notices appear in OncoBrief; SMS/push delivery is not configured. This is not emergency monitoring.
+        </p>
+        <button className="btn ob-wear-primary" type="button" disabled={!consent} onClick={createAndroidToken}>
+          <Bluetooth size={17} />Generate Android setup code
+        </button>
+        {androidToken && (
+          <div className="ob-wear-android-token">
+            <b>Paste this setup code into the Android companion</b>
+            <code>{androidToken.token}</code>
+            <span>Patient {androidToken.patient_id} · shown once · expires {new Date(androidToken.expires_at).toLocaleString("en-IN")} · revoke the device here to stop access.</span>
+            <button className="btn" type="button" onClick={() => navigator.clipboard?.writeText(androidToken.token)}>
+              <Copy size={15} />Copy code
+            </button>
+          </div>
+        )}
+        {(deviceResource.data || []).filter((device) => !device.revoked).map((device) => (
+          <div className="ob-wear-android-device" key={device.id}>
+            <span><b>{device.device_name}</b><small>Last sync: {device.last_seen ? new Date(device.last_seen).toLocaleString("en-IN") : "Not connected yet"}</small></span>
+            {device.can_revoke && <button className="btn ob-wear-secondary" type="button" onClick={() => revokeAndroidDevice(device.id)}>Revoke</button>}
+          </div>
+        ))}
+        {deviceResource.error && <p className="care-error" role="alert">{deviceResource.error}</p>}
+      </Panel>}
+
+      {viewerRole === "doctor" && (
+        <VitalAlertProtocolEditor
+          key={pid + ":" + (resource.data?.vital_protocol?.approved_at || "none")}
+          pid={pid}
+          thresholds={resource.data?.vital_thresholds || {}}
+          protocol={resource.data?.vital_protocol}
+          onSaved={resource.refresh}
+        />
+      )}
+
       <section className="ob-wear-stats" aria-label="Latest health and activity readings">
         {stats.map(({ label, point, unit, icon: Icon, value }) => (
           <article className="ob-wear-stat" key={label}>
             <span className="ob-wear-stat-icon"><Icon size={18} /></span>
             <span className="ob-wear-stat-label">{label}</span>
             <b>{value || (point ? Number(point.value).toLocaleString("en-IN") : "—")}<small> {unit}</small></b>
-            <span className="ob-wear-stat-source">{point?.source === "bluetooth" ? "From connected device" : point?.source === "manual" ? "Manual entry" : point?.source === "demo" ? "Illustrative demo" : "No readings"}</span>
+            <span className="ob-wear-stat-source">{["bluetooth", "android_ble"].includes(point?.source) ? "From connected device" : point?.source === "manual" ? "Manual entry" : point?.source === "demo" ? "Illustrative demo" : "No readings"}</span>
           </article>
         ))}
       </section>
@@ -464,20 +630,28 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", a
                 <XAxis dataKey="time" type="number" domain={["dataMin", "dataMax"]} tickFormatter={shortDate} tickCount={6} axisLine={false} tickLine={false} fontSize={11} />
                 <YAxis
                   dataKey="value"
-                  domain={metric === "steps" && canReviewActivity && activityThreshold != null
-                    ? [0, (dataMax) => Math.ceil(Math.max(dataMax, activityThreshold) * 1.1)]
+                  domain={reviewLine != null
+                    ? [(dataMin) => Math.max(0, Math.min(dataMin, reviewLine) * 0.9),
+                       (dataMax) => Math.max(dataMax, reviewLine) * 1.1]
                     : ["auto", "auto"]}
                   width={42}
                   axisLine={false}
                   tickLine={false}
                   fontSize={11}
                 />
-                {metric === "steps" && canReviewActivity && activityThreshold != null && (
+                {reviewLine != null && (
                   <ReferenceLine
-                    y={activityThreshold}
+                    y={reviewLine}
                     stroke="#b65c53"
                     strokeDasharray="6 5"
-                    label={{ value: "Review line · " + activityThreshold.toLocaleString("en-IN"), position: "insideTopRight", fill: "#98463e", fontSize: 11 }}
+                    label={{
+                      value: metric === "steps"
+                        ? "Review line · " + reviewLine.toLocaleString("en-IN")
+                        : "Clinician limit · " + reviewLine + " " + METRICS[metric].unit,
+                      position: "insideTopRight",
+                      fill: "#98463e",
+                      fontSize: 11,
+                    }}
                   />
                 )}
                 <ChartTooltip

@@ -109,3 +109,9 @@ The navigator verifies availability and arranges the introduction. A patient can
 
 Only fabricated patients belong on the public demo. In production, select a separate database and persistent data directory, configure a stable encryption key, turn on secure cookies and staff TOTP, and approve processing terms before setting `LLM_DATA_PROCESSING_APPROVED=true`. Name/phone/ABHA redaction reduces exposure; it is not a guarantee of complete anonymisation.
 
+
+## Android wearable companion
+
+The native Android companion uses a patient-scoped bearer credential issued from the authenticated patient Wearables page. Credentials are stored hashed by the API, expire after 90 days, and can be revoked. The bearer is accepted only for POST /api/v2/patients/{patient_id}/wearables and only with source=android_ble; it cannot read patient data or call other API routes. The Android app encrypts its credential and offline queue with Android Keystore.
+
+The companion listens only to standard Bluetooth GATT health services that a sensor actually exposes. Vendor APIs, vendor account credentials, Apple HealthKit, and non-standard watch protocols are separate integrations. Android's connected-device foreground service keeps the user informed but cannot promise uninterrupted capture or delivery.

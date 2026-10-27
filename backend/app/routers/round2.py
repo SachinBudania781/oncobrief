@@ -12,14 +12,16 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from ..db import get_db
 from ..models import Activity, Appointment, Document, LabValue, Medication, MedLog, Patient, SymptomReport, WearableReading
+from ..round2_models import WearableDeviceCredential
 from ..round2_models import AccessGrant, Alert, Approval, CareRecord, LibraryItem, Notification, ShareLink, User, TreatingClinician
 from ..security import DEMO_MODE, append_audit, digest, identity, password_hash, require_patient, roles, verify_chain, visible_ids
 from ..services.companion import EMERGENCY, alert, answer, command_centre, living_summary, notify_team, records, red_flags, safe_text
 from ..services.integrations import deliver, status as integration_status
 from ..services.activity import low_activity_steps_threshold
+from ..services.vitals import current_vital_alert_protocol, evaluate_vital_readings
 from ..workflows import WORKFLOWS
 from ..services.scheduling import serial_schedule
 from .auth import sign_in_id
@@ -65,7 +67,7 @@ def notifications(request: Request, db=Depends(get_db)):
     return [serial(n) for n in db.scalars(select(Notification).where(Notification.user_id == user.id).order_by(Notification.id.desc()).limit(100))
             if not n.patient_id or n.patient_id in (
                 appointment_ids if n.channel == "transport"
-                else activity_ids if n.channel == "activity"
+                else activity_ids if n.channel in {"activity", "vitals"}
                 else alert_ids
             )]
 
@@ -743,9 +745,20 @@ class WearablePointIn(BaseModel):
 
 class WearableBatchIn(BaseModel):
     consent: bool
-    source: Literal["bluetooth", "manual"] = "bluetooth"
+    source: Literal["bluetooth", "android_ble", "health_connect", "healthkit", "vendor", "manual"] = "bluetooth"
     device_name: str = Field(default="", max_length=100)
     readings: list[WearablePointIn] = Field(min_length=1, max_length=100)
+
+
+class WearableDeviceIn(BaseModel):
+    consent: bool
+    device_name: str = Field(default="OncoBrief Android companion", max_length=100)
+
+
+class VitalAlertProtocolIn(BaseModel):
+    thresholds: dict[str, float] = Field(max_length=5)
+    source_url: str = Field(pattern=r"^https://", max_length=1000)
+    rationale: str = Field(min_length=10, max_length=3000)
 
 
 WEARABLE_UNITS = {
@@ -760,6 +773,94 @@ WEARABLE_RANGES = {
 }
 
 
+@router.post("/v2/patients/{patient_id}/wearable-devices")
+def create_wearable_device(patient_id: str, body: WearableDeviceIn, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "activity")
+    roles(user, "patient", "caregiver")
+    if not body.consent:
+        raise HTTPException(422, "Explicit consent is required before linking a background wearable")
+    active_credentials = db.scalar(select(func.count(WearableDeviceCredential.id)).where(
+        WearableDeviceCredential.patient_id == patient_id,
+        WearableDeviceCredential.user_id == user.id,
+        WearableDeviceCredential.revoked.is_(False),
+        WearableDeviceCredential.expires_at > utcnow(),
+    )) or 0
+    if active_credentials >= 5:
+        raise HTTPException(409, "Revoke an existing Android companion before linking another one")
+    token = secrets.token_urlsafe(32)
+    row = WearableDeviceCredential(
+        patient_id=patient_id,
+        user_id=user.id,
+        token_hash=digest(token),
+        device_name=body.device_name.strip() or "Android wearable companion",
+        expires_at=utcnow() + timedelta(days=90),
+    )
+    db.add(row)
+    db.commit()
+    append_audit(db, user, "wearable_device_linked", patient_id, f"Credential {row.id}; expires in 90 days")
+    return {"id": row.id, "token": token, "patient_id": patient_id,
+            "device_name": row.device_name, "expires_at": row.expires_at.isoformat() + "Z"}
+
+
+@router.get("/v2/patients/{patient_id}/wearable-devices")
+def wearable_devices(patient_id: str, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "activity")
+    roles(user, "patient", "caregiver")
+    rows = db.scalars(select(WearableDeviceCredential).where(
+        WearableDeviceCredential.patient_id == patient_id
+    ).order_by(WearableDeviceCredential.id.desc()).limit(50)).all()
+    return [{
+        "id": row.id,
+        "device_name": row.device_name,
+        "created_at": row.created_at.isoformat() + "Z",
+        "last_seen": row.last_seen.isoformat() + "Z" if row.last_seen else None,
+        "expires_at": row.expires_at.isoformat() + "Z",
+        "revoked": row.revoked,
+        "can_revoke": user.role == "patient" or row.user_id == user.id,
+    } for row in rows if user.role == "patient" or row.user_id == user.id]
+
+
+@router.delete("/v2/patients/{patient_id}/wearable-devices/{device_id}")
+def revoke_wearable_device(patient_id: str, device_id: int, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "activity")
+    roles(user, "patient", "caregiver")
+    row = db.get(WearableDeviceCredential, device_id)
+    if not row or row.patient_id != patient_id or (user.role != "patient" and row.user_id != user.id):
+        raise HTTPException(404, "Wearable device not found")
+    row.revoked = True
+    db.commit()
+    append_audit(db, user, "wearable_device_revoked", patient_id, f"Credential {row.id}")
+    return {"ok": True}
+
+
+@router.post("/v2/patients/{patient_id}/vital-alert-protocol")
+def sign_vital_alert_protocol(patient_id: str, body: VitalAlertProtocolIn, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "activity")
+    roles(user, "doctor")
+    allowed = {"heart_rate", "spo2", "systolic", "diastolic", "temperature_c"}
+    if not body.thresholds or set(body.thresholds) - allowed:
+        raise HTTPException(422, "Provide at least one supported vital with a minimum review threshold")
+    for metric, value in body.thresholds.items():
+        low, high = WEARABLE_RANGES[metric]
+        if not math.isfinite(value) or value < low or value > high:
+            raise HTTPException(422, f"Invalid minimum review threshold for {metric}")
+    for previous in db.scalars(select(CareRecord).where(
+        CareRecord.patient_id == patient_id, CareRecord.kind == "vital_alert_protocol",
+        CareRecord.status == "approved",
+    )):
+        previous.status = "superseded"
+    row = CareRecord(
+        patient_id=patient_id, kind="vital_alert_protocol", author_id=user.id,
+        author_name=user.name, author_role=user.role, status="approved",
+        approved_by=user.name, approved_at=utcnow(),
+        data={"thresholds": body.thresholds, "source_url": body.source_url, "rationale": body.rationale},
+    )
+    db.add(row)
+    db.commit()
+    append_audit(db, user, "sign_vital_alert_protocol", patient_id)
+    return serial(row)
+
+
 @router.get("/v2/patients/{patient_id}/wearables")
 def wearable_history(patient_id: str, request: Request, days: int = 30, db=Depends(get_db)):
     user = patient_access(db, request, patient_id, "activity")
@@ -772,6 +873,14 @@ def wearable_history(patient_id: str, request: Request, days: int = 30, db=Depen
     payload = {"days": days, "items": [serial(row) for row in rows]}
     if user.role != "patient":
         payload["activity_threshold_steps"] = low_activity_steps_threshold()
+        protocol = current_vital_alert_protocol(db, patient_id)
+        payload["vital_thresholds"] = protocol.data.get("thresholds", {}) if protocol else {}
+        payload["vital_protocol"] = {
+            "source_url": protocol.data.get("source_url", ""),
+            "rationale": protocol.data.get("rationale", ""),
+            "approved_by": protocol.approved_by,
+            "approved_at": protocol.approved_at.isoformat() + "Z" if protocol.approved_at else None,
+        } if protocol else None
     return payload
 
 
@@ -781,6 +890,8 @@ def save_wearable_readings(patient_id: str, body: WearableBatchIn, request: Requ
     roles(user, "patient", "caregiver")
     if not body.consent:
         raise HTTPException(422, "Explicit consent is required before saving wearable readings")
+    if getattr(request.state, "wearable_device_id", None) and body.source != "android_ble":
+        raise HTTPException(422, "A background device credential can only upload Android Bluetooth readings")
     saved = []
     for point in body.readings:
         if point.unit != WEARABLE_UNITS[point.metric]:
@@ -802,6 +913,8 @@ def save_wearable_readings(patient_id: str, body: WearableBatchIn, request: Requ
     append_audit(db, user, "wearable_readings_saved", patient_id,
                  f"{len(saved)} {body.source} readings; device name only")
     db.commit()
+    if body.source != "manual":
+        evaluate_vital_readings(db, patient_id, saved)
     return {"saved": len(saved), "source": body.source}
 
 @router.get("/v2/patients/{patient_id}/clinical")
@@ -1821,4 +1934,3 @@ def care_review(patient_id:str,request:Request,db=Depends(get_db)):
     db.commit()
     append_audit(db,user,"draft_care_review",patient_id,f"Approval {row.id}")
     return serial(row)
-
