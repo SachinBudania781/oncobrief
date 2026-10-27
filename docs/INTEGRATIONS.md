@@ -21,6 +21,7 @@ Copy `.env.example` to `backend/.env` for local configuration, or enter the vari
 | Photo severity / meal estimates | `VISION_ADAPTER_URL`, `VISION_API_KEY` | Photo history and manual clinician/dietitian entries work; AI output remains a review draft |
 | AQI / weather | `ENVIRONMENT_ADAPTER_URL`, `ENVIRONMENT_API_KEY` | Approved seasonal advice works; no live AQI or forecast is invented |
 | Wearables | Standard BLE GATT profiles can be read directly in supported secure browsers; `WEARABLE_ADAPTER_URL`, `WEARABLE_API_KEY` remain for vendor/hospital adapters | Patient-consented live capture supports standard heart-rate, blood-pressure, pulse-oximeter and thermometer services while the page stays open; steps/distance/sleep need manual entry or a vendor/phone-health feed. WHOOP history requires a separately registered OAuth app. |
+| Transport coordination | No external adapter is configured | Patients can request transport for a booked visit; assigned staff can record status, arranged provider and pickup time. A request is not a vehicle reservation, dispatch or payment. Connecting a hospital shuttle, accessible-ride provider or transport-assistance program requires verified local arrangements or an API adapter. |
 | Video visits | `TELEMEDICINE_ADAPTER_URL`, `TELEMEDICINE_API_KEY` | Scheduling and care chat work |
 | ER pre-alert | `ER_ALERT_ADAPTER_URL`, `ER_ALERT_ADAPTER_KEY` | Emergency instructions, nurse triage, share card and maps link work; ER delivery is not claimed |
 | Navigation and care contact | `HOSPITAL_ADDRESS`, `HOSPITAL_EMERGENCY_PHONE`, `PUBLIC_BASE_URL` | No invented hospital address, phone or indoor route |
@@ -102,6 +103,7 @@ The navigator verifies availability and arranges the introduction. A patient can
 - Treating clinician review of the 100-question regression set, emergency rules, protocols, translations and clinical workflows. The fixture explicitly says `clinician_reviewed: false`.
 - Doctor and dietitian approval of food-library items; doctor approval of the other guidance library items. Demo approvals are labelled as demo fixtures. Production starts unpublished.
 - Real formulary protocols, verified trial records and prices, hospital room directions, trained buddy directory, escalation contacts and ER arrangements.
+- A hospital or navigator must verify local transport contacts, accessibility options, pickup/dispatch process and any fare-support program before external ride arrangements can be offered.
 - India-region hosting, encrypted database volume/backups, persistent document storage, restore testing, retention policy and privacy-officer procedures. These cannot be established by pasting an API key.
 
 Only fabricated patients belong on the public demo. In production, select a separate database and persistent data directory, configure a stable encryption key, turn on secure cookies and staff TOTP, and approve processing terms before setting `LLM_DATA_PROCESSING_APPROVED=true`. Name/phone/ABHA redaction reduces exposure; it is not a guarantee of complete anonymisation.

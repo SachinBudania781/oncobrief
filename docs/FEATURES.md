@@ -20,7 +20,7 @@ This maps the supplied Parts A, B and C to the implementation. Part A's repeated
 | Safe Indian meal plan | Food, energy & play; preferences and nutrition journal | Curated vegetarian/Jain/non-vegetarian examples; doctor and dietitian approval in production; not an autonomous diet prescription |
 | Energy-based activity, hobbies and games | Wellness guidance, manual activity and consented Bluetooth wearable trends, memory game | Recorded fatigue/count flags constrain suggestions; signed guidance library |
 | Scheme and money navigator | Money & schemes + finance workflow | Official PM-JAY verification link and entered quote/confirmed-cover calculation; no eligibility or reimbursement guarantee |
-| One-trip planner and nearby stays | Day pass and booking | Shared date/department bookings; nearby search needs hospital address |
+| One-trip planner, ride coordination and nearby stays | Day pass, appointment-linked transport requests and staff coordination queue | Pickup, access and fare-support requests go to the assigned team; this does not book a third-party vehicle. Nearby search needs hospital address |
 | Trial matching and information | Connected services → trials; clinical trial review workflow | CTRI gateway or verified manual registry entry; doctor sees and signs first |
 | Who opened my records | Privacy & devices | Patient-specific audit chain with actor/time; independent anchor available through gateway |
 | WhatsApp / SMS mode | Communication-consent workflow, reminder scheduler, adapters | Requires opted-in channel, sender setup and gateway; ordinary phone callbacks are patient-bound |
@@ -66,6 +66,7 @@ This maps the supplied Parts A, B and C to the implementation. Part A's repeated
 | Individual staff logins and restricted roles | Auth and patient grants | Staff password + TOTP in production; lab uploads restricted to own author; front desk schedule scope |
 | Wrong-patient guard | Upload and bulk confirmation | Printed ID/name mismatch blocks filing; unreadable identity requires an auditable manual verification |
 | Queue / wait-time messages | Day pass and arrival/status updates | Estimate based on queue and 20-minute slots, not a guaranteed time |
+| Patient transport coordination | Transport tab for patients/caregivers; assigned staff queue | Staff records coordination status and ride details; vehicle dispatch, fare payment and provider booking are not integrated |
 | Clash fix | Schedule desk | Preview nearest free slot; rechecks patient and room overlap on approval |
 | Day-care chair / preparation board | Chair workflow and hospital overview | Requires signed approved order; rejects recorded chair overlaps |
 | Approved multilingual leaflets | Wellness → Patient leaflets | English/Hindi/Marathi where approved; missing translations explicitly fall back to the original |

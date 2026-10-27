@@ -58,9 +58,10 @@ def integrations(request: Request):
 @router.get("/v2/notifications")
 def notifications(request: Request, db=Depends(get_db)):
     user = identity(request)
-    ids = visible_ids(db, user, "alerts")
+    alert_ids = set(visible_ids(db, user, "alerts"))
+    appointment_ids = set(visible_ids(db, user, "appointments"))
     return [serial(n) for n in db.scalars(select(Notification).where(Notification.user_id == user.id).order_by(Notification.id.desc()).limit(100))
-            if not n.patient_id or n.patient_id in ids]
+            if not n.patient_id or n.patient_id in (appointment_ids if n.channel == "transport" else alert_ids)]
 
 
 @router.post("/v2/notifications/{nid}/read")
@@ -929,6 +930,195 @@ def day_pass(patient_id: str, request: Request, day: str = "", db=Depends(get_db
             "trip_count": len({a.start.date() for a in appts}),
             "stays_url": "https://www.google.com/maps/search/" + quote("patient accommodation near " + address) if address else None,
             "gate_url": f"/app?gate={patient_id}", "map_configured": bool(address)}
+
+
+TRANSPORT_ROLES = {"frontdesk", "navigator", "nurse", "admin"}
+
+
+class TransportRequestIn(BaseModel):
+    appointment_id: int = Field(gt=0)
+    pickup_at: datetime
+    pickup_address: str = Field(min_length=5, max_length=300)
+    landmark: str = Field(default="", max_length=150)
+    ride_type: Literal["standard", "wheelchair_accessible", "hospital_shuttle", "family_or_self", "other"] = "standard"
+    support: list[Literal["mobility_assistance", "caregiver_accompanying"]] = Field(default_factory=list, max_length=2)
+    companion_count: int = Field(default=0, ge=0, le=4)
+    fare_support: bool = False
+    notes: str = Field(default="", max_length=500)
+    consent: bool
+
+
+class TransportUpdateIn(BaseModel):
+    status: Literal["coordinating", "arranged", "unable", "completed"]
+    arranged_via: str = Field(default="", max_length=120)
+    confirmed_pickup_at: datetime | None = None
+    coordination_note: str = Field(default="", max_length=500)
+
+
+def transport_payload(db, row):
+    data = row.data or {}
+    appointment = db.get(Appointment, data.get("appointment_id")) if data.get("appointment_id") else None
+    patient = db.get(Patient, row.patient_id)
+    out = serial(row) | {"patient_name": patient.name if patient else ""}
+    out["appointment"] = ({"id": appointment.id, "department": appointment.department,
+                           "room": appointment.room, "start": appointment.start.isoformat(),
+                           "status": appointment.status} if appointment else None)
+    return out
+
+
+def notify_transport_coordinators(db, patient_id, title, body):
+    now = utcnow()
+    grants = db.scalars(select(AccessGrant).where(AccessGrant.patient_id == patient_id, AccessGrant.active.is_(True))).all()
+    for grant in grants:
+        coordinator = db.get(User, grant.user_id)
+        if (coordinator and coordinator.active and coordinator.role in TRANSPORT_ROLES
+                and (not grant.expires_at or grant.expires_at > now)
+                and ("all" in grant.scopes or "appointments" in grant.scopes)):
+            db.add(Notification(user_id=coordinator.id, patient_id=patient_id, channel="transport", title=title, body=body))
+    db.commit()
+
+
+@router.get("/v2/patients/{patient_id}/transport-requests")
+def patient_transport_requests(patient_id: str, request: Request, db=Depends(get_db)):
+    patient_access(db, request, patient_id, "appointments")
+    rows = db.scalars(select(CareRecord).where(
+        CareRecord.patient_id == patient_id, CareRecord.kind == "transport_request"
+    ).order_by(CareRecord.created_at.desc(), CareRecord.id.desc()).limit(100)).all()
+    return [transport_payload(db, row) for row in rows]
+
+
+@router.post("/v2/patients/{patient_id}/transport-requests")
+def create_transport_request(patient_id: str, body: TransportRequestIn, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "appointments")
+    roles(user, "patient", "caregiver")
+    if not body.consent:
+        raise HTTPException(422, "Consent is required to share pickup details with your care team")
+    appointment = db.get(Appointment, body.appointment_id)
+    if not appointment or appointment.patient_id != patient_id:
+        raise HTTPException(404, "Choose an appointment in this patient record")
+    if appointment.status != "booked" or appointment.start <= datetime.now():
+        raise HTTPException(422, "Transport requests are for upcoming booked appointments")
+    pickup_at = body.pickup_at.astimezone().replace(tzinfo=None) if body.pickup_at.tzinfo else body.pickup_at
+    if pickup_at <= datetime.now() or pickup_at >= appointment.start:
+        raise HTTPException(422, "Choose a future pickup time before the appointment")
+    active = db.scalars(select(CareRecord).where(
+        CareRecord.patient_id == patient_id, CareRecord.kind == "transport_request",
+        CareRecord.status.in_(["requested", "coordinating", "arranged"])
+    )).all()
+    if any((row.data or {}).get("appointment_id") == appointment.id for row in active):
+        raise HTTPException(409, "A transport request already exists for this appointment")
+    data = {
+        "appointment_id": appointment.id,
+        "pickup_at": pickup_at.isoformat(),
+        "pickup_address": body.pickup_address.strip(),
+        "landmark": body.landmark.strip(),
+        "ride_type": body.ride_type,
+        "support": sorted(set(body.support)),
+        "companion_count": body.companion_count,
+        "fare_support": body.fare_support,
+        "notes": body.notes.strip(),
+        "arranged_via": "",
+        "confirmed_pickup_at": "",
+        "coordination_note": "",
+        "status_history": [{"status": "requested", "by": user.name, "at": utcnow().isoformat()}],
+    }
+    row = CareRecord(patient_id=patient_id, kind="transport_request", author_id=user.id,
+                     author_name=user.name, author_role=user.role, status="requested", data=data)
+    db.add(row)
+    db.commit()
+    append_audit(db, user, "transport_request_created", patient_id,
+                 f"Appointment {appointment.id}; {body.ride_type}; fare support={body.fare_support}")
+    notify_transport_coordinators(db, patient_id, "Transport help requested",
+                                  f"A ride request was submitted for {appointment.department} on {appointment.start:%d %b at %H:%M}.")
+    return transport_payload(db, row)
+
+
+@router.get("/v2/transport-requests")
+def transport_request_queue(request: Request, status: Literal["requested", "coordinating", "arranged", "unable", "completed", "cancelled"] | None = None,
+                            db=Depends(get_db)):
+    user = identity(request)
+    roles(user, *TRANSPORT_ROLES)
+    patient_ids = visible_ids(db, user, "appointments")
+    if not patient_ids:
+        return []
+    stmt = select(CareRecord).where(CareRecord.kind == "transport_request", CareRecord.patient_id.in_(patient_ids))
+    if status:
+        stmt = stmt.where(CareRecord.status == status)
+    rows = db.scalars(stmt.order_by(CareRecord.created_at.desc(), CareRecord.id.desc()).limit(500)).all()
+    return [transport_payload(db, row) for row in rows]
+
+
+@router.patch("/v2/transport-requests/{request_id}")
+def update_transport_request(request_id: int, body: TransportUpdateIn, request: Request, db=Depends(get_db)):
+    user = identity(request)
+    roles(user, *TRANSPORT_ROLES)
+    row = db.get(CareRecord, request_id)
+    if not row or row.kind != "transport_request":
+        raise HTTPException(404, "Transport request not found")
+    patient_access(db, request, row.patient_id, "appointments")
+    transitions = {
+        "requested": {"coordinating", "arranged", "unable"},
+        "coordinating": {"arranged", "unable"},
+        "arranged": {"coordinating", "unable", "completed"},
+        "unable": {"coordinating", "arranged"},
+    }
+    if body.status != row.status and body.status not in transitions.get(row.status, set()):
+        raise HTTPException(409, f"A {row.status} request cannot move to {body.status}")
+    data = dict(row.data or {})
+    appointment = db.get(Appointment, data.get("appointment_id"))
+    confirmed_pickup_at = body.confirmed_pickup_at
+    if confirmed_pickup_at and confirmed_pickup_at.tzinfo:
+        confirmed_pickup_at = confirmed_pickup_at.astimezone().replace(tzinfo=None)
+    if body.status == "arranged":
+        if not body.arranged_via.strip() or not confirmed_pickup_at:
+            raise HTTPException(422, "Enter who arranged the ride and its confirmed pickup time")
+        if confirmed_pickup_at <= datetime.now():
+            raise HTTPException(422, "Confirmed pickup time must be in the future")
+        if appointment and confirmed_pickup_at >= appointment.start:
+            raise HTTPException(422, "Confirmed pickup time must be before the appointment")
+        data["arranged_via"] = body.arranged_via.strip()
+        data["confirmed_pickup_at"] = confirmed_pickup_at.isoformat()
+    elif body.arranged_via.strip():
+        data["arranged_via"] = body.arranged_via.strip()
+    elif confirmed_pickup_at:
+        data["confirmed_pickup_at"] = confirmed_pickup_at.isoformat()
+    if body.status in {"coordinating", "unable"}:
+        data["arranged_via"] = ""
+        data["confirmed_pickup_at"] = ""
+    if body.coordination_note.strip():
+        data["coordination_note"] = body.coordination_note.strip()
+    history = list(data.get("status_history", []))
+    if body.status != row.status:
+        history.append({"status": body.status, "by": user.name, "at": utcnow().isoformat()})
+    data["status_history"] = history[-20:]
+    row.data, row.status, row.updated_at = data, body.status, utcnow()
+    db.commit()
+    db.add(Notification(user_id=row.author_id, patient_id=row.patient_id,
+                        channel="transport", title="Transport request update", body=f"Your ride request is {body.status.replace('_', ' ')}."))
+    db.commit()
+    append_audit(db, user, "transport_request_updated", row.patient_id,
+                 f"Request {row.id}: {body.status}")
+    return transport_payload(db, row)
+
+
+@router.post("/v2/transport-requests/{request_id}/cancel")
+def cancel_transport_request(request_id: int, request: Request, db=Depends(get_db)):
+    row = db.get(CareRecord, request_id)
+    if not row or row.kind != "transport_request":
+        raise HTTPException(404, "Transport request not found")
+    user = patient_access(db, request, row.patient_id, "appointments")
+    roles(user, "patient", "caregiver")
+    if row.status in {"completed", "cancelled"}:
+        raise HTTPException(409, "This transport request is already closed")
+    data = dict(row.data or {})
+    history = list(data.get("status_history", []))
+    history.append({"status": "cancelled", "by": user.name, "at": utcnow().isoformat()})
+    data["status_history"] = history[-20:]
+    row.data, row.status, row.updated_at = data, "cancelled", utcnow()
+    db.commit()
+    append_audit(db, user, "transport_request_cancelled", row.patient_id, f"Request {row.id}")
+    notify_transport_coordinators(db, row.patient_id, "Transport request cancelled", f"A ride request for {row.patient_id} was cancelled.")
+    return transport_payload(db, row)
 
 
 @router.get("/v2/patients/{patient_id}/gate-qr")

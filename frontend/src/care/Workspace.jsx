@@ -4,6 +4,7 @@ import {
   Bell,
   BookHeart,
   CalendarDays,
+  Car,
   CircleHelp,
   ClipboardList,
   FileStack,
@@ -68,6 +69,7 @@ import Brief from "../apps/doctor/Brief";
 import "./care.css";
 import AIAssistantWidget from "./AIAssistantWidget";
 import Wearables from "./Wearables";
+import Transport from "./Transport";
 import "./interface.css";
 
 const NAV = [
@@ -79,6 +81,7 @@ const NAV = [
   ["journal", "Plans & journal", BookHeart, "notes"],
   ["chat", "Care circle chat", HeartHandshake, "chat"],
   ["day", "Hospital day pass", CalendarDays, "appointments"],
+  ["transport", "Transport", Car, "appointments"],
   ["wellness", "Wellbeing", Flower2, "nutrition"],
   ["wearables", "Wearables", Watch, "activity"],
   ["records", "Reports & uploads", FileStack, "documents"],
@@ -149,22 +152,24 @@ function CareSpace() {
       "privacy",
       "settings",
     ],
-    frontdesk: ["home", "day", "schedule", "privacy", "settings"],
+    frontdesk: ["home", "day", "transport", "schedule", "privacy", "settings"],
     navigator: [
       "home",
       "journal",
       "chat",
       "day",
+      "transport",
       "money",
       "privacy",
       "settings",
     ],
     privacy: ["home", "privacy", "settings"],
-    admin: ["home", "schedule", "privacy", "settings"],
+    admin: ["home", "transport", "schedule", "privacy", "settings"],
   };
   const nav = NAV.filter(
     (n) =>
-      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])) && (n[0] !== "wearables" || ["patient", "caregiver"].includes(user.role)),
+      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])) && (n[0] !== "wearables" || ["patient", "caregiver"].includes(user.role)) &&
+      (n[0] !== "transport" || ["patient", "caregiver", "frontdesk", "navigator", "nurse", "admin"].includes(user.role)),
   );
   useEffect(() => {
     if (!nav.some((n) => n[0] === tab)) setTab("home");
@@ -414,6 +419,7 @@ function CareSpace() {
                   canTeachBack={can("notes")}
                 />
               )}
+              {tab === "transport" && <Transport pid={pid} user={user} />}
               {tab === "wearables" && <Wearables pid={pid} demo={Boolean(user.demo)} />}
               {tab === "records" && (
                 <RecordsDesk pid={pid} user={user} onOpen={setDocId} />
