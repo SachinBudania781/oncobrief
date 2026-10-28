@@ -4,8 +4,9 @@ import re
 from datetime import datetime, timedelta
 from sqlalchemy import select
 from ..db import SessionLocal
-from ..models import Appointment, Medication, Patient
+from ..models import Appointment, Medication, Patient, WearableReading
 from ..round2_models import AccessGrant, CareRecord, JobReceipt, Notification, User
+from .activity import low_activity_steps_threshold
 from .companion import records
 
 
@@ -28,6 +29,57 @@ def tick(now=None):
                         # Leave the job unreceipted so the next tick can retry anchoring.
                         pass
         for p in db.scalars(select(Patient)):
+            # Evaluate the latest saved daily total after the day has closed.
+            # Missing wearable data is never treated as zero activity.
+            activity_day = now.date() - timedelta(days=1)
+            activity_start = datetime.combine(activity_day, datetime.min.time())
+            activity_end = activity_start + timedelta(days=1)
+            latest_steps = db.scalar(
+                select(WearableReading)
+                .where(
+                    WearableReading.patient_id == p.id,
+                    WearableReading.metric == "steps",
+                    WearableReading.observed_at >= activity_start,
+                    WearableReading.observed_at < activity_end,
+                )
+                .order_by(WearableReading.observed_at.desc())
+                .limit(1)
+            )
+            threshold = low_activity_steps_threshold()
+            if latest_steps and latest_steps.value < threshold:
+                key = f"low-activity:{p.id}:{activity_day.isoformat()}"
+                if not db.get(JobReceipt, key):
+                    body = (
+                        f"The latest recorded daily total for {activity_day.isoformat()} was "
+                        f"{latest_steps.value:,.0f} steps, below the configured review line of "
+                        f"{threshold:,.0f}. Please review the patient's longitudinal activity graph. "
+                        "This is a coordination prompt, not a clinical assessment."
+                    )
+                    staff_roles = {"caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"}
+                    notified = False
+                    for grant in db.scalars(
+                        select(AccessGrant).where(
+                            AccessGrant.patient_id == p.id,
+                            AccessGrant.active.is_(True),
+                        )
+                    ):
+                        if grant.expires_at and grant.expires_at <= utcnow():
+                            continue
+                        if not ({"all", "activity"} & set(grant.scopes or [])):
+                            continue
+                        recipient = db.get(User, grant.user_id)
+                        if recipient and recipient.active and recipient.role in staff_roles:
+                            db.add(Notification(
+                                user_id=recipient.id,
+                                patient_id=p.id,
+                                channel="activity",
+                                title="Low activity review",
+                                body=body,
+                            ))
+                            notified = True
+                    if notified:
+                        db.add(JobReceipt(key=key, status="in_app"))
+                        db.commit()
             events = []
             for m in db.scalars(select(Medication).where(Medication.patient_id == p.id, Medication.active.is_(True))):
                 for t in m.times:

@@ -13,6 +13,7 @@ import DoctorApp from "./apps/doctor/DoctorApp";
 import StaffApp from "./apps/staff/StaffApp";
 import PatientApp from "./apps/patient/PatientApp";
 import Workspace, { SharedCard } from "./care/Workspace";
+import TransportTracker from "./care/TransportTracker";
 import { AuthProvider, LegacyGuard } from "./care/Auth";
 import { APP_TARGET } from "./deployment";
 
@@ -36,6 +37,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
           <Route path="/patient" element={<Workspace />} />
           <Route path="/caregiver" element={<Workspace />} />
           <Route path="/share/:token" element={<SharedCard />} />
+          <Route path="/transport-track/:token" element={<TransportTracker />} />
           <Route
             path="/legacy/doctor"
             element={
@@ -66,3 +68,4 @@ ReactDOM.createRoot(document.getElementById("root")).render(
     </BrowserRouter>
   </React.StrictMode>,
 );
+

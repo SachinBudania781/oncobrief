@@ -4,6 +4,7 @@ import {
   Bell,
   BookHeart,
   CalendarDays,
+  Car,
   CircleHelp,
   ClipboardList,
   FileStack,
@@ -19,6 +20,7 @@ import {
   ShieldCheck,
   Stethoscope,
   Users,
+  Watch,
   QrCode,
   ArrowUpRight,
   ArrowRight,
@@ -65,6 +67,9 @@ import DocViewer from "../components/DocViewer";
 import QrScanner from "../components/QrScanner";
 import Brief from "../apps/doctor/Brief";
 import "./care.css";
+import AIAssistantWidget from "./AIAssistantWidget";
+import Wearables from "./Wearables";
+import Transport from "./Transport";
 import "./interface.css";
 
 const NAV = [
@@ -76,7 +81,9 @@ const NAV = [
   ["journal", "Plans & journal", BookHeart, "notes"],
   ["chat", "Care circle chat", HeartHandshake, "chat"],
   ["day", "Hospital day pass", CalendarDays, "appointments"],
+  ["transport", "Transport", Car, "appointments"],
   ["wellness", "Wellbeing", Flower2, "nutrition"],
+  ["wearables", "Wearables", Watch, "activity"],
   ["records", "Reports & uploads", FileStack, "documents"],
   ["money", "Money & schemes", CircleHelp, "finance"],
   ["circle", "Caregiver consent", Users, "patient"],
@@ -105,10 +112,12 @@ function CareSpace() {
     [language, setLanguage] = useState("en"),
     [menu, setMenu] = useState(false),
     [showNotifications, setShowNotifications] = useState(false),
-    [revision, setRevision] = useState(0);
+    [revision, setRevision] = useState(0),
+    [activityFocus, setActivityFocus] = useState(0);
   const [qr, setQr] = useState(false),
     [qrError, setQrError] = useState("");
   const [focusedRecordId, setFocusedRecordId] = useState(null);
+  const [transportOpened, setTransportOpened] = useState(false);
   const [about, setAbout] = useState(false), [searchOpen, setSearchOpen] = useState(false), [query, setQuery] = useState("");
   const [phoneCheckin, setPhoneCheckin] = useState(false);
   const portal = ["patient", "caregiver"].includes(user.role) ? "patient" : user.role === "doctor" ? "doctor" : "staff";
@@ -145,22 +154,25 @@ function CareSpace() {
       "privacy",
       "settings",
     ],
-    frontdesk: ["home", "day", "schedule", "privacy", "settings"],
+    frontdesk: ["home", "day", "transport", "schedule", "wearables", "privacy", "settings"],
     navigator: [
       "home",
       "journal",
       "chat",
       "day",
+      "transport",
       "money",
+      "wearables",
       "privacy",
       "settings",
     ],
     privacy: ["home", "privacy", "settings"],
-    admin: ["home", "schedule", "privacy", "settings"],
+    admin: ["home", "transport", "schedule", "wearables", "privacy", "settings"],
   };
   const nav = NAV.filter(
     (n) =>
-      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])),
+      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])) && (n[0] !== "wearables" || ["patient", "caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(user.role)) &&
+      (n[0] !== "transport" || ["patient", "caregiver", "frontdesk", "navigator", "nurse", "admin"].includes(user.role)),
   );
   useEffect(() => {
     if (!nav.some((n) => n[0] === tab)) setTab("home");
@@ -169,6 +181,7 @@ function CareSpace() {
     if (patient?.preferred_language) setLanguage(patient.preferred_language);
   }, [patient?.id]);
   const change = (value) => {
+    if (value === "transport") setTransportOpened(true);
     setTab(value);
     setMenu(false);
     setSearchOpen(false);
@@ -305,6 +318,16 @@ function CareSpace() {
                     <b>{n.title}</b>
                     <p>{n.body}</p>
                     <small className="muted">{dateTime(n.created_at)}</small>
+                    {n.channel === "activity" && n.patient_id && (
+                      <button className="btn" onClick={() => {
+                        setPid(n.patient_id);
+                        setActivityFocus((value) => value + 1);
+                        change("wearables");
+                        setShowNotifications(false);
+                      }}>
+                        View activity trend
+                      </button>
+                    )}
                     {n.status === "unread" && (
                       <Action
                         run={() =>
@@ -410,6 +433,8 @@ function CareSpace() {
                   canTeachBack={can("notes")}
                 />
               )}
+              {(tab === "transport" || transportOpened) && <Transport pid={pid} user={user} active={tab === "transport"} />}
+              {tab === "wearables" && <Wearables pid={pid} demo={Boolean(user.demo)} viewerRole={user.role} activityFocus={activityFocus} />}
               {tab === "records" && (
                 <RecordsDesk pid={pid} user={user} onOpen={setDocId} />
               )}
@@ -460,6 +485,7 @@ function CareSpace() {
         />
       )}
       {docId && <DocViewer docId={docId} onClose={() => setDocId(null)} />}
+      {portal === "patient" && can("documents") && pid && <AIAssistantWidget pid={pid} language={language} onOpen={setDocId} />}
     </div>
   );
 }
@@ -802,3 +828,4 @@ export function SharedCard() {
     </div>
   );
 }
+
