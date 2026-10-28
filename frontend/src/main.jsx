@@ -9,12 +9,9 @@ import "@fontsource/ibm-plex-sans-devanagari/400.css";
 import "@fontsource/ibm-plex-sans-devanagari/600.css";
 import "./styles.css";
 import Landing from "./pages/Landing";
-import DoctorApp from "./apps/doctor/DoctorApp";
-import StaffApp from "./apps/staff/StaffApp";
-import PatientApp from "./apps/patient/PatientApp";
 import Workspace, { SharedCard } from "./care/Workspace";
 import TransportTracker from "./care/TransportTracker";
-import { AuthProvider, useAuth } from "./care/Auth";
+import { AuthProvider } from "./care/Auth";
 import { APP_TARGET } from "./deployment";
 
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
@@ -38,23 +35,12 @@ ReactDOM.createRoot(document.getElementById("root")).render(
           <Route path="/caregiver" element={<Workspace />} />
           <Route path="/share/:token" element={<SharedCard />} />
           <Route path="/transport-track/:token" element={<TransportTracker />} />
-          <Route path="/legacy/doctor" element={<LegacyPortal roles={["doctor"]}><DoctorApp /></LegacyPortal>} />
-          <Route path="/legacy/staff" element={<LegacyPortal roles={["nurse", "lab", "frontdesk", "admin"]}><StaffApp /></LegacyPortal>} />
-          <Route path="/legacy/patient" element={<LegacyPortal roles={["patient", "caregiver"]}><PatientApp /></LegacyPortal>} />
+          <Route path="/legacy/doctor" element={<Navigate to="/doctor" replace />} />
+          <Route path="/legacy/staff" element={<Navigate to="/staff" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>
   </React.StrictMode>,
 );
-
-function LegacyPortal({ children, roles }) {
-  const { user, loading } = useAuth();
-  if (loading) return <p className="care-loading">Checking your session…</p>;
-  // Keep the requested Round 1 URL while the Round 2 login screen is shown.
-  // After login, this route renders the original app for the authenticated role.
-  if (!user) return <Workspace />;
-  if (!roles.includes(user.role)) return <Navigate to="/app" replace />;
-  return children;
-}
 

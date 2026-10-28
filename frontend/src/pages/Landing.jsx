@@ -30,10 +30,7 @@ export default function Landing() {
                 and follow the patient’s response over time. Every source stays
                 one click away.
               </p>
-              <div className="door-actions">
-                <Link to="/doctor?portal=doctor" className="go">Open Round 2 workspace <ArrowRight size={16} /></Link>
-                <Link to="/legacy/doctor?portal=doctor" className="classic-link">Open original Round 1 interface</Link>
-              </div>
+              <Link to="/doctor?portal=doctor" className="go">Open doctor workspace <ArrowRight size={16} /></Link>
             </article>
             <article className="door">
               <ScanLine size={26} color="#f3b44a" />
@@ -43,10 +40,7 @@ export default function Landing() {
                 reports, organise entire bundles and keep the hospital day
                 moving.
               </p>
-              <div className="door-actions">
-                <Link to="/staff?portal=staff" className="go">Open Round 2 workspace <ArrowRight size={16} /></Link>
-                <Link to="/legacy/staff?portal=staff" className="classic-link">Open original Round 1 interface</Link>
-              </div>
+              <Link to="/staff?portal=staff" className="go">Open staff workspace <ArrowRight size={16} /></Link>
             </article>
             <article className="door">
               <Smartphone size={26} color="#f3b44a" />
@@ -56,10 +50,7 @@ export default function Landing() {
                 medicine requests, invite a caregiver and plan your next
                 hospital day.
               </p>
-              <div className="door-actions">
-                <Link to="/patient?portal=patient" className="go">Open Round 2 workspace <ArrowRight size={16} /></Link>
-                <Link to="/legacy/patient?portal=patient" className="classic-link">Open original Round 1 interface</Link>
-              </div>
+              <Link to="/patient?portal=patient" className="go">Open patient workspace <ArrowRight size={16} /></Link>
             </article>
           </div>
         </div>

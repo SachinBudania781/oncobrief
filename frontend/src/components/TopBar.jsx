@@ -1,5 +1,4 @@
 import { NavLink, Link } from 'react-router-dom'
-import { ArrowRight } from 'lucide-react'
 
 export function Logo({ size = 26 }) {
   return (
@@ -19,9 +18,6 @@ export default function TopBar({ app, children }) {
         <NavLink to="/staff">Staff</NavLink>
         <NavLink to="/patient">Patient</NavLink>
       </nav>
-      <Link className="round2-switch" to="/app" aria-label="Return to the Round 2 workspace" title="Return to the Round 2 workspace">
-        <span>Round 2 workspace</span><ArrowRight size={15} />
-      </Link>
       <div className="spacer" />
       {children}
       <span className="demo-flag">Prototype · fabricated patients only</span>
