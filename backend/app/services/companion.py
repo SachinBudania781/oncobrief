@@ -227,7 +227,7 @@ def answer(db, pid, question, language="en", clinical_user=False, allow_notes=Tr
                 note_hits.append((score,r,text))
         note_hits.sort(key=lambda x:(x[0],x[1].id),reverse=True)
     if not hits and not note_hits:
-        asks_records = bool(re.search(r"\b(record|report|result|scan|test|cbc|lab|prescription|diagnosis|stage)\b|रिपोर्ट|अहवाल|सीबीसी", low, re.I))
+        asks_records = bool(re.search(r"\b(record|report|result|scan|test|cbc|lab|prescription|diagnosis|stage|history)\b|रिपोर्ट|अहवाल|सीबीसी", low, re.I))
         if not asks_records and not clinical_user:
             from .record_ai import companion_reply
             profile = patient_profile_context(p)
