@@ -1,14 +1,15 @@
 # Independent development deployments
 
-Deploy five resources: patient website, doctor website, staff website, FastAPI backend, and PostgreSQL database. Each website also installs on Android and iPhone as a home-screen web app. All three websites use the same backend and records.
+Deploy six resources: the patient, doctor and staff websites, a role-selection hub, the FastAPI backend, and PostgreSQL. The hub lists all three roles and links to both the Round 2 workspace and the original Round 1 screen for each role. The individual role websites remain available. All four websites use the same backend and records, and can install on Android and iPhone as home-screen web apps.
 
-The source is published on `deploy/round2-independent`. The old Round 1 and chatbot services have been removed; the five resources listed below are retained.
+The current live deployment remains on `deploy/round2-independent`. This feature branch adds the hub and restores links to the retained Round 1 screens in source; it does not update that live branch or its services.
 
 | Resource | Address |
 | --- | --- |
 | Patient app | https://oncobrief-round2-patient.onrender.com |
 | Doctor app | https://oncobrief-round2-doctor.onrender.com |
 | Staff app | https://oncobrief-round2-staff.onrender.com |
+| Role hub | Created as `oncobrief-round2-hub` when the updated frontend Blueprint is applied |
 | Backend and API docs | https://oncobrief-round2-api.onrender.com/docs |
 | PostgreSQL dashboard | https://dashboard.render.com/d/dpg-dbbmsqrbc2fs73bnhvb0-a |
 
@@ -32,7 +33,7 @@ Create these resources from the deployment branch using a Blueprint, or create e
 
 Run one backend instance and one Uvicorn worker. Verify the actual backend URL at `/api/health` and `/docs`.
 
-## Three websites
+## Role websites and hub
 
 After Render assigns the backend's actual HTTPS URL, generate the frontend Blueprint:
 
@@ -47,12 +48,13 @@ This writes `deploy/render.frontends-free.yaml`. It contains three independently
 | Patient | `cd frontend && npm ci && npm run build:patient` | `frontend/dist/patient` |
 | Doctor | `cd frontend && npm ci && npm run build:doctor` | `frontend/dist/doctor` |
 | Staff | `cd frontend && npm ci && npm run build:staff` | `frontend/dist/staff` |
+| Hub | `cd frontend && npm ci && npm run build:hub` | `frontend/dist/hub` |
 
 Use Node 24. Each site needs the generated rewrite rules, in order: `/api/*` to the backend's `/api/*`, `/docs` to backend `/docs`, `/openapi.json` to backend `/openapi.json`, then `/*` to `/index.html`. Swagger assets are included in each static build. Importing the generated Blueprint sets the rules and headers. If creating services with an API that cannot set routes, finish them in the dashboard before treating the deployment as usable.
 
 The browser calls each website's own `/api` path. This preserves HTTP-only secure sessions and relative report/image/PDF URLs without depending on third-party cookies. Verify POST forwarding and cookie round-trips on the real provider before declaring completion.
 
-Once the three actual frontend URLs are known, set backend `ALLOWED_ORIGINS` to those three HTTPS origins, separated by commas. Set `PUBLIC_BASE_URL` to the patient website's origin so QR and shared-card links open the patient frontend. Redeploy the backend after updating its environment.
+Once all four actual frontend URLs are known, set backend `ALLOWED_ORIGINS` to those four HTTPS origins, separated by commas. Set `PUBLIC_BASE_URL` to the patient website's origin so QR and shared-card links open the patient frontend. Redeploy the backend after updating its environment.
 
 App targeting chooses the starting screen, title, manifest, portal accent and sign-in methods. Patient, doctor and staff IDs are checked against the selected portal by the backend. Doctor/staff phone sign-in uses a password and retains production TOTP; phone OTP remains patient-only. Each frontend shares the care-workspace source, so fixes can reach all three without copying code.
 
@@ -67,16 +69,20 @@ An internet connection is required. The service worker does not cache patient re
 ## Verification and integration work
 
 ```powershell
-# Build all three apps locally.
+# Build the three role apps locally.
 cd frontend
 npm run build:apps
+cd ..
+# The hub is an optional all-role build with the app selector at its homepage.
+cd frontend
+npm run build:hub
 cd ..
 # Use the three actual deployed URLs.
 .\.venv\Scripts\python.exe scripts\check_deployment.py --patient https://PATIENT.onrender.com --doctor https://DOCTOR.onrender.com --staff https://STAFF.onrender.com
 ```
 
-The smoke check verifies branding, phone manifests and icons, API GET/POST forwarding, secure session cookies, an authenticated patient list, and logout. It deliberately refuses non-demo environments. The backend test suite runs against SQLite locally and PostgreSQL 16 in CI.
+The smoke check verifies branding, phone manifests and icons, API GET/POST forwarding, secure session cookies, an authenticated patient list, and logout for the three role websites. It deliberately refuses non-demo environments. Confirm the hub opens, lists all three roles, and preserves the requested Round 1 URL through sign-in before publishing it.
 
 Use backend `/docs` for API integration. Configure provider keys and adapter endpoints on the backend only; `docs/INTEGRATIONS.md` lists their contracts. Never put API secrets in frontend build variables.
 
-For updates, push `deploy/round2-independent`, then choose **Manual Deploy → Deploy latest commit** for each service you want to update. Render's current GitHub connection does not include this repository; public-repository deployments do not receive automatic push triggers. Automatic redeployment requires adding this repository to Render's GitHub connection. Check each service's deployed commit before handing out its URL.
+For the existing live setup, keep using its current branch and service configuration. To preview the hub integration, create the new services from the feature branch and leave `deploy/round2-independent` unchanged. Render's current GitHub connection does not include this repository; public-repository deployments do not receive automatic push triggers. Check each service's deployed commit before handing out its URL.

@@ -14,7 +14,7 @@ import StaffApp from "./apps/staff/StaffApp";
 import PatientApp from "./apps/patient/PatientApp";
 import Workspace, { SharedCard } from "./care/Workspace";
 import TransportTracker from "./care/TransportTracker";
-import { AuthProvider, LegacyGuard } from "./care/Auth";
+import { AuthProvider, useAuth } from "./care/Auth";
 import { APP_TARGET } from "./deployment";
 
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
@@ -38,34 +38,23 @@ ReactDOM.createRoot(document.getElementById("root")).render(
           <Route path="/caregiver" element={<Workspace />} />
           <Route path="/share/:token" element={<SharedCard />} />
           <Route path="/transport-track/:token" element={<TransportTracker />} />
-          <Route
-            path="/legacy/doctor"
-            element={
-              <LegacyGuard roles={["doctor"]}>
-                <DoctorApp />
-              </LegacyGuard>
-            }
-          />
-          <Route
-            path="/legacy/staff"
-            element={
-              <LegacyGuard roles={["nurse", "lab", "frontdesk", "admin"]}>
-                <StaffApp />
-              </LegacyGuard>
-            }
-          />
-          <Route
-            path="/legacy/patient"
-            element={
-              <LegacyGuard roles={["patient", "caregiver"]}>
-                <PatientApp />
-              </LegacyGuard>
-            }
-          />
+          <Route path="/legacy/doctor" element={<LegacyPortal roles={["doctor"]}><DoctorApp /></LegacyPortal>} />
+          <Route path="/legacy/staff" element={<LegacyPortal roles={["nurse", "lab", "frontdesk", "admin"]}><StaffApp /></LegacyPortal>} />
+          <Route path="/legacy/patient" element={<LegacyPortal roles={["patient", "caregiver"]}><PatientApp /></LegacyPortal>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>
   </React.StrictMode>,
 );
+
+function LegacyPortal({ children, roles }) {
+  const { user, loading } = useAuth();
+  if (loading) return <p className="care-loading">Checking your session…</p>;
+  // Keep the requested Round 1 URL while the Round 2 login screen is shown.
+  // After login, this route renders the original app for the authenticated role.
+  if (!user) return <Workspace />;
+  if (!roles.includes(user.role)) return <Navigate to="/app" replace />;
+  return children;
+}
 

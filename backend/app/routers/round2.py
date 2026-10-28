@@ -104,6 +104,10 @@ def readable_record(row, user):
         return False
     if row.kind == "companion" and row.author_role in CLINICIANS and user.role not in CLINICIANS:
         return False
+    # Patient AI conversations are private unless surfaced through the separate,
+    # patient-consented clinician insight path.
+    if row.kind == "companion" and row.author_role == "patient" and user.role != "patient":
+        return False
     if row.kind == "integration_result" and row.status != "approved" and user.role not in CLINICIANS:
         return False
     if row.kind in {"wellbeing", "diary"} and row.author_id != user.id:
@@ -325,17 +329,46 @@ def checkin(patient_id: str, body: CheckIn, request: Request, db=Depends(get_db)
 class Question(BaseModel):
     text: str = Field(min_length=1, max_length=3000)
     language: Literal["en", "hi", "mr"] = "en"
+    conversation_id: str = Field(default="", max_length=80)
+
+
+class CompanionSharingIn(BaseModel):
+    enabled: bool
 
 
 @router.post("/v2/patients/{patient_id}/companion")
 def companion(patient_id: str, body: Question, request: Request, db=Depends(get_db)):
     user = patient_access(db, request, patient_id, "documents")
     roles(user, "patient", "caregiver", "doctor", "nurse", "admin")
-    result = answer(db, patient_id, body.text, body.language, user.role in CLINICIANS, patient_id in visible_ids(db,user,"notes"))
+    result = answer(db, patient_id, body.text, body.language, user.role in CLINICIANS,
+                    patient_id in visible_ids(db,user,"notes"), body.conversation_id, user.id, user.role)
     db.add(CareRecord(patient_id=patient_id, kind="companion", author_id=user.id, author_name=user.name,
-                      author_role=user.role, data={"question": body.text, **result}, status="recorded"))
+                      author_role=user.role, data={"question": body.text, "conversation_id": body.conversation_id, **result}, status="recorded"))
     db.commit()
     return result
+
+
+@router.get("/v2/patients/{patient_id}/companion-sharing")
+def get_companion_sharing(patient_id: str, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "documents")
+    roles(user, "patient")
+    from ..services.companion import companion_sharing_state
+    state = companion_sharing_state(db, patient_id)
+    return {"enabled": state["enabled"], "since": state["since"].isoformat() if state["since"] else None}
+
+
+@router.put("/v2/patients/{patient_id}/companion-sharing")
+def set_companion_sharing(patient_id: str, body: CompanionSharingIn, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "documents")
+    roles(user, "patient")
+    row = CareRecord(patient_id=patient_id, kind="companion_sharing", author_id=user.id,
+                     author_name=user.name, author_role=user.role,
+                     data={"enabled": body.enabled}, status="recorded")
+    db.add(row)
+    append_audit(db, user, "companion_sharing_updated", patient_id,
+                 "enabled" if body.enabled else "disabled")
+    db.commit()
+    return {"enabled": body.enabled, "since": row.created_at.isoformat() if body.enabled else None}
 
 
 @router.get("/v2/patients/{patient_id}/summary")

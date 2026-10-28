@@ -41,7 +41,7 @@ import {
   SourceLinks,
   Voice,
 } from "./UI";
-import { CheckIn, Companion, Medicines, Wellness } from "./PatientTools";
+import { CheckIn, Medicines, Wellness } from "./PatientTools";
 import {
   AlertConsole,
   ApprovalQueue,
@@ -75,7 +75,7 @@ import "./interface.css";
 const NAV = [
   ["home", "Overview", Home, "profile"],
   ["checkin", "Daily check-in", HeartPulse, "checkin"],
-  ["companion", "Ask my records", MessageCircle, "documents"],
+  ["companion", "AI Chat", MessageCircle, "documents"],
   ["medicines", "Medicines & requests", Pill, "medicines"],
   ["clinical", "Care journey", Stethoscope, "documents"],
   ["journal", "Plans & journal", BookHeart, "notes"],
@@ -121,6 +121,13 @@ function CareSpace() {
   const [about, setAbout] = useState(false), [searchOpen, setSearchOpen] = useState(false), [query, setQuery] = useState("");
   const [phoneCheckin, setPhoneCheckin] = useState(false);
   const portal = ["patient", "caregiver"].includes(user.role) ? "patient" : user.role === "doctor" ? "doctor" : "staff";
+  const classicPath = portal === "patient"
+    ? "/legacy/patient"
+    : user.role === "doctor"
+      ? "/legacy/doctor"
+      : ["nurse", "lab", "frontdesk", "admin"].includes(user.role)
+        ? "/legacy/staff"
+        : null;
   useEffect(() => setFocusedRecordId(null), [pid]);
   useEffect(() => {
     const open = (e) => {
@@ -221,6 +228,12 @@ function CareSpace() {
             </button>
           ))}
         </nav>
+        {classicPath && (
+          <Link className="care-classic-link" to={classicPath}>
+            <ArrowRight size={16} />
+            <span>Classic Round 1 interface<small>Original portal screens</small></span>
+          </Link>
+        )}
         <button className="care-sidebar-foot" onClick={() => setAbout(true)}><ShieldCheck size={19} /><span>Made for connected care<small>Workspace information</small></span><ArrowUpRight size={15} /></button>
       </aside>
       <div className="care-page">
@@ -407,11 +420,12 @@ function CareSpace() {
                 </div>
               )}
               {tab === "companion" && (
-                <Companion
+                <AIAssistantWidget
                   pid={pid}
                   language={language}
-                  clinician={user.role === "doctor"}
                   onOpen={setDocId}
+                  embedded
+                  userRole={user.role}
                 />
               )}
               {tab === "medicines" && (
@@ -494,7 +508,7 @@ function CareSpace() {
         />
       )}
       {docId && <DocViewer docId={docId} onClose={() => setDocId(null)} />}
-      {portal === "patient" && can("documents") && pid && <AIAssistantWidget pid={pid} language={language} onOpen={setDocId} />}
+      {["patient", "doctor"].includes(portal) && can("documents") && pid && tab !== "companion" && <AIAssistantWidget pid={pid} language={language} onOpen={setDocId} userRole={user.role} />}
     </div>
   );
 }

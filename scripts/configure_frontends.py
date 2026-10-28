@@ -16,10 +16,11 @@ def https_origin(value):
 
 def blueprint(api_origin):
     services = []
-    for target in ("patient", "doctor", "staff"):
+    for target in ("patient", "doctor", "staff", "hub"):
+        build_target = "hub" if target == "hub" else target
         services.append({
             "type": "web", "name": f"oncobrief-round2-{target}", "runtime": "static",
-            "buildCommand": f"cd frontend && npm ci --no-audit --no-fund && npm run build:{target}",
+            "buildCommand": f"cd frontend && npm ci --no-audit --no-fund && npm run build:{build_target}",
             "staticPublishPath": f"./frontend/dist/{target}",
             "autoDeployTrigger": "checksPass",
             "envVars": [{"key": "NODE_VERSION", "value": "24"}, {"key": "SCARF_ANALYTICS", "value": "false"}],
@@ -54,5 +55,5 @@ if __name__ == "__main__":
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(blueprint(args.api_url), indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {args.output}")
-    print("After frontend creation, set API ALLOWED_ORIGINS to their three actual HTTPS origins.")
+    print("After frontend creation, set API ALLOWED_ORIGINS to all four actual HTTPS origins.")
     print("Set API PUBLIC_BASE_URL to the patient frontend origin, then redeploy the API.")
