@@ -15,7 +15,11 @@ import { Error, SourceLinks, Status } from "./UI";
 
 const levelNames = ["inform", "everyday_guidance", "doctor_review", "emergency"];
 
-export default function AIAssistantWidget({ pid, language = "en", onOpen }) {
+function newConversationId() {
+  return window.crypto?.randomUUID?.() || `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+export default function AIAssistantWidget({ pid, language = "en", onOpen, embedded = false, userRole = "patient" }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState("type");
   const [draft, setDraft] = useState("");
@@ -23,7 +27,13 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen }) {
   const [busy, setBusy] = useState(false);
   const [listening, setListening] = useState(false);
   const [error, setError] = useState("");
+  const [sharing, setSharing] = useState(false);
+  const [sharingBusy, setSharingBusy] = useState(false);
+  const [sharingError, setSharingError] = useState("");
   const recognition = useRef(null);
+  const voiceSession = useRef(false);
+  const restartTimer = useRef(null);
+  const conversationId = useRef(newConversationId());
   const logRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -34,10 +44,22 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen }) {
     setMessages([]);
     setDraft("");
     setError("");
-  }, [pid]);
+    conversationId.current = newConversationId();
+    voiceSession.current = false;
+    clearTimeout(restartTimer.current);
+    setSharing(false);
+    setSharingError("");
+    if (userRole === "patient") {
+      request("/v2/patients/" + pid + "/companion-sharing")
+        .then((result) => setSharing(Boolean(result.enabled)))
+        .catch((e) => setSharingError(e.message));
+    }
+  }, [pid, userRole]);
 
   useEffect(() => () => {
     recognition.current?.abort();
+    voiceSession.current = false;
+    clearTimeout(restartTimer.current);
     window.speechSynthesis?.cancel();
   }, []);
 
@@ -60,27 +82,38 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen }) {
       const result = await request("/v2/patients/" + pid + "/companion", "POST", {
         text: clean,
         language,
+        conversation_id: conversationId.current,
       });
       setMessages((items) => [...items, { id: "a-" + Date.now(), role: "assistant", result }]);
       if (spoken) {
-        try { speak(result.level === 3 ? (result.instruction || result.answer) : result.answer, language); }
+        try {
+          const responseText = result.level === 3 ? (result.instruction || result.answer) : result.answer;
+          if (!window.speechSynthesis) throw new Error("Speech playback is unavailable in this browser.");
+          await new Promise((resolve) => {
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(responseText);
+            utterance.lang = { en: "en-IN", hi: "hi-IN", mr: "mr-IN" }[language] || "en-IN";
+            utterance.onend = resolve;
+            utterance.onerror = resolve;
+            window.speechSynthesis.speak(utterance);
+          });
+        }
         catch (e) { setError(e.message); }
       }
     } catch (e) {
       setError(e.message || "I couldn’t reach your care folder. Please try again.");
     } finally {
       setBusy(false);
+      if (spoken && voiceSession.current) restartTimer.current = setTimeout(listenOnce, 350);
     }
   };
 
-  const startVoice = () => {
+  const listenOnce = () => {
     setError("");
-    if (listening) {
-      recognition.current?.stop();
-      return;
-    }
+    if (!voiceSession.current) return;
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
+      voiceSession.current = false;
       setError("Voice input isn’t available in this browser. Choose Type to continue.");
       return;
     }
@@ -97,6 +130,7 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen }) {
       setError(event.error === "network" ? "Your browser could not reach its speech service. Check your connection and try again, or choose Type." : event.error === "not-allowed"
         ? "Microphone access was blocked. Allow it in your browser settings, or choose Type."
         : "Voice input: " + event.error + ". You can choose Type to continue.");
+      voiceSession.current = false;
       setListening(false);
     };
     recorder.onend = () => setListening(false);
@@ -106,7 +140,22 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen }) {
       setListening(true);
     } catch (e) {
       setError(e.message || "Voice input couldn’t start. Choose Type to continue.");
+      voiceSession.current = false;
     }
+  };
+
+  const startVoice = () => {
+    setError("");
+    if (voiceSession.current) {
+      voiceSession.current = false;
+      clearTimeout(restartTimer.current);
+      recognition.current?.stop();
+      window.speechSynthesis?.cancel();
+      setListening(false);
+      return;
+    }
+    voiceSession.current = true;
+    listenOnce();
   };
 
   const submit = (event) => {
@@ -115,25 +164,41 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen }) {
   };
 
   const closeAssistant = () => {
+    voiceSession.current = false;
+    clearTimeout(restartTimer.current);
     recognition.current?.abort();
     window.speechSynthesis?.cancel();
     setListening(false);
     setOpen(false);
   };
+  const updateSharing = async (event) => {
+    const enabled = event.target.checked;
+    setSharingBusy(true);
+    setSharingError("");
+    try {
+      const result = await request("/v2/patients/" + pid + "/companion-sharing", "PUT", { enabled });
+      setSharing(Boolean(result.enabled));
+    } catch (e) {
+      setSharingError(e.message || "Your sharing preference could not be saved.");
+    } finally {
+      setSharingBusy(false);
+    }
+  };
+  const visible = embedded || open;
   return (
-    <div className="care-ai-assistant">
-      {open && (
-        <section className="care-ai-window" role="dialog" aria-label="OncoBrief AI assistant">
+    <div className={"care-ai-assistant " + (embedded ? "care-ai-embedded" : "")}>
+      {visible && (
+        <section className={"care-ai-window " + (embedded ? "care-ai-window-embedded" : "")} role="region" aria-label="OncoBrief AI chat">
           <header className="care-ai-head">
             <div className="care-ai-identity">
               <span className="care-ai-avatar"><Sparkles size={19} /></span>
-              <span><b>OncoBrief assistant</b><small><i /> Grounded in your care folder</small></span>
+              <span><b>AI Chat</b><small><i /> {userRole === "doctor" ? "Care-folder answers · patient-shared insights" : "Your care folder · here to help"}</small></span>
             </div>
-            <button className="care-ai-close" aria-label="Close assistant" onClick={closeAssistant}><X size={19} /></button>
+            {!embedded && <button className="care-ai-close" aria-label="Close assistant" onClick={closeAssistant}><X size={19} /></button>}
           </header>
 
           <div className="care-ai-tabs" role="tablist" aria-label="Choose how to chat">
-            <button role="tab" aria-selected={mode === "type"} className={mode === "type" ? "active" : ""} onClick={() => { setMode("type"); setListening(false); recognition.current?.abort(); window.speechSynthesis?.cancel(); }}>
+            <button role="tab" aria-selected={mode === "type"} className={mode === "type" ? "active" : ""} onClick={() => { voiceSession.current = false; clearTimeout(restartTimer.current); setMode("type"); setListening(false); recognition.current?.abort(); window.speechSynthesis?.cancel(); }}>
               <MessageCircle size={15} /> Type
             </button>
             <button role="tab" aria-selected={mode === "talk"} className={mode === "talk" ? "active" : ""} onClick={() => { setMode("talk"); setError(""); }}>
@@ -141,15 +206,29 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen }) {
             </button>
           </div>
 
+          {userRole === "patient" && <div className="care-ai-sharing">
+            <label><input type="checkbox" checked={sharing} disabled={sharingBusy} onChange={updateSharing} />
+              <span><b>Share chat excerpts with my care team</b><small>Only your questions from now on. Turn this off any time.</small></span>
+            </label>
+            {sharingError && <small role="alert">{sharingError}</small>}
+          </div>}
+
           <div className="care-ai-log" ref={logRef} aria-live="polite" aria-relevant="additions text">
             {!messages.length && (
               <div className="care-ai-welcome">
                 <span className="care-ai-welcome-icon"><Bot size={21} /></span>
                 <h3>How can I help today?</h3>
-                <p>Ask about a report in your folder or get help preparing for your next visit.</p>
+                <p>{userRole === "doctor"
+                  ? "Ask about this patient’s records, or review chat excerpts the patient has chosen to share."
+                  : "Ask about your records, get help with everyday questions, or prepare for your next visit."}</p>
                 <div className="care-ai-prompts">
-                  <button onClick={() => ask("Summarize my latest report")}>Summarize my latest report <span>↗</span></button>
-                  <button onClick={() => ask("What should I ask my doctor at my next visit?")}>Help me prepare for my visit <span>↗</span></button>
+                  {userRole === "doctor" ? <>
+                    <button onClick={() => ask("Summarize the records relevant to this patient's current care")}>Summarize patient records <span>↗</span></button>
+                    <button onClick={() => ask("What has the patient chosen to share in AI Chat recently?")}>Review shared chat excerpts <span>↗</span></button>
+                  </> : <>
+                    <button onClick={() => ask("Summarize my latest report")}>Summarize my latest report <span>↗</span></button>
+                    <button onClick={() => ask("Help me prepare for my next visit")}>Help me prepare for my visit <span>↗</span></button>
+                  </>}
                 </div>
               </div>
             )}
@@ -188,21 +267,21 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen }) {
               </form>
             ) : (
               <div className="care-ai-talk">
-                <button className={"care-ai-mic " + (listening ? "listening" : "")} onClick={startVoice} disabled={busy} aria-label={listening ? "Stop listening" : "Start voice chat"}>
+                <button className={"care-ai-mic " + (listening ? "listening" : "")} onClick={startVoice} disabled={busy && !voiceSession.current} aria-label={voiceSession.current ? "Stop voice conversation" : "Start voice conversation"}>
                   {listening ? <span className="care-ai-stop" /> : <Mic size={20} />}
                 </button>
-                <div><b>{listening ? "I’m listening" : "Tap to ask out loud"}</b><span>Your reply will be read aloud.</span></div>
+                <div><b>{listening ? "I’m listening" : voiceSession.current && busy ? "Preparing your reply…" : voiceSession.current ? "Conversation paused" : "Tap to start talking"}</b><span>{voiceSession.current ? "I’ll listen again after each reply. Tap stop to end." : "Your reply will be read aloud."}</span></div>
               </div>
             )}
-            <div className="care-ai-privacy"><ShieldCheck size={12} /> Care-folder access follows your account <span>·</span> Voice uses browser speech</div>
+            <div className="care-ai-privacy"><ShieldCheck size={12} /> {userRole === "doctor" ? "Patient chat is hidden unless they share it" : "Care-folder access follows your account"} <span>·</span> Voice uses browser speech</div>
           </div>
         </section>
       )}
 
-      <button className={"care-ai-launcher " + (open ? "is-open" : "")} aria-label={open ? "Close AI assistant" : "Open AI assistant"} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+      {!embedded && <button className={"care-ai-launcher " + (open ? "is-open" : "")} aria-label={open ? "Close AI assistant" : "Open AI assistant"} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
         {open ? <X size={22} /> : <><MessageCircle size={22} /><span className="care-ai-launcher-spark"><Sparkles size={11} /></span></>}
         {!open && <span className="care-ai-launcher-label">Ask AI</span>}
-      </button>
+      </button>}
     </div>
   );
 }

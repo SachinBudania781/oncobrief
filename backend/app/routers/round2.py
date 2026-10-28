@@ -1,1936 +1,611 @@
-from ..timeutil import utcnow
-"""Round 2 patient, caregiver, clinician and hospital workflows."""
-import io
-import json
-import math
-import os
-import re
-import secrets
-from datetime import datetime, timedelta, timezone
-from typing import Literal
-from urllib.parse import quote
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response
-from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
-from ..db import get_db
-from ..models import Activity, Appointment, Document, LabValue, Medication, MedLog, Patient, SymptomReport, WearableReading
-from ..round2_models import WearableDeviceCredential
-from ..round2_models import AccessGrant, Alert, Approval, CareRecord, LibraryItem, Notification, ShareLink, User, TreatingClinician
-from ..security import DEMO_MODE, append_audit, digest, identity, password_hash, require_patient, roles, verify_chain, visible_ids
-from ..services.companion import EMERGENCY, alert, answer, command_centre, living_summary, notify_team, records, red_flags, safe_text
-from ..services.integrations import deliver, status as integration_status
-from ..services.activity import low_activity_steps_threshold
-from ..services.vitals import current_vital_alert_protocol, evaluate_vital_readings
-from ..workflows import WORKFLOWS
-from ..services.scheduling import serial_schedule
-from .auth import sign_in_id
-
-router = APIRouter(prefix="/api", tags=["connected care"])
-CLINICIANS = {"doctor", "nurse", "admin"}
-
-
-def patient_access(db, request, pid, scope="profile"):
-    user = identity(request)
-    require_patient(db, user, pid, scope)
-    if not db.get(Patient, pid):
-        raise HTTPException(404, "Patient not found")
-    return user
-
-
-def serial(row, exclude=()):
-    out = {c.name: getattr(row, c.name) for c in row.__table__.columns if c.name not in exclude}
-    return {k: v.isoformat() + "Z" if isinstance(v, datetime) else v for k, v in out.items()}
-
-
-@router.get("/v2/workflows")
-def workflows(request: Request):
-    user = identity(request)
-    return {key: value for key, value in WORKFLOWS.items() if user.role in value["roles"] or user.role == "admin"}
-
-
-@router.get("/v2/integrations")
-def integrations(request: Request):
-    identity(request)
-    return {"services": integration_status(), "demo": DEMO_MODE,
-            "llm": bool(os.getenv("LLM_API_KEY")), "india_hosting_confirmed": os.getenv("INDIA_HOSTING_CONFIRMED") == "true",
-            "hospital_emergency": os.getenv("HOSPITAL_EMERGENCY_PHONE", "Set HOSPITAL_EMERGENCY_PHONE"),
-            "hospital_address": os.getenv("HOSPITAL_ADDRESS", "Set HOSPITAL_ADDRESS")}
-
-
-@router.get("/v2/notifications")
-def notifications(request: Request, db=Depends(get_db)):
-    user = identity(request)
-    alert_ids = set(visible_ids(db, user, "alerts"))
-    appointment_ids = set(visible_ids(db, user, "appointments"))
-    activity_ids = set(visible_ids(db, user, "activity"))
-    return [serial(n) for n in db.scalars(select(Notification).where(Notification.user_id == user.id).order_by(Notification.id.desc()).limit(100))
-            if not n.patient_id or n.patient_id in (
-                appointment_ids if n.channel == "transport"
-                else activity_ids if n.channel in {"activity", "vitals"}
-                else alert_ids
-            )]
-
-
-@router.post("/v2/notifications/{nid}/read")
-def read_notification(nid: int, request: Request, db=Depends(get_db)):
-    user = identity(request)
-    row = db.get(Notification, nid)
-    if not row or row.user_id != user.id:
-        raise HTTPException(404, "Notification not found")
-    row.status = "read"
-    db.commit()
-    return {"ok": True}
-
-
-@router.get("/v2/command-centre")
-def command(request: Request, db=Depends(get_db)):
-    user = identity(request)
-    roles(user, "doctor", "nurse", "navigator", "frontdesk", "admin")
-    ids = visible_ids(db, user)
-    rows = command_centre(db, ids)
-    if user.role in {"frontdesk", "navigator"}:
-        rows = [{k: v for k, v in r.items() if k in {"patient_id", "name", "diagnosis_days", "first_treatment_date", "diagnosis_to_treatment_days", "blocker", "rescue", "travel_km"}} for r in rows]
-    return {"patients": rows, "generated_at": utcnow(),
-            "open_alerts": sum(r.get("open_alerts", 0) for r in rows),
-            "chairs": [serial(r) for r in db.scalars(select(CareRecord).where(CareRecord.kind == "chair", CareRecord.patient_id.in_(ids)))],
-            "awaiting_approval": len(db.scalars(select(Approval).where(Approval.patient_id.in_(ids), Approval.status.in_(["sent", "reviewing"]))).all()) if user.role in CLINICIANS else None}
-
-
-def readable_record(row, user):
-    if row.kind == "living_summary":
-        return False
-    if row.kind == "nurse_handover" and user.role not in CLINICIANS:
-        return False
-    if row.kind == "companion" and row.author_role in CLINICIANS and user.role not in CLINICIANS:
-        return False
-    if row.kind == "integration_result" and row.status != "approved" and user.role not in CLINICIANS:
-        return False
-    if row.kind in {"wellbeing", "diary"} and row.author_id != user.id:
-        return row.kind == "diary" and row.data.get("share_concerns") and user.role in CLINICIANS
-    if row.kind in WORKFLOWS and WORKFLOWS[row.kind].get("clinical") and row.status != "approved":
-        return user.role in CLINICIANS or row.author_id == user.id
-    return True
-
-
-@router.get("/v2/patients/{patient_id}/records")
-def list_records(patient_id: str, request: Request, kind: str = "", db=Depends(get_db)):
-    user = patient_access(db, request, patient_id)
-    if user.role == "lab":
-        raise HTTPException(403, "Lab staff may access their own uploads only")
-    ids_by_scope = {s: patient_id in visible_ids(db, user, s) for s in {w["scope"] for w in WORKFLOWS.values()}}
-    return [serial(r) for r in records(db, patient_id, kind or None)[:500]
-            if readable_record(r, user) and ids_by_scope.get(WORKFLOWS.get(r.kind, {}).get("scope", "notes"), False)]
-
-
-class RecordIn(BaseModel):
-    kind: str = Field(max_length=40)
-    data: dict
-
-
-def validate_record(kind, data):
-    if kind not in WORKFLOWS:
-        raise HTTPException(422, "Unknown workflow")
-    spec = WORKFLOWS[kind]
-    allowed = {f["key"] for f in spec["fields"]}
-    if set(data) - allowed:
-        raise HTTPException(422, "Unexpected workflow fields")
-    out = {}
-    for f in spec["fields"]:
-        value = data.get(f["key"])
-        if f.get("required") and (value is None or value == "" or (f["type"] == "checkbox" and value is not True)):
-            raise HTTPException(422, f"{f['label']} is required")
-        if value is None or value == "":
-            continue
-        if f["type"] == "number":
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not f.get("min", -1e12) <= value <= f.get("max", 1e12):
-                raise HTTPException(422, f"Invalid number: {f['label']}")
-        elif f["type"] == "checkbox":
-            if not isinstance(value, bool):
-                raise HTTPException(422, f"Invalid checkbox: {f['label']}")
-        else:
-            if not isinstance(value, str) or len(value) > 20000:
-                raise HTTPException(422, f"Invalid text: {f['label']}")
-            if f["type"] == "select" and value not in f["options"]:
-                raise HTTPException(422, f"Invalid option: {f['label']}")
-            if f["type"] in {"date", "datetime-local"}:
-                try:
-                    datetime.fromisoformat(value)
-                except ValueError:
-                    raise HTTPException(422, f"Invalid date: {f['label']}")
-            if f["type"] == "url" and not value.startswith("https://"):
-                raise HTTPException(422, "Source URLs must use HTTPS")
-        out[f["key"]] = value
-    return out
-
-
-@router.post("/v2/patients/{patient_id}/records")
-def create_record(patient_id: str, body: RecordIn, request: Request, db=Depends(get_db)):
-    data = validate_record(body.kind, body.data)
-    spec = WORKFLOWS[body.kind]
-    user = patient_access(db, request, patient_id, spec["scope"])
-    roles(user, *spec["roles"], "admin")
-    for key in ("document_id", "audio_document_id"):
-        if data.get(key):
-            doc = db.get(Document, int(data[key]))
-            if not doc or doc.patient_id != patient_id:
-                raise HTTPException(422, "Source must be a document belonging to this patient")
-    if body.kind == "roadmap" and data.get("cycle", 1) > data.get("total_cycles", 100):
-        raise HTTPException(422, "Current cycle cannot exceed planned cycles")
-    if body.kind == "communication" and not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", data.get("time", "")):
-        raise HTTPException(422, "Enter daily call time as HH:MM")
-    if body.kind == "chair":
-        order = db.get(Approval, int(data["approval_id"]))
-        if not order or order.patient_id != patient_id or order.status != "approved":
-            raise HTTPException(422, "A signed approved order is required")
-        if data["start"] >= data["end"]:
-            raise HTTPException(422, "Chair end must follow start")
-        for other in db.scalars(select(CareRecord).where(CareRecord.kind == "chair", CareRecord.status != "completed")):
-            if other.data["chair"] == data["chair"] and other.data["start"] < data["end"] and data["start"] < other.data["end"]:
-                raise HTTPException(409, "Chair is already allocated at that time")
-    row = CareRecord(patient_id=patient_id, kind=body.kind, author_id=user.id, author_name=user.name,
-                     author_role=user.role, data=data, status="draft" if spec.get("clinical") or body.kind == "photo_symptom" else "recorded")
-    db.add(row)
-    db.commit()
-    flag = red_flags(data.get("text", ""), on_treatment=bool(db.get(Patient, patient_id).current_regimen))
-    if flag["level"] >= 2 and (body.kind != "diary" or data.get("share_concerns") or flag["level"] == 3):
-        alert(db, patient_id, flag["reason"], f"R{row.id}", "emergency" if flag["level"] == 3 else "urgent")
-    if body.kind == "pain" and data.get("score", 0) >= 7:
-        alert(db, patient_id, "High pain score reported", f"R{row.id}")
-    if body.kind == "nutrition" and data.get("weight_kg"):
-        older = [r for r in records(db, patient_id, "nutrition") if r.id != row.id and r.data.get("weight_kg") and r.created_at > utcnow() - timedelta(days=30)]
-        if older and data["weight_kg"] < older[-1].data["weight_kg"] * .95:
-            alert(db, patient_id, "Reported weight loss exceeds 5% of recent weight; dietitian review", f"R{row.id}")
-    if body.kind == "privacy_request":
-        for officer in db.scalars(select(User).where(User.role.in_(["privacy", "admin"]))):
-            db.add(Notification(user_id=officer.id, title="Privacy rights request", body=f"Request R{row.id}: {data['request_type']}"))
-        db.commit()
-    if body.kind == "wellbeing" and data.get("request_support"):
-        for navigator in db.scalars(select(User).where(User.role == "navigator", User.active.is_(True))):
-            if patient_id in visible_ids(db, navigator, "notes"):
-                db.add(Notification(user_id=navigator.id, title="Caregiver support requested", body=f"{user.name} asks the navigator to contact them. Private wellbeing scores are not shared."))
-        db.commit()
-    append_audit(db, user, "create_" + body.kind, patient_id, f"R{row.id}")
-    return serial(row)
-
-
-class RecordAction(BaseModel):
-    action: Literal["approve", "complete", "confirm_grade", "acknowledge", "reject"]
-    text: str = Field(default="", max_length=20000)
-    grade: int | None = Field(default=None, ge=0, le=4)
-
-
-@router.post("/v2/records/{record_id}/action")
-def record_action(record_id: int, body: RecordAction, request: Request, db=Depends(get_db)):
-    row = db.get(CareRecord, record_id)
-    if not row:
-        raise HTTPException(404, "Record not found")
-    user = identity(request)
-    if row.kind == "privacy_request" and user.role in {"privacy", "admin"}:
-        pass
-    else:
-        patient_access(db, request, row.patient_id, WORKFLOWS.get(row.kind, {}).get("scope", "notes"))
-    if body.action in {"approve", "reject"}:
-        roles(user, "doctor")
-        primary=db.get(TreatingClinician,row.patient_id)
-        if not primary or primary.user_id != user.id:
-            raise HTTPException(403, "The treating oncologist must sign clinical changes")
-        if row.status not in {"draft", "recorded"}:
-            raise HTTPException(409, "This record has already been reviewed")
-        changed = db.execute(update(CareRecord).where(CareRecord.id == row.id, CareRecord.status.in_(["draft", "recorded"])).values(status="review_locked"))
-        if changed.rowcount != 1:
-            raise HTTPException(409, "Another clinician has already reviewed this record")
-        row.status = "approved" if body.action == "approve" else "rejected"
-        if body.text:
-            row.data = {**row.data, "text": body.text}
-        row.approved_by, row.approved_at = user.name, utcnow()
-        if row.status == "approved":
-            if row.data.get("reminder") and row.data.get("reminder_at"):
-                db.add(CareRecord(patient_id=row.patient_id, kind="reminder", author_id=user.id, author_name=user.name,
-                                  author_role=user.role, status="recorded", data={"title": row.data["reminder"], "due_at": row.data["reminder_at"], "source": f"R{row.id}"}))
-            if row.kind == "board_decision" and row.data.get("plan"):
-                db.add(CareRecord(patient_id=row.patient_id, kind="roadmap", author_id=user.id, author_name=user.name,
-                                  author_role=user.role, status="approved", approved_by=user.name, approved_at=utcnow(),
-                                  data={"text": row.data["plan"], "source": f"R{row.id}"}))
-            notify_team(db, row.patient_id, "Signed care update", f"{WORKFLOWS.get(row.kind, {}).get('title', row.kind)} is available.")
-    elif body.action == "confirm_grade":
-        roles(user, "nurse", "doctor", "admin")
-        if row.kind != "photo_symptom" or body.grade is None:
-            raise HTTPException(422, "Select a symptom photo and confirmed grade")
-        row.data = {**row.data, "confirmed_grade": body.grade, "confirmed_by": user.name}
-        row.status = "confirmed"
-        if body.grade >= 3:
-            alert(db, row.patient_id, "Nurse-confirmed severe photo symptom", f"R{row.id}")
-    else:
-        if row.kind not in {"task", "handover", "reminder", "nurse_handover", "chair", "privacy_request", "buddy"}:
-            raise HTTPException(422, "This record cannot be completed with this action")
-        if row.kind == "privacy_request":
-            roles(user, "privacy", "admin")
-            if len(body.text.strip())<10:
-                raise HTTPException(422,"Record the privacy officer's response and retention decision")
-            row.data={**row.data,"officer_response":body.text,"officer":user.name}
-        else:
-            roles(user, *WORKFLOWS[row.kind]["roles"], "admin")
-        row.status = "completed" if body.action == "complete" else "acknowledged"
-    row.updated_at = utcnow()
-    db.commit()
-    append_audit(db, user, body.action + "_" + row.kind, row.patient_id, f"R{row.id}")
-    return serial(row)
-
-
-class CheckIn(BaseModel):
-    language: Literal["en", "hi", "mr"] = "en"
-    nausea: int = Field(default=0, ge=0, le=4)
-    pain: int = Field(default=0, ge=0, le=4)
-    fatigue: int = Field(default=0, ge=0, le=4)
-    appetite: int = Field(default=0, ge=0, le=4)
-    breathing: int = Field(default=0, ge=0, le=4)
-    temperature: float | None = Field(default=None, ge=30, le=45)
-    distress: int = Field(default=0, ge=0, le=10)
-    text: str = Field(default="", max_length=5000)
-    source: Literal["tap", "voice", "phone_demo"] = "tap"
-
-
-@router.post("/v2/patients/{patient_id}/checkin")
-def checkin(patient_id: str, body: CheckIn, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "checkin")
-    roles(user, "patient", "caregiver", "nurse", "doctor", "admin")
-    sy = [{"key": k, "name": k.title(), "grade": getattr(body, k)} for k in ("nausea", "pain", "fatigue", "appetite", "breathing")]
-    flag = red_flags(body.text, sy, body.temperature, bool(db.get(Patient, patient_id).current_regimen))
-    if body.breathing >= 3:
-        flag = {"level": 3, "reason": "Severe breathing difficulty reported"}
-    row = CareRecord(patient_id=patient_id, kind="checkin", author_id=user.id, author_name=user.name,
-                     author_role=user.role, data=body.model_dump() | {"reported_by": user.role}, status="recorded")
-    db.add(row)
-    db.add(SymptomReport(patient_id=patient_id, language=body.language, symptoms=sy,
-                          free_text=body.text + f" [reported by {user.role}: {user.name}]", flagged=flag["level"] >= 2))
-    db.commit()
-    a = None
-    if flag["level"] >= 2:
-        a = alert(db, patient_id, flag["reason"], f"checkin R{row.id}", "emergency" if flag["level"] == 3 else "urgent")
-    if body.distress >= 7:
-        alert(db, patient_id, "High distress; contact counsellor / navigator", f"R{row.id}")
-    # Personal cycle forecast deviation is based only on this patient's own prior reports.
-    past = [r for r in records(db, patient_id, "checkin") if r.id != row.id]
-    if len(past) >= 3:
-        baseline = sum(r.data.get("fatigue", 0) + r.data.get("nausea", 0) for r in past[:7]) / min(7, len(past))
-        if body.fatigue + body.nausea > baseline + 3:
-            alert(db, patient_id, "Symptoms above this patient's recent baseline", f"R{row.id}")
-    append_audit(db, user, "daily_checkin", patient_id, f"R{row.id}; reported by {user.role}")
-    return {"id": row.id, "level": flag["level"], "alert_id": a.id if a else None,
-            "instruction": EMERGENCY[body.language] if flag["level"] == 3 else "Your care team can see this check-in.",
-            "nurse_notification": "in_app" if a else None, "external_delivery": "not sent; use configured messaging dispatch" if a else None}
-
-
-class Question(BaseModel):
-    text: str = Field(min_length=1, max_length=3000)
-    language: Literal["en", "hi", "mr"] = "en"
-
-
-@router.post("/v2/patients/{patient_id}/companion")
-def companion(patient_id: str, body: Question, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "documents")
-    roles(user, "patient", "caregiver", "doctor", "nurse", "admin")
-    result = answer(db, patient_id, body.text, body.language, user.role in CLINICIANS, patient_id in visible_ids(db,user,"notes"))
-    db.add(CareRecord(patient_id=patient_id, kind="companion", author_id=user.id, author_name=user.name,
-                      author_role=user.role, data={"question": body.text, **result}, status="recorded"))
-    db.commit()
-    return result
-
-
-@router.get("/v2/patients/{patient_id}/summary")
-def summary(patient_id: str, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "documents")
-    roles(user, "doctor", "nurse", "patient", "caregiver")
-    return living_summary(db, patient_id, patient_id in visible_ids(db,user,"notes"), patient_id in visible_ids(db,user,"checkin"), patient_id in visible_ids(db,user,"medicines"))
-
-
-class MessageIn(BaseModel):
-    text: str = Field(min_length=1, max_length=5000)
-
-
-@router.get("/v2/patients/{patient_id}/chat")
-def chat(patient_id: str, request: Request, db=Depends(get_db)):
-    patient_access(db, request, patient_id, "chat")
-    rows = records(db, patient_id, "chat")[:100]
-    return {"messages": [serial(r) for r in reversed(rows)], "summary": [f"{r.author_name}: {r.data['text'][:160]}" for r in rows[:3]][::-1]}
-
-
-@router.post("/v2/patients/{patient_id}/chat")
-def send_chat(patient_id: str, body: MessageIn, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "chat")
-    flag = red_flags(body.text, on_treatment=bool(db.get(Patient, patient_id).current_regimen))
-    row = CareRecord(patient_id=patient_id, kind="chat", author_id=user.id, author_name=user.name,
-                     author_role=user.role, data={"text": body.text, "urgency": flag["level"]}, status="sent")
-    db.add(row)
-    db.commit()
-    if flag["level"] >= 2:
-        alert(db, patient_id, flag["reason"], f"chat R{row.id}", "emergency" if flag["level"] == 3 else "urgent")
-    notify_team(db, patient_id, "Care circle message", f"New message from {user.name}")
-    return serial(row) | {"instruction": EMERGENCY["en"] if flag["level"] == 3 else None}
-
-
-class RequestIn(BaseModel):
-    kind: Literal["medicine", "test", "plan", "clinical_question"] = "medicine"
-    request: str = Field(min_length=3, max_length=3000)
-
-
-def approval_dict(row, user):
-    data = serial(row)
-    if user.role not in CLINICIANS and row.status != "approved":
-        data.pop("draft", None)
-    return data
-
-
-@router.get("/v2/patients/{patient_id}/approvals")
-def approvals(patient_id: str, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "medicines")
-    return [approval_dict(r, user) for r in db.scalars(select(Approval).where(Approval.patient_id == patient_id).order_by(Approval.id.desc()))]
-
-
-@router.post("/v2/patients/{patient_id}/approvals")
-def request_approval(patient_id: str, body: RequestIn, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "medicines")
-    roles(user, "patient", "caregiver", "doctor", "nurse", "admin")
-    flag = red_flags(body.request, on_treatment=bool(db.get(Patient, patient_id).current_regimen))
-    if flag["level"] == 3:
-        a = alert(db, patient_id, flag["reason"], "medicine request", "emergency")
-        return {"emergency": True, "instruction": EMERGENCY["en"], "alert_id": a.id}
-    row = Approval(patient_id=patient_id, kind=body.kind, request=body.request, requested_by=user.name,
-                   draft={"text": f"Review the patient's request: {safe_text(body.request)}", "safety": "Doctor must specify medicine and complete safety checks before approval."})
-    db.add(row)
-    db.commit()
-    notify_team(db, patient_id, "Request awaiting doctor", f"Request #{row.id}")
-    append_audit(db, user, "submit_clinical_request", patient_id, str(row.id))
-    return approval_dict(row, user)
-
-
-class ReviewIn(BaseModel):
-    action: Literal["reviewing", "approve", "reject"]
-    medicine: str = Field(default="", max_length=150)
-    dose: str = Field(default="", max_length=80)
-    frequency: str = Field(default="", max_length=100)
-    times: list[str] = Field(default_factory=list, max_length=8)
-    instructions: str = Field(default="", max_length=3000)
-    reason: str = Field(default="", max_length=3000)
-    safety_confirmed: bool = False
-    evidence_url: str = Field(default="", max_length=1000)
-
-
-def prescription_checks(db, pid, body):
-    profiles = records(db, pid, "clinical_profile")
-    profile = profiles[0].data if profiles else {}
-    meds = db.scalars(select(Medication).where(Medication.patient_id == pid, Medication.active.is_(True))).all()
-    issues = []
-    if not profile.get("allergies"):
-        issues.append("Allergy status not confirmed")
-    elif body.medicine and body.medicine.lower() in profile.get("allergies", "").lower():
-        issues.append("Possible recorded allergy")
-    if any(m.name.lower() == body.medicine.lower().strip() for m in meds):
-        issues.append("Duplicate active medicine")
-    if not profile.get("egfr"):
-        issues.append("Kidney function not documented")
-    elif profile["egfr"] < 60:
-        issues.append("Reduced recorded eGFR; dose needs individual review")
-    platelet = db.scalar(select(LabValue).where(LabValue.patient_id == pid, LabValue.test == "Platelets").order_by(LabValue.measured_at.desc()).limit(1))
-    if platelet and platelet.value < 100 and re.search(r"aspirin|ibuprofen|diclofenac|naproxen", body.medicine, re.I):
-        issues.append("Low recorded platelets: pharmacist review of bleeding risk required")
-    if re.search(r"warfarin|methotrexate|doxorubicin|bleomycin|ayur|herbal", body.medicine, re.I):
-        issues.append("High-risk or unverified product: protocol / interaction review required")
-    bsa = math.sqrt(profile["height_cm"] * profile["weight_kg"] / 3600) if profile.get("height_cm") and profile.get("weight_kg") else None
-    protocols = [r for r in records(db, pid, "drug_protocol") if r.status == "approved" and r.data.get("drug", "").lower() == body.medicine.lower().strip()]
-    expected = None
-    if protocols:
-        protocol = protocols[0].data
-        if bsa:
-            expected = round(protocol["dose_mg_m2"] * bsa, 2)
-            stated = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*mg\s*", body.dose, re.I)
-            if stated and float(stated[1]) > expected * 1.05:
-                issues.append("Entered dose exceeds the signed mg/mÂ² protocol calculation; verify intended rounding and regimen")
-        else:
-            issues.append("Signed body-size protocol exists, but height or weight is missing")
-        if profile.get("egfr", 0) < protocol.get("min_egfr", 0):
-            issues.append("eGFR is below the signed drug-protocol threshold")
-    return {"issues": issues, "bsa_m2": round(bsa, 2) if bsa else None, "egfr": profile.get("egfr"),
-            "protocol_dose_mg": expected, "protocol_source": protocols[0].data.get("source_url") if protocols else None,
-            "scope": "Screening rules only. Full formulary interaction and dose checking requires pharmacist / signed local protocol.",
-            "active_medicines": [m.name + " " + m.dose for m in meds]}
-
-
-@router.post("/v2/approvals/{approval_id}/checks")
-def check_prescription(approval_id: int, body: ReviewIn, request: Request, db=Depends(get_db)):
-    row = db.get(Approval, approval_id)
-    if not row:
-        raise HTTPException(404, "Request not found")
-    user = patient_access(db, request, row.patient_id, "medicines")
-    roles(user, "doctor")
-    return prescription_checks(db, row.patient_id, body)
-
-
-@router.post("/v2/approvals/{approval_id}/review")
-def review(approval_id: int, body: ReviewIn, request: Request, db=Depends(get_db)):
-    row = db.get(Approval, approval_id)
-    if not row:
-        raise HTTPException(404, "Request not found")
-    user = patient_access(db, request, row.patient_id, "medicines")
-    roles(user, "doctor")
-    primary=db.get(TreatingClinician,row.patient_id)
-    if not primary or primary.user_id != user.id:
-        raise HTTPException(403, "The treating oncologist must decide this clinical request")
-    if row.status in {"approved", "rejected"}:
-        raise HTTPException(409, "This request has already been decided")
-    changed = db.execute(update(Approval).where(Approval.id == row.id, Approval.status.in_(["sent", "reviewing"])).values(status="review_locked"))
-    if changed.rowcount != 1:
-        raise HTTPException(409, "Another clinician is already deciding this request")
-    checks = prescription_checks(db, row.patient_id, body)
-    if body.action == "approve":
-        if not body.safety_confirmed or not body.reason.strip():
-            raise HTTPException(422, "Confirm clinical safety review and enter the signing rationale")
-        if row.kind == "medicine":
-            if not body.medicine.strip() or not body.dose.strip() or not body.times or not body.frequency.strip():
-                raise HTTPException(422, "Medicine, dose, frequency and reminder times are required")
-            if any(not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", t) for t in body.times):
-                raise HTTPException(422, "Reminder times must use HH:MM")
-            med = Medication(patient_id=row.patient_id, name=body.medicine.strip(), dose=body.dose,
-                             frequency=body.frequency, times=sorted(set(body.times)), instructions=body.instructions,
-                             start=datetime.now(), active=True)
-            db.add(med)
-            db.flush()
-            row.medication_id = med.id
-        if body.evidence_url and not body.evidence_url.startswith("https://"):
-            raise HTTPException(422, "Evidence URL must use HTTPS")
-        row.draft = {"medicine": body.medicine, "dose": body.dose, "frequency": body.frequency,
-                     "times": body.times, "instructions": body.instructions, "checks": checks,
-                     "evidence_url": body.evidence_url, "signed": True}
-        row.status = "approved"
-        if row.kind == "plan":
-            old=[r for r in records(db,row.patient_id,"roadmap") if r.status=="approved"]
-            data={**(old[0].data if old else {}),"text":body.reason,"source":f"approval {row.id}"}
-            db.add(CareRecord(patient_id=row.patient_id,kind="roadmap",author_id=user.id,author_name=user.name,author_role=user.role,
-                              data=data,status="approved",approved_by=user.name,approved_at=utcnow()))
-    else:
-        row.status = "reviewing" if body.action == "reviewing" else "rejected"
-    row.reason, row.reviewed_by, row.updated_at = body.reason, user.name, utcnow()
-    db.commit()
-    append_audit(db, user, "clinical_" + row.status, row.patient_id, f"Request {row.id}")
-    notify_team(db, row.patient_id, "Doctor reviewed your request", "Request status: " + row.status)
-    return approval_dict(row, user)
-
-
-@router.get("/v2/alerts")
-def alerts(request: Request, db=Depends(get_db)):
-    user = identity(request)
-    ids = visible_ids(db, user, "alerts")
-    return [serial(a) | {"patient_name": db.get(Patient, a.patient_id).name,
-                         "call_script": "Confirm identity and location. Ask onset and severity. Review the red flag. Escalate to the treating doctor; emergency symptoms require immediate emergency care.",
-                         "ladder": ["Duty nurse", "Treating doctor", "Emergency department"]}
-            for a in db.scalars(select(Alert).where(Alert.patient_id.in_(ids)).order_by(Alert.id.desc()).limit(100))]
-
-
-class AlertAction(BaseModel):
-    action: Literal["acknowledge", "call", "escalate", "resolve", "arrived"]
-    outcome: str = Field(min_length=3, max_length=3000)
-
-
-@router.post("/v2/alerts/{alert_id}/action")
-def act_alert(alert_id: int, body: AlertAction, request: Request, db=Depends(get_db)):
-    row = db.get(Alert, alert_id)
-    if not row:
-        raise HTTPException(404, "Alert not found")
-    user = patient_access(db, request, row.patient_id, "alerts")
-    roles(user, "nurse", "doctor", "admin")
-    row.status = {"acknowledge": "acknowledged", "call": "called", "escalate": "escalated", "resolve": "resolved", "arrived": "arrived"}[body.action]
-    row.outcome = (row.outcome + f"\n{utcnow().isoformat()} {user.name}: {body.outcome}").strip()
-    row.assigned_to = user.name
-    if body.action == "arrived" and not row.arrival_at:
-        row.arrival_at = utcnow()
-    db.commit()
-    append_audit(db, user, "triage_" + body.action, row.patient_id, body.outcome)
-    return serial(row)
-
-
-class InviteIn(BaseModel):
-    username: str = Field(min_length=3, max_length=100, pattern=r"^[a-z0-9_.@+-]+$")
-    name: str = Field(min_length=2, max_length=100)
-    password: str = Field(min_length=12, max_length=200)
-    scopes: list[Literal["medicines", "appointments", "checkin", "alerts", "chat", "notes", "documents", "nutrition", "finance", "activity"]] = Field(min_length=1)
-    consent: bool
-    phone: str = Field(default="", max_length=20)
-
-
-@router.get("/v2/patients/{patient_id}/circle")
-def circle(patient_id: str, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id)
-    roles(user, "patient", "doctor", "nurse", "admin")
-    return [{"id": g.id, "name": db.get(User, g.user_id).name, "username": db.get(User, g.user_id).username, "sign_in_id": sign_in_id(db, db.get(User, g.user_id)),
-             "role": db.get(User, g.user_id).role, "scopes": g.scopes, "active": g.active, "consent_by": g.consent_by}
-            for g in db.scalars(select(AccessGrant).where(AccessGrant.patient_id == patient_id))]
-
-
-@router.post("/v2/patients/{patient_id}/circle")
-def invite(patient_id: str, body: InviteIn, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id)
-    roles(user, "patient")
-    if not body.consent:
-        raise HTTPException(422, "Patient consent is required")
-    if db.scalar(select(User).where(User.username == body.username)):
-        raise HTTPException(409, "Choose a new caregiver username")
-    if body.phone and not re.fullmatch(r"\+?[0-9]{10,15}", body.phone):
-        raise HTTPException(422, "Enter an international phone number without spaces")
-    u = User(username=body.username, name=body.name, role="caregiver", password_hash=password_hash(body.password), phone=body.phone)
-    db.add(u)
-    db.flush()
-    g = AccessGrant(user_id=u.id, patient_id=patient_id, scopes=sorted(set(body.scopes)), consent_by=user.name)
-    db.add(g)
-    db.commit()
-    append_audit(db, user, "caregiver_consent", patient_id, body.username + ": " + ",".join(body.scopes))
-    return {"id": g.id, "username": u.username, "sign_in_id": sign_in_id(db, u)}
-
-
-@router.delete("/v2/circle/{grant_id}")
-def remove_circle(grant_id: int, request: Request, db=Depends(get_db)):
-    row = db.get(AccessGrant, grant_id)
-    if not row:
-        raise HTTPException(404, "Invitation not found")
-    user = patient_access(db, request, row.patient_id)
-    roles(user, "patient")
-    if db.get(User, row.user_id).role != "caregiver":
-        raise HTTPException(403, "Only caregiver consent can be withdrawn here")
-    row.active = False
-    db.commit()
-    append_audit(db, user, "revoke_caregiver_consent", row.patient_id, str(grant_id))
-    return {"ok": True}
-
-
-class BreakGlass(BaseModel):
-    patient_id: str
-    reason: str = Field(min_length=15, max_length=1000)
-
-
-@router.post("/v2/break-glass")
-def break_glass(body: BreakGlass, request: Request, db=Depends(get_db)):
-    # This endpoint intentionally does not use patient_access: it creates temporary emergency access.
-    user = identity(request)
-    roles(user, "doctor", "nurse")
-    if not db.get(Patient, body.patient_id):
-        raise HTTPException(404, "Patient not found")
-    old = db.scalar(select(AccessGrant).where(AccessGrant.patient_id == body.patient_id, AccessGrant.user_id == user.id))
-    if old and old.active and (not old.expires_at or old.expires_at > utcnow()):
-        raise HTTPException(409, "You already have access")
-    grant = old or AccessGrant(patient_id=body.patient_id, user_id=user.id)
-    grant.active, grant.scopes, grant.expires_at = True, ["all"], utcnow() + timedelta(minutes=15)
-    grant.consent_by = "Emergency access: " + body.reason
-    db.add(grant)
-    for officer in db.scalars(select(User).where(User.role.in_(["privacy", "admin"]))):
-        db.add(Notification(user_id=officer.id, title="Break-glass access", body=f"{user.name} opened {body.patient_id}: {body.reason}"))
-    db.commit()
-    append_audit(db, user, "break_glass", body.patient_id, body.reason)
-    return {"expires_at": grant.expires_at}
-
-
-@router.get("/v2/audit/verify")
-def audit_integrity(request: Request, db=Depends(get_db)):
-    identity(request)
-    return verify_chain(db)
-
-
-@router.get("/v2/patients/{patient_id}/audit")
-def patient_audit(patient_id: str, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "audit")
-    from ..round2_models import AuditChain
-    return [serial(r, ("actor_id", "previous_hash")) for r in db.scalars(select(AuditChain).where(AuditChain.patient_id == patient_id).order_by(AuditChain.id.desc()).limit(200))]
-
-
-@router.get("/v2/library")
-def library(request: Request, db=Depends(get_db)):
-    user = identity(request)
-    rows = db.scalars(select(LibraryItem)).all()
-    return [serial(r) for r in rows if r.approved_by or user.role in {"doctor", "dietitian", "admin"}]
-
-
-@router.post("/v2/library/{item_id}/approve")
-def approve_library(item_id: int, request: Request, db=Depends(get_db)):
-    user = identity(request)
-    roles(user, "doctor", "dietitian", "admin")
-    row = db.get(LibraryItem, item_id)
-    if not row:
-        raise HTTPException(404, "Library item not found")
-    if row.category != "food":
-        roles(user, "doctor")
-    reviews = {**row.content.get("_reviews", {}), user.role: user.name}
-    row.content = {**row.content, "_reviews": reviews}
-    required = {"doctor", "dietitian"} if row.category == "food" else {"doctor"}
-    if required.issubset(reviews):
-        row.approved_by, row.approved_at = "; ".join(reviews[r] for r in sorted(required)), utcnow()
-    db.commit()
-    append_audit(db, user, "approve_library", detail=row.key)
-    return serial(row)
-
-
-@router.get("/v2/patients/{patient_id}/wellness")
-def wellness(patient_id: str, request: Request, db=Depends(get_db)):
-    patient_access(db, request, patient_id, "nutrition")
-    sy = records(db, patient_id, "checkin")
-    latest = sy[0].data if sy else {}
-    labs = living_summary(db, patient_id)["latest_labs"]
-    low_counts = any(l["test"] == "ANC" and l["value"] < 1.5 for l in labs)
-    fatigue = latest.get("fatigue", 0)
-    keys = {"food_safety", "soft_food" if "mouth" in latest.get("text", "").lower() else "meals", "rest" if fatigue >= 2 or low_counts else "activity", "mood", "seasonal"}
-    approved = db.scalars(select(LibraryItem).where(LibraryItem.approved_by.is_not(None), LibraryItem.key.in_(keys))).all()
-    prefs = records(db, patient_id, "preferences")
-    diet = prefs[0].data.get("diet", "vegetarian") if prefs else "vegetarian"
-    return {"low_counts": low_counts, "fatigue": fatigue, "diet": diet,
-            "guidance": [serial(r) for r in approved],
-            "meal_plan": [{"day": i + 1, "suggestion": r.content.get(diet, r.content.get("en", "")), "library_id": r.id}
-                          for i in range(7) for r in approved if r.key in {"meals", "soft_food"}],
-            "activity": "Choose a seated puzzle, gentle breathing or a short hobby break." if fatigue >= 2 or low_counts else "Ask your team whether a short walk or gentle yoga fits today's plan.",
-            "activity_gate": "Discuss activity and crowd exposure with your team while counts are low." if low_counts else None,
-            "library_ready": bool(approved)}
-
-
-@router.get("/v2/patients/{patient_id}/visit-prep")
-def visit_prep(patient_id: str, request: Request, db=Depends(get_db)):
-    patient_access(db, request, patient_id, "notes")
-    prefs = records(db, patient_id, "preferences")
-    checkins = records(db, patient_id, "checkin")[:7]
-    questions = ["What is the next step in my signed plan?", "Which changes should make me contact the team immediately?"]
-    if prefs and prefs[0].data.get("worries"):
-        questions.insert(0, "I want to discuss: " + prefs[0].data["worries"])
-    for c in checkins[:3]:
-        if c.data.get("text"):
-            questions.append("Can we review this symptom report: " + c.data["text"][:200])
-    return {"questions": questions, "pending_requests": len(db.scalars(select(Approval).where(Approval.patient_id == patient_id, Approval.status.in_(["sent", "reviewing"]))).all())}
-
-
-@router.get("/v2/patients/{patient_id}/week")
-def week(patient_id: str, request: Request, db=Depends(get_db)):
-    patient_access(db, request, patient_id, "activity")
-    since = utcnow() - timedelta(days=7)
-    checkins = [r for r in records(db, patient_id, "checkin") if r.created_at > since]
-    days = sorted({r.created_at.date().isoformat() for r in checkins})
-    logs = db.scalars(select(MedLog).where(MedLog.patient_id == patient_id, MedLog.logged_at > since)).all()
-    acts = db.scalars(select(Activity).where(Activity.patient_id == patient_id, Activity.date > since)).all()
-    return {"checkin_days": len(days), "days": days, "doses_taken": sum(l.status == "taken" for l in logs),
-            "doses_missed": sum(l.status == "missed" for l in logs), "steps": sum(a.steps for a in acts),
-            "garden_stage": min(5, len(days)), "mood": [10 - r.data.get("distress", 0) for r in reversed(checkins)],
-            "best_day": max(acts, key=lambda a: a.steps).date.date().isoformat() if acts else None}
-
-
-class ActivityIn(BaseModel):
-    steps: int = Field(ge=0, le=200000)
-    sleep_hours: float = Field(ge=0, le=24)
-    resting_hr: int = Field(ge=20, le=250)
-
-
-@router.post("/v2/patients/{patient_id}/activity")
-def add_activity(patient_id: str, body: ActivityIn, request: Request, db=Depends(get_db)):
-    patient_access(db, request, patient_id, "activity")
-    day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    row = db.scalar(select(Activity).where(Activity.patient_id == patient_id, Activity.date == day))
-    if not row:
-        row = Activity(patient_id=patient_id, date=day)
-        db.add(row)
-    for k, v in body.model_dump().items():
-        setattr(row, k, v)
-    db.commit()
-    return {"ok": True, "source": "manual entry"}
-
-
-class WearablePointIn(BaseModel):
-    observed_at: datetime
-    metric: Literal["heart_rate", "spo2", "systolic", "diastolic", "steps", "distance_km", "active_minutes", "sleep_hours", "temperature_c"]
-    value: float = Field(allow_inf_nan=False)
-    unit: str = Field(max_length=12)
-
-
-class WearableBatchIn(BaseModel):
-    consent: bool
-    source: Literal["bluetooth", "android_ble", "health_connect", "healthkit", "vendor", "manual"] = "bluetooth"
-    device_name: str = Field(default="", max_length=100)
-    readings: list[WearablePointIn] = Field(min_length=1, max_length=100)
-
-
-class WearableDeviceIn(BaseModel):
-    consent: bool
-    device_name: str = Field(default="OncoBrief Android companion", max_length=100)
-
-
-class VitalAlertProtocolIn(BaseModel):
-    thresholds: dict[str, float] = Field(max_length=5)
-    source_url: str = Field(pattern=r"^https://", max_length=1000)
-    rationale: str = Field(min_length=10, max_length=3000)
-
-
-WEARABLE_UNITS = {
-    "heart_rate": "bpm", "spo2": "%", "systolic": "mmHg", "diastolic": "mmHg",
-    "steps": "steps", "distance_km": "km", "active_minutes": "min",
-    "sleep_hours": "h", "temperature_c": "Â°C",
-}
-WEARABLE_RANGES = {
-    "heart_rate": (20, 260), "spo2": (50, 100), "systolic": (50, 280), "diastolic": (25, 180),
-    "steps": (0, 200000), "distance_km": (0, 150), "active_minutes": (0, 1440),
-    "sleep_hours": (0, 24), "temperature_c": (25, 45),
-}
-
-
-@router.post("/v2/patients/{patient_id}/wearable-devices")
-def create_wearable_device(patient_id: str, body: WearableDeviceIn, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "activity")
-    roles(user, "patient", "caregiver")
-    if not body.consent:
-        raise HTTPException(422, "Explicit consent is required before linking a background wearable")
-    active_credentials = db.scalar(select(func.count(WearableDeviceCredential.id)).where(
-        WearableDeviceCredential.patient_id == patient_id,
-        WearableDeviceCredential.user_id == user.id,
-        WearableDeviceCredential.revoked.is_(False),
-        WearableDeviceCredential.expires_at > utcnow(),
-    )) or 0
-    if active_credentials >= 5:
-        raise HTTPException(409, "Revoke an existing Android companion before linking another one")
-    token = secrets.token_urlsafe(32)
-    row = WearableDeviceCredential(
-        patient_id=patient_id,
-        user_id=user.id,
-        token_hash=digest(token),
-        device_name=body.device_name.strip() or "Android wearable companion",
-        expires_at=utcnow() + timedelta(days=90),
-    )
-    db.add(row)
-    db.commit()
-    append_audit(db, user, "wearable_device_linked", patient_id, f"Credential {row.id}; expires in 90 days")
-    return {"id": row.id, "token": token, "patient_id": patient_id,
-            "device_name": row.device_name, "expires_at": row.expires_at.isoformat() + "Z"}
-
-
-@router.get("/v2/patients/{patient_id}/wearable-devices")
-def wearable_devices(patient_id: str, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "activity")
-    roles(user, "patient", "caregiver")
-    rows = db.scalars(select(WearableDeviceCredential).where(
-        WearableDeviceCredential.patient_id == patient_id
-    ).order_by(WearableDeviceCredential.id.desc()).limit(50)).all()
-    return [{
-        "id": row.id,
-        "device_name": row.device_name,
-        "created_at": row.created_at.isoformat() + "Z",
-        "last_seen": row.last_seen.isoformat() + "Z" if row.last_seen else None,
-        "expires_at": row.expires_at.isoformat() + "Z",
-        "revoked": row.revoked,
-        "can_revoke": user.role == "patient" or row.user_id == user.id,
-    } for row in rows if user.role == "patient" or row.user_id == user.id]
-
-
-@router.delete("/v2/patients/{patient_id}/wearable-devices/{device_id}")
-def revoke_wearable_device(patient_id: str, device_id: int, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "activity")
-    roles(user, "patient", "caregiver")
-    row = db.get(WearableDeviceCredential, device_id)
-    if not row or row.patient_id != patient_id or (user.role != "patient" and row.user_id != user.id):
-        raise HTTPException(404, "Wearable device not found")
-    row.revoked = True
-    db.commit()
-    append_audit(db, user, "wearable_device_revoked", patient_id, f"Credential {row.id}")
-    return {"ok": True}
-
-
-@router.post("/v2/patients/{patient_id}/vital-alert-protocol")
-def sign_vital_alert_protocol(patient_id: str, body: VitalAlertProtocolIn, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "activity")
-    roles(user, "doctor")
-    allowed = {"heart_rate", "spo2", "systolic", "diastolic", "temperature_c"}
-    if not body.thresholds or set(body.thresholds) - allowed:
-        raise HTTPException(422, "Provide at least one supported vital with a minimum review threshold")
-    for metric, value in body.thresholds.items():
-        low, high = WEARABLE_RANGES[metric]
-        if not math.isfinite(value) or value < low or value > high:
-            raise HTTPException(422, f"Invalid minimum review threshold for {metric}")
-    for previous in db.scalars(select(CareRecord).where(
-        CareRecord.patient_id == patient_id, CareRecord.kind == "vital_alert_protocol",
-        CareRecord.status == "approved",
-    )):
-        previous.status = "superseded"
-    row = CareRecord(
-        patient_id=patient_id, kind="vital_alert_protocol", author_id=user.id,
-        author_name=user.name, author_role=user.role, status="approved",
-        approved_by=user.name, approved_at=utcnow(),
-        data={"thresholds": body.thresholds, "source_url": body.source_url, "rationale": body.rationale},
-    )
-    db.add(row)
-    db.commit()
-    append_audit(db, user, "sign_vital_alert_protocol", patient_id)
-    return serial(row)
-
-
-@router.get("/v2/patients/{patient_id}/wearables")
-def wearable_history(patient_id: str, request: Request, days: int = 30, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "activity")
-    days = min(365, max(1, days))
-    since = utcnow() - timedelta(days=days)
-    rows = db.scalars(select(WearableReading).where(
-        WearableReading.patient_id == patient_id, WearableReading.observed_at >= since
-    ).order_by(WearableReading.observed_at.desc()).limit(5000)).all()
-    rows.reverse()
-    payload = {"days": days, "items": [serial(row) for row in rows]}
-    if user.role != "patient":
-        payload["activity_threshold_steps"] = low_activity_steps_threshold()
-        protocol = current_vital_alert_protocol(db, patient_id)
-        payload["vital_thresholds"] = protocol.data.get("thresholds", {}) if protocol else {}
-        payload["vital_protocol"] = {
-            "source_url": protocol.data.get("source_url", ""),
-            "rationale": protocol.data.get("rationale", ""),
-            "approved_by": protocol.approved_by,
-            "approved_at": protocol.approved_at.isoformat() + "Z" if protocol.approved_at else None,
-        } if protocol else None
-    return payload
-
-
-@router.post("/v2/patients/{patient_id}/wearables")
-def save_wearable_readings(patient_id: str, body: WearableBatchIn, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "activity")
-    roles(user, "patient", "caregiver")
-    if not body.consent:
-        raise HTTPException(422, "Explicit consent is required before saving wearable readings")
-    if getattr(request.state, "wearable_device_id", None) and body.source != "android_ble":
-        raise HTTPException(422, "A background device credential can only upload Android Bluetooth readings")
-    saved = []
-    for point in body.readings:
-        if point.unit != WEARABLE_UNITS[point.metric]:
-            raise HTTPException(422, f"Use {WEARABLE_UNITS[point.metric]} for {point.metric}")
-        low, high = WEARABLE_RANGES[point.metric]
-        if point.value < low or point.value > high:
-            raise HTTPException(422, f"{point.metric} reading is outside the accepted storage range")
-        observed_at = point.observed_at
-        if observed_at.tzinfo is not None:
-            observed_at = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
-        if observed_at > utcnow() + timedelta(minutes=5):
-            raise HTTPException(422, "A wearable reading cannot be more than five minutes in the future")
-        row = WearableReading(
-            patient_id=patient_id, metric=point.metric, value=point.value, unit=point.unit,
-            observed_at=observed_at, source=body.source, device_name=body.device_name.strip()[:100],
-        )
-        db.add(row)
-        saved.append(row)
-    append_audit(db, user, "wearable_readings_saved", patient_id,
-                 f"{len(saved)} {body.source} readings; device name only")
-    db.commit()
-    if body.source != "manual":
-        evaluate_vital_readings(db, patient_id, saved)
-    return {"saved": len(saved), "source": body.source}
-
-@router.get("/v2/patients/{patient_id}/clinical")
-def clinical_dashboard(patient_id: str, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "documents")
-    roles(user, "doctor", "nurse", "patient", "caregiver")
-    p = db.get(Patient, patient_id)
-    summary = living_summary(db, patient_id)
-    latest = {l["test"]: l for l in summary["latest_labs"]}
-    # Thresholds are supplied by the treating doctor in the local protocol, never universal.
-    threshold_rows = records(db, patient_id, "readiness_protocol")
-    protocol = threshold_rows[0].data if threshold_rows else {}
-    readiness = []
-    for test in ["ANC", "Platelets", "Haemoglobin", "Creatinine", "ALT", "AST", "Bilirubin"]:
-        lab = latest.get(test)
-        cutoff = protocol.get(test)
-        result = "Check: local protocol required"
-        if not lab:
-            result = "Check: result missing"
-        elif (datetime.now() - datetime.fromisoformat(lab["date"])).days > protocol.get("max_age_days", 3):
-            result = "Check: result needs refreshing"
-        elif cutoff:
-            result = "Within signed threshold" if cutoff.get("min", -1e9) <= lab["value"] <= cutoff.get("max", 1e9) else "Check: outside signed threshold"
-        readiness.append({"test": test, "lab": lab, "result": result})
-    totals = {}
-    for r in records(db, patient_id, "administration"):
-        key = r.data["drug"].lower() + "|" + r.data["unit"]
-        item = totals.setdefault(key, {"drug": r.data["drug"], "unit": r.data["unit"], "total": 0, "limit": r.data.get("lifetime_limit")})
-        item["total"] += r.data["dose"]
-    for item in totals.values():
-        item["warning"] = bool(item["limit"] and item["total"] >= item["limit"] * .8)
-    all_labs = db.scalars(select(LabValue).where(LabValue.patient_id == patient_id).order_by(LabValue.measured_at)).all()
-    baselines = []
-    for test in {l.test for l in all_labs}:
-        ls = [l for l in all_labs if l.test == test]
-        if len(ls) >= 4:
-            mean = sum(l.value for l in ls[-4:-1]) / 3
-            if mean and ls[-1].value < mean * .8:
-                baselines.append({"test": test, "latest": ls[-1].value, "previous_mean": round(mean, 2), "source": f"D{ls[-1].document_id}"})
-    measurements = [serial(r) for r in reversed(records(db, patient_id, "measurement"))]
-    docs = db.scalars(select(Document).where(Document.patient_id == patient_id).order_by(Document.record_date.desc())).all()
-    suggestions = []
-    for d in docs:
-        if d.category != "Imaging":
-            continue
-        for m in re.finditer(r"(?P<label>[A-Za-z][A-Za-z -]{0,40}?)\s+(?:measures?\s+)?(?P<size>\d+(?:\.\d+)?)\s*(?P<unit>cm|mm)\b", safe_text(d.ocr_text), re.I):
-            suggestions.append({"document_id": d.id, "date": d.record_date.isoformat(), "text": m.group(0),
-                                "size_mm": float(m.group("size")) * (10 if m.group("unit").lower() == "cm" else 1), "status": "needs clinician confirmation"})
-    changes = []
-    import difflib
-    grouped = {}
-    for d in docs:
-        grouped.setdefault(d.subtype, []).append(d)
-    for subtype, ds in grouped.items():
-        if len(ds) >= 2:
-            changes.append({"subtype": subtype, "from": f"D{ds[1].id}", "to": f"D{ds[0].id}",
-                            "lines": list(difflib.unified_diff(safe_text(ds[1].ocr_text).splitlines(), safe_text(ds[0].ocr_text).splitlines(), n=1))[:120]})
-    roads = [r for r in records(db, patient_id, "roadmap") if r.status == "approved"]
-    checks = records(db, patient_id, "checkin")
-    forecast = []
-    road = roads[0].data if roads else {}
-    if road.get("cycle_start"):
-        start = datetime.fromisoformat(road["cycle_start"])
-        cycle_days = int(road.get("cycle_days", 21))
-        for day in range(1, min(cycle_days, 90) + 1):
-            past = [c for c in checks if c.created_at < start and ((start - c.created_at).days % cycle_days) == (cycle_days - day + 1) % cycle_days]
-            actual = [c for c in checks if (c.created_at.date() - start.date()).days == day - 1]
-            forecast.append({"day": day, "expected": round(sum(c.data.get("nausea", 0) + c.data.get("fatigue", 0) for c in past) / len(past), 1) if past else None,
-                             "actual": sum(actual[0].data.get(k, 0) for k in ("nausea", "fatigue")) if actual else None,
-                             "samples": len(past)})
-    cohort = None
-    if not DEMO_MODE and os.getenv("COHORT_ANALYTICS_CONSENT") == "true" and user.role == "doctor":
-        peers = db.scalars(select(Patient).where(Patient.id.in_(visible_ids(db, user, "documents")), Patient.cancer_type == p.cancer_type, Patient.stage == p.stage)).all()
-        outcomes = [r for peer in peers for r in records(db, peer.id, "outcome")[:1] if r.data.get("regimen") == p.current_regimen]
-        if len(outcomes) >= 10:
-            cohort = {"n": len(outcomes), "responses": {s: sum(r.data.get("response") == s for r in outcomes) for s in ["complete", "partial", "stable", "progression", "not_assessed"]},
-                      "note": "Descriptive outcomes from authorized, consented local records; no causal treatment comparison."}
-    data = {"readiness": readiness, "readiness_status": "Doctor confirmation required", "protocol": protocol,
-            "cumulative": list(totals.values()), "baselines": baselines, "measurements": measurements,
-            "extracted_measurements": suggestions, "changes": changes, "roadmap": road, "forecast": forecast,
-            "journey": [{"date": d.record_date.isoformat(), "title": d.title, "id": d.id} for d in reversed(docs)],
-            "pain": [serial(r) for r in reversed(records(db, patient_id, "pain"))],
-            "evidence": {"guideline": "https://www.cancer.gov/about-cancer/treatment", "cohort": cohort,
-                         "note": "No cross-hospital outcome dataset configured. Local counts require consent and at least 10 matching real patients. Demo outcomes are never used as evidence."}}
-    if user.role not in CLINICIANS:
-        data = {k: data[k] for k in ("measurements", "roadmap", "forecast", "journey", "pain")}
-        if patient_id not in visible_ids(db,user,"checkin"):
-            data["forecast"],data["pain"]=[],[]
-    return data
-
-
-class ProtocolIn(BaseModel):
-    thresholds: dict[str, dict[str, float]]
-    max_age_days: int = Field(ge=1, le=30)
-    source_url: str = Field(pattern=r"^https://", max_length=1000)
-    rationale: str = Field(min_length=10, max_length=3000)
-
-
-@router.post("/v2/patients/{patient_id}/readiness-protocol")
-def protocol(patient_id: str, body: ProtocolIn, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "documents")
-    roles(user, "doctor")
-    for test, bounds in body.thresholds.items():
-        if test not in {"ANC", "Platelets", "Haemoglobin", "Creatinine", "ALT", "AST", "Bilirubin"} or set(bounds) - {"min", "max"}:
-            raise HTTPException(422, "Unsupported test or threshold")
-        if not bounds or any(not math.isfinite(v) for v in bounds.values()) or bounds.get("min", -1e12) > bounds.get("max", 1e12):
-            raise HTTPException(422, "Invalid protocol thresholds")
-    row = CareRecord(patient_id=patient_id, kind="readiness_protocol", author_id=user.id, author_name=user.name, author_role=user.role,
-                     status="approved", approved_by=user.name, approved_at=utcnow(),
-                     data=body.thresholds | {"max_age_days": body.max_age_days, "source_url": body.source_url, "rationale": body.rationale})
-    db.add(row)
-    db.commit()
-    append_audit(db, user, "sign_readiness_protocol", patient_id)
-    return serial(row)
-
-
-@router.get("/v2/patients/{patient_id}/day-pass")
-def day_pass(patient_id: str, request: Request, day: str = "", db=Depends(get_db)):
-    patient_access(db, request, patient_id, "appointments")
-    try:
-        start = datetime.fromisoformat(day) if day else datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    except ValueError:
-        raise HTTPException(422, "Use YYYY-MM-DD")
-    end = start + timedelta(days=1)
-    appts = db.scalars(select(Appointment).where(Appointment.patient_id == patient_id, Appointment.start >= start, Appointment.start < end).order_by(Appointment.start)).all()
-    out = []
-    for a in appts:
-        ahead = db.scalars(select(Appointment).where(Appointment.department == a.department, Appointment.start >= start,
-                                                      Appointment.start < a.start, Appointment.status.in_(["arrived", "in_progress", "booked"]))).all()
-        out.append(serial(a) | {"ahead": len(ahead), "wait_minutes": len(ahead) * 20,
-                                "directions": f"Ask reception for {a.department}, {a.room}. Indoor walking routes require your hospital map."})
-    prefs = records(db, patient_id, "preferences")
-    address = os.getenv("HOSPITAL_ADDRESS", "")
-    return {"date": start.date().isoformat(), "patient_id": patient_id, "stops": out,
-            "trip_count": len({a.start.date() for a in appts}),
-            "stays_url": "https://www.google.com/maps/search/" + quote("patient accommodation near " + address) if address else None,
-            "gate_url": f"/app?gate={patient_id}", "map_configured": bool(address)}
-
-
-TRANSPORT_ROLES = {"frontdesk", "navigator", "nurse", "admin"}
-
-
-class TransportRequestIn(BaseModel):
-    appointment_id: int = Field(gt=0)
-    pickup_at: datetime
-    pickup_address: str = Field(min_length=5, max_length=300)
-    landmark: str = Field(default="", max_length=150)
-    ride_type: Literal["uber", "rapido", "hospital", "caregiver"] = "uber"
-    support: list[Literal["mobility_assistance", "caregiver_accompanying", "wheelchair_accessible"]] = Field(default_factory=list, max_length=3)
-    companion_count: int = Field(default=0, ge=0, le=4)
-    fare_support: bool = False
-    notes: str = Field(default="", max_length=500)
-    consent: bool
-    location_consent: bool = False
-
-
-class TransportLocationIn(BaseModel):
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
-    accuracy_m: float | None = Field(default=None, ge=0, le=100000)
-
-
-class TransportUpdateIn(BaseModel):
-    status: Literal["coordinating", "arranged", "unable", "completed"]
-    arranged_via: str = Field(default="", max_length=120)
-    confirmed_pickup_at: datetime | None = None
-    coordination_note: str = Field(default="", max_length=500)
-
-
-def transport_payload(db, row):
-    data = dict(row.data or {})
-    # Precise coordinates are available only through the consented live-share endpoint.
-    data.pop("location", None)
-    data.pop("location_share_id", None)
-    appointment = db.get(Appointment, data.get("appointment_id")) if data.get("appointment_id") else None
-    patient = db.get(Patient, row.patient_id)
-    out = serial(row) | {"data": data, "patient_name": patient.name if patient else ""}
-    out["appointment"] = ({"id": appointment.id, "department": appointment.department,
-                           "room": appointment.room, "start": appointment.start.isoformat(),
-                           "status": appointment.status} if appointment else None)
-    out["delivery_summary"] = (row.data or {}).get("delivery_summary", {})
-    return out
-
-
-def notify_transport_coordinators(db, patient_id, title, body):
-    now = utcnow()
-    grants = db.scalars(select(AccessGrant).where(AccessGrant.patient_id == patient_id, AccessGrant.active.is_(True))).all()
-    count = 0
-    for grant in grants:
-        coordinator = db.get(User, grant.user_id)
-        if (coordinator and coordinator.active and coordinator.role in TRANSPORT_ROLES
-                and (not grant.expires_at or grant.expires_at > now)
-                and ("all" in grant.scopes or "appointments" in grant.scopes)):
-            db.add(Notification(user_id=coordinator.id, patient_id=patient_id, channel="transport", title=title, body=body))
-            count += 1
-    db.commit()
-    return count
-
-
-def transport_caregivers(db, patient_id):
-    now = utcnow()
-    grants = db.scalars(select(AccessGrant).where(
-        AccessGrant.patient_id == patient_id, AccessGrant.active.is_(True)
-    )).all()
-    people = []
-    for grant in grants:
-        caregiver = db.get(User, grant.user_id)
-        if (caregiver and caregiver.active and caregiver.role == "caregiver"
-                and (not grant.expires_at or grant.expires_at > now)
-                and ("all" in grant.scopes or "appointments" in grant.scopes)):
-            people.append(caregiver)
-    return people
-
-
-def transport_external_recipients(db, patient_id, target):
-    recipients = []
-    sms_ready = bool(os.getenv("SMS_ADAPTER_URL") and os.getenv("SMS_ADAPTER_KEY"))
-    email_ready = bool(os.getenv("EMAIL_ADAPTER_URL") and os.getenv("EMAIL_ADAPTER_KEY"))
-
-    def add_contact(phone, email, name):
-        if phone and sms_ready:
-            recipients.append(("sms", phone, name))
-        elif email and email_ready:
-            recipients.append(("email", email, name))
-        elif phone:
-            recipients.append(("sms", phone, name))
-        elif email:
-            recipients.append(("email", email, name))
-
-    if target in {"hospital", "both"}:
-        phone = os.getenv("HOSPITAL_TRANSPORT_PHONE", "").strip()
-        email = os.getenv("HOSPITAL_TRANSPORT_EMAIL", "").strip()
-        if phone or email:
-            add_contact(phone, email, "Hospital transport desk")
-        else:
-            recipients.append(("pending", "", "Hospital transport desk"))
-    if target in {"caregiver", "both"}:
-        caregivers = transport_caregivers(db, patient_id)
-        if not caregivers:
-            recipients.append(("pending", "", "Linked caregiver"))
-        for caregiver in caregivers:
-            phone = (caregiver.phone or "").strip()
-            email = caregiver.username.strip() if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", caregiver.username.strip()) else ""
-            if phone or email:
-                add_contact(phone, email, caregiver.name)
-            else:
-                recipients.append(("pending", "", caregiver.name))
-    return list({(channel, address): (channel, address, name)
-                 for channel, address, name in recipients}.values())
-
-
-def notify_transport_caregivers(db, patient_id, title, body):
-    for caregiver in transport_caregivers(db, patient_id):
-        db.add(Notification(user_id=caregiver.id, patient_id=patient_id, channel="transport",
-                            title=title, body=body))
-    db.commit()
-
-
-def revoke_transport_location(db, row, status="stopped"):
-    data = dict(row.data or {})
-    data["location_sharing"] = status
-    data.pop("location", None)
-    share_id = data.get("location_share_id")
-    if share_id:
-        share = db.get(ShareLink, share_id)
-        if share:
-            share.revoked = True
-    row.data = data
-
-
-def send_transport_messages(db, patient_id, appointment, pickup_at, target, location_url, request_data):
-    results = []
-    recipients = transport_external_recipients(db, patient_id, target)
-    for channel, address, name in recipients:
-        if channel == "pending":
-            results.append({"recipient": name, "channel": "sms/email", "status": "not_configured"})
-            continue
-        text = (f"OncoBrief transport request for patient {patient_id}. "
-                f"Pickup requested {pickup_at:%d %b %Y at %H:%M}. "
-                f"Pickup address: {request_data.get('pickup_address', '')}. "
-                f"Appointment: {appointment.department} on {appointment.start:%d %b %Y at %H:%M}.")
-        if request_data.get("landmark"):
-            text += f" Landmark: {request_data['landmark']}."
-        support = request_data.get("support", [])
-        support_labels = {"mobility_assistance": "mobility assistance",
-                          "wheelchair_accessible": "wheelchair-accessible vehicle",
-                          "caregiver_accompanying": "caregiver travelling"}
-        if support:
-            text += " Accessibility/support: " + ", ".join(support_labels.get(value, value) for value in support) + "."
-        if request_data.get("fare_support"):
-            text += " Travel-cost support requested."
-        if location_url:
-            text += f" Live trip location (available only while sharing): {location_url}"
-        try:
-            if channel == "sms":
-                deliver("sms", {"to": address, "body": text})
-            else:
-                deliver("email", {"to": address, "subject": "OncoBrief transport request", "body": text})
-            results.append({"recipient": name, "channel": channel, "status": "accepted"})
-        except HTTPException as exc:
-            results.append({"recipient": name, "channel": channel,
-                            "status": "not_configured" if exc.status_code == 503 else "failed"})
-        except Exception:
-            results.append({"recipient": name, "channel": channel, "status": "failed"})
-    return results
-
-
-@router.post("/v2/transport-requests/{request_id}/location/start")
-def start_transport_location(request_id: int, request: Request, db=Depends(get_db)):
-    row = db.get(CareRecord, request_id)
-    if not row or row.kind != "transport_request":
-        raise HTTPException(404, "Transport request not found")
-    user = patient_access(db, request, row.patient_id, "appointments")
-    roles(user, "patient", "caregiver")
-    data = dict(row.data or {})
-    if not data.get("location_consent"):
-        raise HTTPException(403, "The patient has not consented to live-location sharing")
-    if row.status in {"completed", "cancelled", "unable"}:
-        raise HTTPException(409, "This transport request is closed")
-    share = db.get(ShareLink, data.get("location_share_id")) if data.get("location_share_id") else None
-    if not share or share.revoked or share.expires_at < utcnow():
-        raise HTTPException(410, "The trip location link has expired")
-    data["location_sharing"] = "active"
-    data["location_started_at"] = utcnow().isoformat()
-    data.pop("location", None)
-    row.data, row.updated_at = data, utcnow()
-    db.commit()
-    append_audit(db, user, "transport_location_started", row.patient_id, f"Request {row.id}")
-    return {"status": "active"}
-
-
-@router.post("/v2/transport-requests/{request_id}/location")
-def update_transport_location(request_id: int, body: TransportLocationIn, request: Request, db=Depends(get_db)):
-    row = db.get(CareRecord, request_id)
-    if not row or row.kind != "transport_request":
-        raise HTTPException(404, "Transport request not found")
-    user = patient_access(db, request, row.patient_id, "appointments")
-    roles(user, "patient", "caregiver")
-    data = dict(row.data or {})
-    if not data.get("location_consent") or data.get("location_sharing") != "active":
-        raise HTTPException(409, "Start consented trip sharing before sending a location")
-    share = db.get(ShareLink, data.get("location_share_id")) if data.get("location_share_id") else None
-    if not share or share.revoked or share.expires_at < utcnow():
-        raise HTTPException(410, "The trip location link has expired")
-    observed_at = utcnow()
-    data["location"] = {"latitude": body.latitude, "longitude": body.longitude,
-                        "accuracy_m": body.accuracy_m, "observed_at": observed_at.isoformat()}
-    row.data, row.updated_at = data, observed_at
-    db.commit()
-    return {"status": "active", "updated_at": observed_at.isoformat()}
-
-
-@router.post("/v2/transport-requests/{request_id}/location/stop")
-def stop_transport_location(request_id: int, request: Request, db=Depends(get_db)):
-    row = db.get(CareRecord, request_id)
-    if not row or row.kind != "transport_request":
-        raise HTTPException(404, "Transport request not found")
-    user = patient_access(db, request, row.patient_id, "appointments")
-    roles(user, "patient", "caregiver")
-    data = dict(row.data or {})
-    if data.get("location_consent"):
-        revoke_transport_location(db, row)
-        row.updated_at = utcnow()
-        db.commit()
-        append_audit(db, user, "transport_location_stopped", row.patient_id, f"Request {row.id}")
-    return {"status": "stopped"}
-
-
-@router.get("/shared/transport/{token}")
-def shared_transport_location(token: str, db=Depends(get_db)):
-    share = db.scalar(select(ShareLink).where(ShareLink.token_hash == digest(token),
-                                             ShareLink.kind == "transport_location"))
-    if not share or share.revoked or share.expires_at < utcnow():
-        raise HTTPException(404, "This trip location link has expired or was withdrawn")
-    try:
-        request_id = int((share.fields or ["request:0"])[0].split(":", 1)[1])
-    except (IndexError, ValueError):
-        raise HTTPException(404, "This trip location link is invalid")
-    row = db.get(CareRecord, request_id)
-    if not row or row.patient_id != share.patient_id or row.kind != "transport_request":
-        raise HTTPException(404, "This trip location is unavailable")
-    data = row.data or {}
-    status = data.get("location_sharing", "available")
-    return {"status": status, "location": data.get("location") if status == "active" else None,
-            "updated_at": (data.get("location") or {}).get("observed_at"),
-            "expires_at": share.expires_at.isoformat()}
-
-
-@router.get("/v2/patients/{patient_id}/transport-requests")
-def patient_transport_requests(patient_id: str, request: Request, db=Depends(get_db)):
-    patient_access(db, request, patient_id, "appointments")
-    rows = db.scalars(select(CareRecord).where(
-        CareRecord.patient_id == patient_id, CareRecord.kind == "transport_request"
-    ).order_by(CareRecord.created_at.desc(), CareRecord.id.desc()).limit(100)).all()
-    return [transport_payload(db, row) for row in rows]
-
-
-@router.post("/v2/patients/{patient_id}/transport-requests")
-def create_transport_request(patient_id: str, body: TransportRequestIn, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "appointments")
-    roles(user, "patient", "caregiver")
-    if not body.consent:
-        raise HTTPException(422, "Consent is required to share pickup details with your care team")
-    appointment = db.get(Appointment, body.appointment_id)
-    if not appointment or appointment.patient_id != patient_id:
-        raise HTTPException(404, "Choose an appointment in this patient record")
-    if appointment.status != "booked" or appointment.start <= datetime.now():
-        raise HTTPException(422, "Transport requests are for upcoming booked appointments")
-    pickup_at = body.pickup_at.astimezone().replace(tzinfo=None) if body.pickup_at.tzinfo else body.pickup_at
-    if pickup_at <= datetime.now() or pickup_at >= appointment.start:
-        raise HTTPException(422, "Choose a future pickup time before the appointment")
-    active = db.scalars(select(CareRecord).where(
-        CareRecord.patient_id == patient_id, CareRecord.kind == "transport_request",
-        CareRecord.status.in_(["requested", "coordinating", "arranged"])
-    )).all()
-    if any((row.data or {}).get("appointment_id") == appointment.id for row in active):
-        raise HTTPException(409, "A transport request already exists for this appointment")
-    data = {
-        "appointment_id": appointment.id,
-        "pickup_at": pickup_at.isoformat(),
-        "pickup_address": body.pickup_address.strip(),
-        "landmark": body.landmark.strip(),
-        "ride_type": body.ride_type,
-        "support": sorted(set(body.support)),
-        "companion_count": body.companion_count,
-        "fare_support": body.fare_support,
-        "notes": body.notes.strip(),
-        "location_consent": body.location_consent,
-        "location_sharing": "available" if body.location_consent else "not_requested",
-        "arranged_via": "",
-        "confirmed_pickup_at": "",
-        "coordination_note": "",
-        "status_history": [{"status": "requested", "by": user.name, "at": utcnow().isoformat()}],
-    }
-    row = CareRecord(patient_id=patient_id, kind="transport_request", author_id=user.id,
-                     author_name=user.name, author_role=user.role, status="requested", data=data)
-    db.add(row)
-    db.commit()
-
-    location_url = ""
-    if body.location_consent:
-        token = secrets.token_urlsafe(32)
-        share = ShareLink(patient_id=patient_id, token_hash=digest(token), kind="transport_location",
-                          fields=[f"request:{row.id}"], expires_at=appointment.end + timedelta(hours=2),
-                          created_by=user.id, recipient="Hospital transport team and linked caregiver")
-        db.add(share)
-        db.flush()
-        data = dict(row.data or {})
-        data["location_share_id"] = share.id
-        row.data = data
-        db.commit()
-        base = os.getenv("PUBLIC_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or str(request.base_url).rstrip("/")
-        location_url = base.rstrip("/") + "/transport-track/" + token
-
-    target = body.ride_type if body.ride_type in {"hospital", "caregiver"} else ""
-    if body.location_consent:
-        target = "both"
-    external_results = send_transport_messages(db, patient_id, appointment, pickup_at, target, location_url, row.data or {})
-    data = dict(row.data or {})
-    data["delivery_summary"] = {
-        "external_accepted": sum(result["status"] == "accepted" for result in external_results),
-        "external_pending": sum(result["status"] == "not_configured" for result in external_results),
-        "external_failed": sum(result["status"] == "failed" for result in external_results),
-        "location_consent": body.location_consent,
-    }
-    row.data = data
-    db.commit()
-
-    append_audit(db, user, "transport_request_created", patient_id,
-                 f"Appointment {appointment.id}; {body.ride_type}; location consent={body.location_consent}")
-    share_note = f" Live trip link: {location_url}" if location_url else ""
-    coordinator_count = notify_transport_coordinators(
-        db, patient_id, "Transport help requested",
-        f"A {body.ride_type} request was submitted for {appointment.department} on {appointment.start:%d %b at %H:%M}.{share_note}"
-    )
-    caregiver_count = 0
-    if body.ride_type == "caregiver" or body.location_consent:
-        notify_transport_caregivers(
-            db, patient_id, "Transport help requested",
-            f"A transport request was submitted for {appointment.department} on {appointment.start:%d %b at %H:%M}.{share_note}"
-        )
-        caregiver_count = len(transport_caregivers(db, patient_id))
-    data = dict(row.data or {})
-    data["delivery_summary"] = data.get("delivery_summary", {}) | {
-        "in_app_hospital": coordinator_count, "in_app_caregiver": caregiver_count
-    }
-    row.data = data
-    db.commit()
-    return transport_payload(db, row)
-
-
-@router.get("/v2/transport-requests")
-def transport_request_queue(request: Request, status: Literal["requested", "coordinating", "arranged", "unable", "completed", "cancelled"] | None = None,
-                            db=Depends(get_db)):
-    user = identity(request)
-    roles(user, *TRANSPORT_ROLES)
-    patient_ids = visible_ids(db, user, "appointments")
-    if not patient_ids:
-        return []
-    stmt = select(CareRecord).where(CareRecord.kind == "transport_request", CareRecord.patient_id.in_(patient_ids))
-    if status:
-        stmt = stmt.where(CareRecord.status == status)
-    rows = db.scalars(stmt.order_by(CareRecord.created_at.desc(), CareRecord.id.desc()).limit(500)).all()
-    return [transport_payload(db, row) for row in rows]
-
-
-@router.patch("/v2/transport-requests/{request_id}")
-def update_transport_request(request_id: int, body: TransportUpdateIn, request: Request, db=Depends(get_db)):
-    user = identity(request)
-    roles(user, *TRANSPORT_ROLES)
-    row = db.get(CareRecord, request_id)
-    if not row or row.kind != "transport_request":
-        raise HTTPException(404, "Transport request not found")
-    patient_access(db, request, row.patient_id, "appointments")
-    transitions = {
-        "requested": {"coordinating", "arranged", "unable"},
-        "coordinating": {"arranged", "unable"},
-        "arranged": {"coordinating", "unable", "completed"},
-        "unable": {"coordinating", "arranged"},
-    }
-    if body.status != row.status and body.status not in transitions.get(row.status, set()):
-        raise HTTPException(409, f"A {row.status} request cannot move to {body.status}")
-    data = dict(row.data or {})
-    appointment = db.get(Appointment, data.get("appointment_id"))
-    confirmed_pickup_at = body.confirmed_pickup_at
-    if confirmed_pickup_at and confirmed_pickup_at.tzinfo:
-        confirmed_pickup_at = confirmed_pickup_at.astimezone().replace(tzinfo=None)
-    if body.status == "arranged":
-        if not body.arranged_via.strip() or not confirmed_pickup_at:
-            raise HTTPException(422, "Enter who arranged the ride and its confirmed pickup time")
-        if confirmed_pickup_at <= datetime.now():
-            raise HTTPException(422, "Confirmed pickup time must be in the future")
-        if appointment and confirmed_pickup_at >= appointment.start:
-            raise HTTPException(422, "Confirmed pickup time must be before the appointment")
-        data["arranged_via"] = body.arranged_via.strip()
-        data["confirmed_pickup_at"] = confirmed_pickup_at.isoformat()
-    elif body.arranged_via.strip():
-        data["arranged_via"] = body.arranged_via.strip()
-    elif confirmed_pickup_at:
-        data["confirmed_pickup_at"] = confirmed_pickup_at.isoformat()
-    if body.status in {"coordinating", "unable"}:
-        data["arranged_via"] = ""
-        data["confirmed_pickup_at"] = ""
-    if body.coordination_note.strip():
-        data["coordination_note"] = body.coordination_note.strip()
-    history = list(data.get("status_history", []))
-    if body.status != row.status:
-        history.append({"status": body.status, "by": user.name, "at": utcnow().isoformat()})
-    data["status_history"] = history[-20:]
-    row.data, row.status, row.updated_at = data, body.status, utcnow()
-    if body.status in {"completed", "unable"} and data.get("location_sharing") == "active":
-        revoke_transport_location(db, row)
-    db.commit()
-    db.add(Notification(user_id=row.author_id, patient_id=row.patient_id,
-                        channel="transport", title="Transport request update", body=f"Your ride request is {body.status.replace('_', ' ')}."))
-    db.commit()
-    append_audit(db, user, "transport_request_updated", row.patient_id,
-                 f"Request {row.id}: {body.status}")
-    return transport_payload(db, row)
-
-
-@router.post("/v2/transport-requests/{request_id}/cancel")
-def cancel_transport_request(request_id: int, request: Request, db=Depends(get_db)):
-    row = db.get(CareRecord, request_id)
-    if not row or row.kind != "transport_request":
-        raise HTTPException(404, "Transport request not found")
-    user = patient_access(db, request, row.patient_id, "appointments")
-    roles(user, "patient", "caregiver")
-    if row.status in {"completed", "cancelled"}:
-        raise HTTPException(409, "This transport request is already closed")
-    data = dict(row.data or {})
-    history = list(data.get("status_history", []))
-    history.append({"status": "cancelled", "by": user.name, "at": utcnow().isoformat()})
-    data["status_history"] = history[-20:]
-    row.data, row.status, row.updated_at = data, "cancelled", utcnow()
-    if data.get("location_sharing") == "active":
-        revoke_transport_location(db, row)
-    db.commit()
-    append_audit(db, user, "transport_request_cancelled", row.patient_id, f"Request {row.id}")
-    notify_transport_coordinators(db, row.patient_id, "Transport request cancelled", f"A ride request for {row.patient_id} was cancelled.")
-    return transport_payload(db, row)
-
-
-@router.get("/v2/patients/{patient_id}/gate-qr")
-def gate_qr(patient_id: str, request: Request, db=Depends(get_db)):
-    patient_access(db, request, patient_id, "appointments")
-    import qrcode
-    base=os.getenv("PUBLIC_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or str(request.base_url).rstrip("/")
-    buf=io.BytesIO()
-    qrcode.make(f"{base}/app?gate={patient_id}").save(buf,format="PNG")
-    return Response(buf.getvalue(),media_type="image/png")
-
-
-@router.post("/v2/patients/{patient_id}/gate")
-def gate_arrival(patient_id: str, request: Request, db=Depends(get_db)):
-    user=patient_access(db,request,patient_id,"appointments")
-    start=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
-    rows=db.scalars(select(Appointment).where(Appointment.patient_id==patient_id,Appointment.start>=start,Appointment.start<start+timedelta(days=1),Appointment.status=="booked")).all()
-    for row in rows:
-        row.status="arrived"
-    db.commit()
-    notify_team(db,patient_id,"Patient arrived at the gate",f"{len(rows)} booked departments updated.")
-    append_audit(db,user,"gate_checkin",patient_id)
-    return {"arrived_departments":len(rows),"message":"Arrival recorded. Your booked departments can see that you are here."}
-
-
-class AppointmentAction(BaseModel):
-    action: Literal["arrived", "in_progress", "completed", "missed", "cancelled"]
-
-
-@router.post("/v2/appointments/{appointment_id}/status")
-def appointment_status(appointment_id: int, body: AppointmentAction, request: Request, db=Depends(get_db)):
-    row = db.get(Appointment, appointment_id)
-    if not row:
-        raise HTTPException(404, "Appointment not found")
-    user = patient_access(db, request, row.patient_id, "appointments")
-    if body.action != "arrived":
-        roles(user, "frontdesk", "nurse", "doctor", "admin")
-    row.status = body.action
-    db.commit()
-    notify_team(db, row.patient_id, "Appointment update", f"{row.department}: {body.action}")
-    return serial(row)
-
-
-@router.get("/v2/appointments/{appointment_id}/suggest-slot")
-def suggest_slot(appointment_id: int, request: Request, db=Depends(get_db)):
-    row = db.get(Appointment, appointment_id)
-    if not row:
-        raise HTTPException(404, "Appointment not found")
-    patient_access(db, request, row.patient_id, "appointments")
-    others = db.scalars(select(Appointment).where(Appointment.id != row.id, Appointment.status != "cancelled")).all()
-    duration = row.end - row.start
-    start = row.start.replace(hour=8, minute=0, second=0, microsecond=0)
-    candidates = [start + timedelta(minutes=10 * i) for i in range(54)]
-    candidates.sort(key=lambda t: abs((t - row.start).total_seconds()))
-    for t in candidates:
-        if t + duration > start.replace(hour=17):
-            continue
-        if not any(t < a.end and a.start < t + duration and (a.patient_id == row.patient_id or a.room == row.room) for a in others):
-            return {"start": t.isoformat(), "end": (t + duration).isoformat(), "room": row.room, "approval_required": True}
-    raise HTTPException(409, "No free slot that fits on this day")
-
-
-class RescheduleIn(BaseModel):
-    start: datetime
-
-
-@router.post("/v2/appointments/{appointment_id}/reschedule")
-@serial_schedule
-def reschedule(appointment_id: int, body: RescheduleIn, request: Request, db=Depends(get_db)):
-    row = db.get(Appointment, appointment_id)
-    if not row:
-        raise HTTPException(404, "Appointment not found")
-    user = patient_access(db, request, row.patient_id, "appointments")
-    roles(user, "frontdesk", "nurse", "admin")
-    start = body.start.replace(tzinfo=None)
-    end = start + (row.end - row.start)
-    from sqlalchemy import or_
-    clash = db.scalar(select(Appointment).where(Appointment.id != row.id, Appointment.status != "cancelled", Appointment.start < end,
-                                                Appointment.end > start, or_(Appointment.patient_id == row.patient_id, Appointment.room == row.room)))
-    if clash:
-        raise HTTPException(409, "Slot was taken. Request a new suggestion.")
-    row.start, row.end = start, end
-    db.commit()
-    append_audit(db, user, "fix_schedule_clash", row.patient_id, str(row.id))
-    return serial(row)
-
-
-class ShareIn(BaseModel):
-    kind: Literal["emergency", "second_opinion"]
-    fields: list[Literal["regimen", "allergies", "counts", "contact", "summary", "documents"]] = Field(min_length=1)
-    hours: int = Field(default=24, ge=1, le=168)
-    consent: bool
-    recipient: str = Field(default="", max_length=150)
-
-
-@router.post("/v2/patients/{patient_id}/shares")
-def share(patient_id: str, body: ShareIn, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "documents")
-    roles(user, "patient")
-    if not body.consent:
-        raise HTTPException(422, "Patient consent is required for each share")
-    if body.kind == "emergency" and any(f in body.fields for f in ("documents", "summary")):
-        raise HTTPException(422, "Emergency cards expose only selected emergency fields")
-    token = secrets.token_urlsafe(40)
-    row = ShareLink(patient_id=patient_id, token_hash=digest(token), kind=body.kind, fields=body.fields,
-                    expires_at=utcnow() + timedelta(hours=body.hours), created_by=user.id, recipient=body.recipient)
-    db.add(row)
-    db.commit()
-    append_audit(db, user, "consent_" + body.kind, patient_id, "Fields: " + ",".join(body.fields))
-    import base64
-    import qrcode
-    base = os.getenv("PUBLIC_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or str(request.base_url).rstrip("/")
-    buf = io.BytesIO()
-    qrcode.make(f"{base}/share/{token}").save(buf, format="PNG")
-    return {"id": row.id, "url": f"/share/{token}", "api_url": f"/api/shared/{token}", "expires_at": row.expires_at,
-            "qr_png": "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()}
-
-
-@router.get("/v2/patients/{patient_id}/shares")
-def shares(patient_id: str, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id)
-    roles(user, "patient")
-    return [serial(r, ("token_hash",)) for r in db.scalars(select(ShareLink).where(ShareLink.patient_id == patient_id))]
-
-
-@router.delete("/v2/shares/{share_id}")
-def revoke_share(share_id: int, request: Request, db=Depends(get_db)):
-    row = db.get(ShareLink, share_id)
-    if not row or row.created_by != identity(request).id:
-        raise HTTPException(404, "Share not found")
-    row.revoked = True
-    db.commit()
-    return {"ok": True}
-
-
-def load_share(token, db):
-    row = db.scalar(select(ShareLink).where(ShareLink.token_hash == digest(token)))
-    if not row or row.kind not in {"emergency", "second_opinion"} or row.revoked or row.expires_at < utcnow():
-        raise HTTPException(404, "This consent link has expired or was withdrawn")
-    return row
-
-
-@router.get("/shared/{token}")
-def public_share(token: str, db=Depends(get_db)):
-    row = load_share(token, db)
-    p = db.get(Patient, row.patient_id)
-    out = {"kind": row.kind, "patient_id": p.id, "expires_at": row.expires_at, "recipient": row.recipient}
-    profile = records(db, p.id, "clinical_profile")
-    profile = profile[0].data if profile else {}
-    if "regimen" in row.fields:
-        out["regimen"] = p.current_regimen
-    if "allergies" in row.fields:
-        out["allergies"] = profile.get("allergies", "Not recorded; verify with treating team")
-    if "contact" in row.fields:
-        out["contact"] = profile.get("oncologist_phone", os.getenv("HOSPITAL_EMERGENCY_PHONE", "Not configured"))
-    if "counts" in row.fields:
-        out["counts"] = living_summary(db, p.id)["latest_labs"]
-    if "summary" in row.fields:
-        out["summary"] = living_summary(db, p.id)
-    if "documents" in row.fields:
-        out["documents"] = [{"id": d.id, "title": d.title, "text": safe_text(d.ocr_text), "date": d.record_date}
-                            for d in db.scalars(select(Document).where(Document.patient_id == p.id))]
-    viewer = type("Viewer", (), {"id": 0, "role": "external", "name": "Consent link viewer"})()
-    append_audit(db, viewer, "open_" + row.kind + "_share", p.id, "Selected fields only")
-    if row.kind == "emergency":
-        alert(db, p.id, "Emergency medical card opened; verify whether patient is at an ER", "emergency QR", "urgent")
-    return out
-
-
-@router.get("/v2/patients/{patient_id}/pack")
-def pack(patient_id: str, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "documents")
-    roles(user, "doctor", "patient", "admin")
-    return {"patient_id": patient_id, "summary": living_summary(db, patient_id),
-            "questions": visit_prep(patient_id, request, db)["questions"] if patient_id in visible_ids(db, user, "notes") else [],
-            "key_images": [{"id": d.id, "title": d.title} for d in db.scalars(select(Document).where(Document.patient_id == patient_id, Document.category == "Imaging"))],
-            "signed_decisions": [serial(r) for r in records(db, patient_id, "board_decision") if r.status == "approved"]}
-
-
-@router.get("/v2/patients/{patient_id}/pack.pdf")
-def pack_pdf(patient_id: str, request: Request, db=Depends(get_db)):
-    data = pack(patient_id, request, db)
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as PdfImage, PageBreak
-    from xml.sax.saxutils import escape
-    buf = io.BytesIO()
-    from ..services.pdf_fonts import apply_fonts
-    styles = apply_fonts(getSampleStyleSheet())
-    story = [Paragraph("OncoBrief case pack: " + escape(patient_id), styles["Title"])]
-    for line in data["summary"]["text"].splitlines():
-        story.extend([Paragraph(escape(line), styles["BodyText"]), Spacer(1, 6)])
-    story.append(Paragraph("Open questions", styles["Heading2"]))
-    story.extend(Paragraph(escape(q), styles["BodyText"]) for q in data["questions"])
-    if data["key_images"]:
-        from ..config import STORAGE_DIR
-        from ..security import read_file
-        from ..services.protected_files import render_page
-        story.extend([PageBreak(), Paragraph("Key imaging source pages", styles["Heading1"])])
-        for item in data["key_images"][-3:]:
-            doc=db.get(Document,item["id"])
-            path=(STORAGE_DIR.parent/doc.file_path).resolve()
-            if path.is_relative_to(STORAGE_DIR.resolve()) and path.exists():
-                try:
-                    image=io.BytesIO(render_page(read_file(path),doc.mime,0,identity(request).name))
-                    pic=PdfImage(image)
-                    scale=min(420/pic.imageWidth,500/pic.imageHeight)
-                    pic.drawWidth,pic.drawHeight=pic.imageWidth*scale,pic.imageHeight*scale
-                    story.extend([Paragraph(escape(f"D{doc.id}: {doc.title}"),styles["Heading2"]),pic,Spacer(1,18)])
-                except (ValueError,HTTPException):
-                    story.append(Paragraph("Open the original source in the patient folder.",styles["BodyText"]))
-    viewer=identity(request).name.encode('ascii','replace').decode()
-    def footer(canvas,document):
-        canvas.saveState()
-        canvas.setFont('Helvetica',8)
-        canvas.setFillColorRGB(.35,.25,.45)
-        canvas.drawString(40,20,f"OncoBrief | {viewer} | {utcnow():%Y-%m-%d %H:%M} UTC | page {document.page}")
-        canvas.restoreState()
-    SimpleDocTemplate(buf,bottomMargin=40).build(story,onFirstPage=footer,onLaterPages=footer)
-    return Response(buf.getvalue(), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{patient_id}-case-pack.pdf"'})
-
-
-class AdapterIn(BaseModel):
-    service: Literal["sms", "whatsapp", "phone", "speech", "translation", "trials", "prices", "weather", "vision", "wearables", "telemedicine", "er", "formulary", "evidence"]
-    payload: dict
-    consent: bool
-
-
-@router.post("/v2/patients/{patient_id}/integration")
-def integration(patient_id: str, body: AdapterIn, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id)
-    roles(user, "doctor", "nurse", "navigator", "patient", "caregiver", "dietitian", "admin")
-    if not body.consent:
-        raise HTTPException(422, "Consent is required before sharing data with this service")
-    required_scope = {"formulary": "medicines", "er": "documents", "phone": "checkin", "speech": "notes", "translation": "documents", "vision": "documents", "trials": "documents", "prices": "medicines", "wearables": "activity", "telemedicine": "appointments"}.get(body.service, "chat")
-    require_patient(db, user, patient_id, required_scope)
-    if body.service in {"trials", "prices", "formulary", "evidence"}:
-        roles(user, "doctor")
-    if body.service == "er":
-        roles(user, "doctor", "nurse")
-    if body.service in {"phone", "sms", "whatsapp"}:
-        roles(user, "nurse", "doctor", "navigator", "admin")
-    p = db.get(Patient, patient_id)
-    # An adapter cannot be used as a proxy for arbitrary recipients or other patients.
-    payload = {k: v for k, v in body.payload.items() if k in {"text", "source_language", "target_language", "query", "document_id", "topic"}}
-    if len(json.dumps(payload)) > 20000:
-        raise HTTPException(422, "Integration payload too large")
-    if payload.get("document_id"):
-        doc = db.get(Document, payload["document_id"])
-        if not doc or doc.patient_id != patient_id:
-            raise HTTPException(422, "Document belongs to another patient")
-        payload["text"] = safe_text(doc.ocr_text)[:12000]
-        if body.service in {"vision", "speech"}:
-            import base64
-            from ..config import STORAGE_DIR
-            from ..security import read_file
-            path = (STORAGE_DIR.parent / doc.file_path).resolve()
-            if not path.is_relative_to(STORAGE_DIR.resolve()):
-                raise HTTPException(404)
-            data = read_file(path)
-            if body.service == "vision":
-                if not doc.mime.startswith("image/"):
-                    raise HTTPException(422, "Choose an image document for vision")
-                from PIL import Image
-                img = Image.open(io.BytesIO(data)).convert("RGB")
-                img.thumbnail((1280,1280))
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=85)
-                data = buf.getvalue()
-                payload["mime"] = "image/jpeg"
-            else:
-                if not doc.mime.startswith("audio/"):
-                    raise HTTPException(422, "Choose an audio document for speech transcription")
-                payload["mime"] = doc.mime
-            payload["media_base64"] = base64.b64encode(data).decode()
-    if body.service in {"phone", "sms", "whatsapp"}:
-        payload["to"] = p.phone
-        if body.service == "phone":
-            from ..services.telephony import call_payload
-            payload.update(call_payload(db, patient_id, user.id))
-    if body.service in {"trials", "evidence"}:
-        payload = {"cancer_type": p.cancer_type, "stage": p.stage, "biomarkers": (records(db, patient_id, "clinical_profile") or [None])[0].data.get("biomarkers") if records(db, patient_id, "clinical_profile") else ""}
-    if body.service == "er":
-        profile = records(db, patient_id, "clinical_profile")
-        payload = {"patient_id": patient_id, "regimen": p.current_regimen,
-                   "allergies": profile[0].data.get("allergies", "Not recorded") if profile else "Not recorded",
-                   "counts": living_summary(db, patient_id)["latest_labs"], "care_contact": os.getenv("HOSPITAL_EMERGENCY_PHONE", ""),
-                   "reason": body.payload.get("text", "Emergency pre-alert")[:1000]}
-    result = deliver(body.service, payload)
-    append_audit(db, user, "external_" + body.service, patient_id, "Explicit consent; adapter invoked")
-    # All potential clinical/vision/trial outputs remain reviewable drafts.
-    row = CareRecord(patient_id=patient_id, kind="integration_result", author_id=user.id, author_name=user.name,
-                     author_role=user.role, status="draft", data={"service": body.service, "result": result})
-    db.add(row)
-    db.commit()
-    expose = user.role in CLINICIANS or (user.role == "dietitian" and body.service == "vision") or body.service in {"translation", "speech", "telemedicine", "weather", "wearables"}
-    return {"status": "provider_response", "record_id": row.id, "result": result if expose else {"message": "Received; awaiting clinical review"}, "clinical_review_required": True}
-
-
-@router.get("/v2/privacy-requests")
-def privacy_requests(request: Request, db=Depends(get_db)):
-    roles(identity(request), "privacy", "admin")
-    return [serial(r) for r in db.scalars(select(CareRecord).where(CareRecord.kind == "privacy_request").order_by(CareRecord.id.desc()))]
-
-
-class PhoneResult(BaseModel):
-    identity_verified: bool
-    answers: CheckIn
-
-
-@router.post("/webhooks/telephony")
-def phone_result(body: PhoneResult, request: Request, db=Depends(get_db)):
-    token = request.headers.get("authorization", "").removeprefix("Bearer ")
-    ticket = db.scalar(select(ShareLink).where(ShareLink.token_hash == digest(token), ShareLink.kind == "phone_callback"))
-    if not ticket or ticket.revoked or ticket.expires_at < utcnow() or not body.identity_verified:
-        raise HTTPException(403, "Invalid, expired or unverified call callback")
-    user = db.get(User, ticket.created_by)
-    require_patient(db, user, ticket.patient_id, "checkin")
-    request.state.user = user
-    consumed=db.execute(update(ShareLink).where(ShareLink.id==ticket.id,ShareLink.revoked.is_(False)).values(revoked=True))
-    if consumed.rowcount!=1:
-        raise HTTPException(403,"Callback ticket has already been redeemed")
-    db.commit()
-    data = body.answers.model_copy(update={"source": "voice"})
-    result = checkin(ticket.patient_id, data, request, db)
-    append_audit(db, user, "verified_phone_checkin", ticket.patient_id, "One-time callback ticket redeemed")
-    return result
-
-
-@router.get("/v2/inbox")
-def smart_inbox(request: Request, db=Depends(get_db)):
-    user = identity(request)
-    roles(user, "doctor", "nurse")
-    ids = visible_ids(db, user, "chat")
-    rows = db.scalars(select(CareRecord).where(CareRecord.kind == "chat", CareRecord.patient_id.in_(ids),
-                                               CareRecord.author_role.in_(["patient", "caregiver"]), CareRecord.status == "sent").order_by(CareRecord.id.desc()).limit(100)).all()
-    return sorted([{**serial(r), "patient_name": db.get(Patient, r.patient_id).name,
-                    "draft_reply": EMERGENCY["en"] if r.data.get("urgency") == 3 else "Thank you for letting us know. I will review this with your care team. Please continue your current signed plan."}
-                   for r in rows], key=lambda r:r["data"].get("urgency", 0), reverse=True)
-
-
-@router.post("/v2/messages/{record_id}/reply")
-def inbox_reply(record_id: int, body: MessageIn, request: Request, db=Depends(get_db)):
-    row = db.get(CareRecord, record_id)
-    if not row or row.kind != "chat":
-        raise HTTPException(404, "Message not found")
-    user = patient_access(db, request, row.patient_id, "chat")
-    roles(user, "doctor", "nurse")
-    reply = CareRecord(patient_id=row.patient_id, kind="chat", author_id=user.id, author_name=user.name, author_role=user.role,
-                       data={"text": body.text, "reply_to": row.id, "urgency": 0}, status="sent")
-    row.status = "replied"
-    db.add(reply)
-    db.commit()
-    notify_team(db, row.patient_id, "Care team replied", "A reply is available in your care circle chat.")
-    append_audit(db, user, "review_and_send_reply", row.patient_id, f"R{row.id}")
-    return serial(reply)
-
-
-class TeachBack(BaseModel):
-    answers: list[str] = Field(min_length=3, max_length=3)
-
-
-@router.post("/v2/patients/{patient_id}/teach-back")
-def teach_back(patient_id: str, body: TeachBack, request: Request, db=Depends(get_db)):
-    user = patient_access(db, request, patient_id, "notes")
-    correct = ["contact", "doctor", "original"]
-    score = sum(a == b for a, b in zip(body.answers, correct))
-    row = CareRecord(patient_id=patient_id, kind="teach_back", author_id=user.id, author_name=user.name,
-                     author_role=user.role, data={"answers": body.answers, "score": score, "out_of": 3}, status="recorded")
-    db.add(row)
-    db.commit()
-    if score < 3:
-        alert(db, patient_id, "Teach-back: nurse explanation requested", f"R{row.id}", "warning")
-    return {"score": score, "out_of": 3, "message": "You understood all three points." if score == 3 else "Please review the explanations with your nurse. A support request was recorded."}
-
-
-@router.get("/v2/handover")
-def nurse_handover(request: Request, db=Depends(get_db)):
-    user=identity(request)
-    roles(user,"doctor","nurse")
-    ids=visible_ids(db,user,"alerts")
-    alerts=db.scalars(select(Alert).where(Alert.patient_id.in_(ids),Alert.status!="resolved")).all()
-    pending=db.scalars(select(Approval).where(Approval.patient_id.in_(ids),Approval.status.in_(["sent","reviewing"]))).all()
-    tasks=db.scalars(select(CareRecord).where(CareRecord.patient_id.in_(ids),CareRecord.kind=="task",CareRecord.status!="completed")).all()
-    lines=[f"Shift handover generated {utcnow().isoformat()} UTC", "OPEN ALERTS"]
-    lines += [f"{a.patient_id} / A{a.id}: {a.reason}; {a.status}; {a.assigned_to}" for a in alerts] or ["None"]
-    lines += ["PENDING DOCTOR APPROVALS"] + [f"{a.patient_id} / #{a.id}: {a.request}; {a.status}" for a in pending]
-    lines += ["OPEN TASKS"] + [f"{t.patient_id} / R{t.id}: {t.data.get('title','')}; {t.data.get('assigned_to','')}" for t in tasks]
-    return {"text":"\n".join(lines),"alerts":len(alerts),"pending":len(pending),"tasks":len(tasks)}
-
-
-@router.get("/v2/patients/{patient_id}/buddy-matches")
-def buddy_matches(patient_id: str, request: Request, db=Depends(get_db)):
-    user=patient_access(db,request,patient_id,"notes")
-    roles(user,"patient","navigator")
-    path=os.getenv("BUDDY_DIRECTORY_PATH","")
-    if not path:
-        return {"setup_required":True,"matches":[],"message":"Set BUDDY_DIRECTORY_PATH to the hospital's verified, consented volunteer directory."}
-    from pathlib import Path
-    try:
-        directory=json.loads(Path(path).read_text(encoding="utf-8"))
-        if not isinstance(directory,list):
-            raise ValueError()
-    except (OSError,ValueError):
-        raise HTTPException(503,"Buddy directory is not a valid JSON list")
-    p=db.get(Patient,patient_id)
-    matches=[{k:v.get(k) for k in ("volunteer_id","display_name","language","cancer_type")} for v in directory if isinstance(v,dict)
-             and v.get("trained") is True and v.get("moderated") is True and v.get("consented") is True
-             and v.get("language")==p.preferred_language and str(v.get("cancer_type","")).lower()==str(p.cancer_type or "").lower()]
-    return {"setup_required":False,"matches":matches[:10],"message":"A navigator confirms availability and arranges an introduction. Invite only with the patient's consent; use the moderated care circle."}
-
-
-class ScribeInput(BaseModel):
-    text:str=Field(min_length=1,max_length=20000)
-    language:Literal["en","hi","mr"]="en"
-    consent:bool
-
-
-@router.post("/v2/patients/{patient_id}/scribe-draft")
-def scribe_draft(patient_id:str,body:ScribeInput,request:Request,db=Depends(get_db)):
-    user=patient_access(db,request,patient_id,"documents")
-    roles(user,"doctor")
-    if not body.consent:
-        raise HTTPException(422,"Recording and processing consent is required")
-    from ..services.drafts import scribe_draft as create_draft
-    return create_draft(db,patient_id,body.text,body.language)
-
-
-@router.post("/v2/patients/{patient_id}/care-review-draft")
-def care_review(patient_id:str,request:Request,db=Depends(get_db)):
-    user=patient_access(db,request,patient_id,"documents")
-    roles(user,"doctor")
-    from ..services.drafts import care_review_draft
-    draft=care_review_draft(db,patient_id)
-    row=Approval(patient_id=patient_id,kind="plan",request="Review recent reports, check-ins and signed visit notes",draft=draft,requested_by=user.name)
-    db.add(row)
-    db.commit()
-    append_audit(db,user,"draft_care_review",patient_id,f"Approval {row.id}")
-    return serial(row)
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éíß®{õ:-jZ.¶›­–)Þ³Vg&öÒâçF–ÖWWF–Â–×÷'BWF6æ÷pÐ¢""%&÷VæB"F–VçBÂ6&Vv—fW"Â6Æ–æ–6–âæB†÷7—FÂv÷&¶fÆ÷w2â"" Ð¦–×÷'B–ðÐ¦–×÷'B§6öàÐ¦–×÷'BÖF€Ð¦–×÷'B÷0Ð¦–×÷'B&PÐ¦–×÷'B6V7&WG0Ð¦g&öÒFFWF–ÖR–×÷'BFFWF–ÖRÂF–ÖVFVÇFÂF–ÖW¦öæPÐ¦g&öÒG—–ær–×÷'BÆ—FW&ÀÐ¦g&öÒW&ÆÆ–"ç'6R–×÷'BV÷FPÐ¦g&öÒf7F’–×÷'B•&÷WFW"ÂFWVæG2Â…EEW†6WF–öâÂ&WVW7@Ð¦g&öÒf7F’ç&W7öç6W2–×÷'B&W7öç6PÐ¦g&öÒ–FçF–2–×÷'B&6TÖöFVÂÂf–VÆ@Ð¦g&öÒ7ÆÆ6†V×’–×÷'BgVæ2Â6VÆV7BÂWFFPÐ¦g&öÒâæF"–×÷'BvWEöF Ð¦g&öÒâæÖöFVÇ2–×÷'B7F—f—G’Âö–çFÖVçBÂFö7VÖVçBÂÆ%fÇVRÂÖVF–6F–öâÂÖVDÆörÂF–VçBÂ7–×FöÕ&W÷'BÂvV&&ÆU&VF–æpÐ¦g&öÒâç&÷VæC%öÖöFVÇ2–×÷'BvV&&ÆTFWf–6T7&VFVçF–ÀÐ¦g&öÒâç&÷VæC%öÖöFVÇ2–×÷'B66W74w&çBÂÆW'BÂ&÷fÂÂ6&U&V6÷&BÂÆ–'&'”—FVÒÂæ÷F–f–6F–öâÂ6†&TÆ–æ²ÂW6W"ÂG&VF–æt6Æ–æ–6–àÐ¦g&öÒâç6V7W&—G’–×÷'BDTÔõôÔôDRÂVæEöVF—BÂF–vW7BÂ–FVçF—G’Â77v÷&Eö†6‚Â&WV—&U÷F–VçBÂ&öÆW2ÂfW&–g•ö6†–âÂf—6–&ÆUö–G0Ð¦g&öÒâç6W'f–6W2æ6ö×æ–öâ–×÷'BTÔU$tTä5’ÂÆW'BÂç7vW"Â6öÖÖæEö6VçG&RÂÆ—f–æu÷7VÖÖ'’Âæ÷F–g•÷FVÒÂ&V6÷&G2Â&VEöfÆw2Â6fU÷FW‡@Ð¦g&öÒâç6W'f–6W2æ–çFVw&F–öç2–×÷'BFVÆ—fW"Â7FGW22–çFVw&F–öå÷7FGW0Ð¦g&öÒâç6W'f–6W2æ7F—f—G’–×÷'BÆ÷uö7F—f—G•÷7FW5÷F‡&W6†öÆ@Ð¦g&öÒâç6W'f–6W2çf—FÇ2–×÷'B7W'&VçE÷f—FÅöÆW'E÷&÷Fö6öÂÂWfÇVFU÷f—FÅ÷&VF–æw0Ð¦g&öÒâçv÷&¶fÆ÷w2–×÷'Btõ$´dÄõu0Ð¦g&öÒâç6W'f–6W2ç66†VGVÆ–ær–×÷'B6W&–Å÷66†VGVÆPÐ¦g&öÒæWF‚–×÷'B6–våö–åö–@Ð Ð§&÷WFW"Ò•&÷WFW"‡&Vf—ƒÒ"ö’"ÂFw3Õ²&6öææV7FVB6&R%ÒÐ¤4Ä”ä”4”å2Ò²&Fö7F÷""Â&çW'6R"Â&FÖ–â'ÐÐ Ð Ð¦FVbF–VçEö66W72†F"Â&WVW7BÂ–BÂ66÷SÒ'&öf–ÆR"“ Ð¢W6W"Ò–FVçF—G’‡&WVW7BÐ¢&WV—&U÷F–VçB†F"ÂW6W"Â–BÂ66÷RÐ¢–bæ÷BF"ævWB…F–VçBÂ–B“ Ð¢&—6R…EEW†6WF–öâƒCBÂ%F–VçBæ÷Bf÷VæB"Ð¢&WGW&âW6W Ð Ð Ð¦FVb6W&–Â‡&÷rÂW†6ÇVFSÒ‚’“ Ð¢÷WBÒ¶2ææÖS¢vWFGG"‡&÷rÂ2ææÖR’f÷"2–â&÷råõ÷F&ÆUõòæ6öÇVÖç2–b2ææÖRæ÷B–âW†6ÇVFWÐÐ¢&WGW&â¶³¢bæ—6öf÷&ÖB‚’²%¢"–b—6–ç7Fæ6R‡bÂFFWF–ÖR’VÇ6Rbf÷"²Âb–â÷WBæ—FV×2‚—ÐÐ Ð Ð¤&÷WFW"ævWB‚"÷c"÷v÷&¶fÆ÷w2"Ð¦FVbv÷&¶fÆ÷w2‡&WVW7C¢&WVW7B“ Ð¢W6W"Ò–FVçF—G’‡&WVW7BÐ¢&WGW&â¶¶W“¢fÇVRf÷"¶W’ÂfÇVR–âtõ$´dÄõu2æ—FV×2‚’–bW6W"ç&öÆR–âfÇVU²'&öÆW2%Ò÷"W6W"ç&öÆRÓÒ&FÖ–â'ÐÐ Ð Ð¤&÷WFW"ævWB‚"÷c"ö–çFVw&F–öç2"Ð¦FVb–çFVw&F–öç2‡&WVW7C¢&WVW7B“ Ð¢–FVçF—G’‡&WVW7BÐ¢&WGW&â²'6W'f–6W2#¢–çFVw&F–öå÷7FGW2‚’Â&FVÖò#¢DTÔõôÔôDRÀÐ¢&ÆÆÒ#¢&ööÂ†÷2ævWFVçb‚$ÄÄÕô•ô´U’"’’Â&–æF–ö†÷7F–æuö6öæf—&ÖVB#¢÷2ævWFVçb‚$”äD”ô„õ5D”äuô4ôäd•$ÔTB"’ÓÒ'G'VR"ÀÐ¢&†÷7—FÅöVÖW&vVæ7’#¢÷2ævWFVçb‚$„õ5•DÅôTÔU$tTä5•õ„ôäR"Â%6WB„õ5•DÅôTÔU$tTä5•õ„ôäR"’ÀÐ¢&†÷7—FÅöFG&W72#¢÷2ævWFVçb‚$„õ5•DÅôDE$U52"Â%6WB„õ5•DÅôDE$U52"—ÐÐ Ð Ð¤&÷WFW"ævWB‚"÷c"öæ÷F–f–6F–öç2"Ð¦FVbæ÷F–f–6F–öç2‡&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"Ò–FVçF—G’‡&WVW7BÐ¢ÆW'Eö–G2Ò6WB‡f—6–&ÆUö–G2†F"ÂW6W"Â&ÆW'G2"’Ð¢ö–çFÖVçEö–G2Ò6WB‡f—6–&ÆUö–G2†F"ÂW6W"Â&ö–çFÖVçG2"’Ð¢7F—f—G•ö–G2Ò6WB‡f—6–&ÆUö–G2†F"ÂW6W"Â&7F—f—G’"’Ð¢&WGW&â·6W&–Â†â’f÷"â–âF"ç66Æ'2‡6VÆV7B„æ÷F–f–6F–öâ’çv†W&R„æ÷F–f–6F–öâçW6W%ö–BÓÒW6W"æ–B’æ÷&FW%ö'’„æ÷F–f–6F–öâæ–BæFW62‚’’æÆ–Ö—Bƒ’Ð¢–bæ÷BâçF–VçEö–B÷"âçF–VçEö–B–â€Ð¢ö–çFÖVçEö–G2–bâæ6†ææVÂÓÒ'G&ç7÷'B Ð¢VÇ6R7F—f—G•ö–G2–bâæ6†ææVÂ–â²&7F—f—G’"Â'f—FÇ2'ÐÐ¢VÇ6RÆW'Eö–G0Ð¢•ÐÐ Ð Ð¤&÷WFW"ç÷7B‚"÷c"öæ÷F–f–6F–öç2÷¶æ–GÒ÷&VB"Ð¦FVb&VEöæ÷F–f–6F–öâ†æ–C¢–çBÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"Ò–FVçF—G’‡&WVW7BÐ¢&÷rÒF"ævWB„æ÷F–f–6F–öâÂæ–BÐ¢–bæ÷B&÷r÷"&÷rçW6W%ö–BÒW6W"æ–C Ð¢&—6R…EEW†6WF–öâƒCBÂ$æ÷F–f–6F–öâæ÷Bf÷VæB"Ð¢&÷rç7FGW2Ò'&VB Ð¢F"æ6öÖÖ—B‚Ð¢&WGW&â²&ö²#¢G'VWÐÐ Ð Ð¤&÷WFW"ævWB‚"÷c"ö6öÖÖæBÖ6VçG&R"Ð¦FVb6öÖÖæB‡&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"Ò–FVçF—G’‡&WVW7BÐ¢&öÆW2‡W6W"Â&Fö7F÷""Â&çW'6R"Â&æf–vF÷""Â&g&öçFFW6²"Â&FÖ–â"Ð¢–G2Òf—6–&ÆUö–G2†F"ÂW6W"Ð¢&÷w2Ò6öÖÖæEö6VçG&R†F"Â–G2Ð¢–bW6W"ç&öÆR–â²&g&öçFFW6²"Â&æf–vF÷"'Ó Ð¢&÷w2Ò·¶³¢bf÷"²Âb–â"æ—FV×2‚’–b²–â²'F–VçEö–B"Â&æÖR"Â&F–væ÷6—5öF—2"Â&f—'7E÷G&VFÖVçEöFFR"Â&F–væ÷6—5÷Fõ÷G&VFÖVçEöF—2"Â&&Æö6¶W""Â'&W67VR"Â'G&fVÅö¶Ò'×Òf÷""–â&÷w5ÐÐ¢&WGW&â²'F–VçG2#¢&÷w2Â&vVæW&FVEöB#¢WF6æ÷r‚’ÀÐ¢&÷VåöÆW'G2#¢7VÒ‡"ævWB‚&÷VåöÆW'G2"Â’f÷""–â&÷w2’ÀÐ¢&6†—'2#¢·6W&–Â‡"’f÷""–âF"ç66Æ'2‡6VÆV7B„6&U&V6÷&B’çv†W&R„6&U&V6÷&Bæ¶–æBÓÒ&6†—""Â6&U&V6÷&BçF–VçEö–Bæ–åò†–G2’’•ÒÀÐ¢&v—F–æuö&÷fÂ#¢ÆVâ†F"ç66Æ'2‡6VÆV7B„&÷fÂ’çv†W&R„&÷fÂçF–VçEö–Bæ–åò†–G2’Â&÷fÂç7FGW2æ–åò…²'6VçB"Â'&Wf–Wv–ær%Ò’’’æÆÂ‚’’–bW6W"ç&öÆR–â4Ä”ä”4”å2VÇ6RæöæWÐÐ Ð Ð¦FVb&VF&ÆU÷&V6÷&B‡&÷rÂW6W"“ Ð¢–b&÷ræ¶–æBÓÒ&Æ—f–æu÷7VÖÖ'’# Ð¢&WGW&âfÇ6PÐ¢–b&÷ræ¶–æBÓÒ&çW'6Uö†æF÷fW""æBW6W"ç&öÆRæ÷B–â4Ä”ä”4”å3 Ð¢&WGW&âfÇ6PÐ¢–b&÷ræ¶–æBÓÒ&6ö×æ–öâ"æB&÷ræWF†÷%÷&öÆR–â4Ä”ä”4”å2æBW6W"ç&öÆRæ÷B–â4Ä”ä”4”å3 Ð¢&WGW&âfÇ6PÐ¢2F–VçB’6öçfW'6F–öç2&R&—fFRVæÆW727W&f6VBF‡&÷Vv‚F†R6W&FRÀÐ¢2F–VçBÖ6öç6VçFVB6Æ–æ–6–â–ç6–v‡BF‚àÐ¢–b&÷ræ¶–æBÓÒ&6ö×æ–öâ"æB&÷ræWF†÷%÷&öÆRÓÒ'F–VçB"æBW6W"ç&öÆRÒ'F–VçB# Ð¢&WGW&âfÇ6PÐ¢–b&÷ræ¶–æBÓÒ&–çFVw&F–öå÷&W7VÇB"æB&÷rç7FGW2Ò&&÷fVB"æBW6W"ç&öÆRæ÷B–â4Ä”ä”4”å3 Ð¢&WGW&âfÇ6PÐ¢–b&÷ræ¶–æB–â²'vVÆÆ&V–ær"Â&F–'’'ÒæB&÷ræWF†÷%ö–BÒW6W"æ–C Ð¢&WGW&â&÷ræ¶–æBÓÒ&F–'’"æB&÷ræFFævWB‚'6†&Uö6öæ6W&ç2"’æBW6W"ç&öÆR–â4Ä”ä”4”å0Ð¢–b&÷ræ¶–æB–âtõ$´dÄõu2æBtõ$´dÄõu5·&÷ræ¶–æEÒævWB‚&6Æ–æ–6Â"’æB&÷rç7FGW2Ò&&÷fVB# Ð¢&WGW&âW6W"ç&öÆR–â4Ä”ä”4”å2÷"&÷ræWF†÷%ö–BÓÒW6W"æ–@Ð¢&WGW&âG'VPÐ Ð Ð¤&÷WFW"ævWB‚"÷c"÷F–VçG2÷·F–VçEö–GÒ÷&V6÷&G2"Ð¦FVbÆ—7E÷&V6÷&G2‡F–VçEö–C¢7G"Â&WVW7C¢&WVW7BÂ¶–æC¢7G"Ò""ÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÐ¢–bW6W"ç&öÆRÓÒ&Æ"# Ð¢&—6R…EEW†6WF–öâƒC2Â$Æ"7FfbÖ’66W72F†V—"÷vâWÆöG2öæÇ’"Ð¢–G5ö'•÷66÷RÒ·3¢F–VçEö–B–âf—6–&ÆUö–G2†F"ÂW6W"Â2’f÷"2–â·u²'66÷R%Òf÷"r–âtõ$´dÄõu2çfÇVW2‚—×ÐÐ¢&WGW&â·6W&–Â‡"’f÷""–â&V6÷&G2†F"ÂF–VçEö–BÂ¶–æB÷"æöæR•³£SÐÐ¢–b&VF&ÆU÷&V6÷&B‡"ÂW6W"’æB–G5ö'•÷66÷RævWB…tõ$´dÄõu2ævWB‡"æ¶–æBÂ·Ò’ævWB‚'66÷R"Â&æ÷FW2"’ÂfÇ6R•ÐÐ Ð Ð¦6Æ72&V6÷&D–â„&6TÖöFVÂ“ Ð¢¶–æC¢7G"Òf–VÆB†Ö…öÆVæwFƒÓCÐ¢FF¢F–7@Ð Ð Ð¦FVbfÆ–FFU÷&V6÷&B†¶–æBÂFF“ Ð¢–b¶–æBæ÷B–âtõ$´dÄõu3 Ð¢&—6R…EEW†6WF–öâƒC#"Â%Væ¶æ÷vâv÷&¶fÆ÷r"Ð¢7V2Òtõ$´dÄõu5¶¶–æEÐÐ¢ÆÆ÷vVBÒ¶e²&¶W’%Òf÷"b–â7V5²&f–VÆG2%×ÐÐ¢–b6WB†FF’ÒÆÆ÷vVC Ð¢&—6R…EEW†6WF–öâƒC#"Â%VæW‡V7FVBv÷&¶fÆ÷rf–VÆG2"Ð¢÷WBÒ·ÐÐ¢f÷"b–â7V5²&f–VÆG2%Ó Ð¢fÇVRÒFFævWB†e²&¶W’%ÒÐ¢–bbævWB‚'&WV—&VB"’æB‡fÇVR—2æöæR÷"fÇVRÓÒ""÷"†e²'G—R%ÒÓÒ&6†V6¶&÷‚"æBfÇVR—2æ÷BG'VR’“ Ð¢&—6R…EEW†6WF–öâƒC#"Âb'¶e²vÆ&VÂu×Ò—2&WV—&VB"Ð¢–bfÇVR—2æöæR÷"fÇVRÓÒ"# Ð¢6öçF–çVPÐ¢–be²'G—R%ÒÓÒ&çVÖ&W"# Ð¢–b—6–ç7Fæ6R‡fÇVRÂ&ööÂ’÷"æ÷B—6–ç7Fæ6R‡fÇVRÂ†–çBÂfÆöB’’÷"æ÷BÖF‚æ—6f–æ—FR‡fÇVR’÷"æ÷BbævWB‚&Ö–â"ÂÓS"’ÃÒfÇVRÃÒbævWB‚&Ö‚"ÂS"“ Ð¢&—6R…EEW†6WF–öâƒC#"Âb$–çfÆ–BçVÖ&W#¢¶e²vÆ&VÂu×Ò"Ð¢VÆ–be²'G—R%ÒÓÒ&6†V6¶&÷‚# Ð¢–bæ÷B—6–ç7Fæ6R‡fÇVRÂ&ööÂ“ Ð¢&—6R…EEW†6WF–öâƒC#"Âb$–çfÆ–B6†V6¶&÷ƒ¢¶e²vÆ&VÂu×Ò"Ð¢VÇ6S Ð¢–bæ÷B—6–ç7Fæ6R‡fÇVRÂ7G"’÷"ÆVâ‡fÇVR’â# Ð¢&—6R…EEW†6WF–öâƒC#"Âb$–çfÆ–BFW‡C¢¶e²vÆ&VÂu×Ò"Ð¢–be²'G—R%ÒÓÒ'6VÆV7B"æBfÇVRæ÷B–âe²&÷F–öç2%Ó Ð¢&—6R…EEW†6WF–öâƒC#"Âb$–çfÆ–B÷F–öã¢¶e²vÆ&VÂu×Ò"Ð¢–be²'G—R%Ò–â²&FFR"Â&FFWF–ÖRÖÆö6Â'Ó Ð¢G'“ Ð¢FFWF–ÖRæg&öÖ—6öf÷&ÖB‡fÇVRÐ¢W†6WBfÇVTW'&÷# Ð¢&—6R…EEW†6WF–öâƒC#"Âb$–çfÆ–BFFS¢¶e²vÆ&VÂu×Ò"Ð¢–be²'G—R%ÒÓÒ'W&Â"æBæ÷BfÇVRç7F'G7v—F‚‚&‡GG3¢òò"“ Ð¢&—6R…EEW†6WF–öâƒC#"Â%6÷W&6RU$Ç2×W7BW6R…EE2"Ð¢÷WE¶e²&¶W’%ÕÒÒfÇVPÐ¢&WGW&â÷W@Ð Ð Ð¤&÷WFW"ç÷7B‚"÷c"÷F–VçG2÷·F–VçEö–GÒ÷&V6÷&G2"Ð¦FVb7&VFU÷&V6÷&B‡F–VçEö–C¢7G"Â&öG“¢&V6÷&D–âÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢FFÒfÆ–FFU÷&V6÷&B†&öG’æ¶–æBÂ&öG’æFFÐ¢7V2Òtõ$´dÄõu5¶&öG’æ¶–æEÐÐ¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ7V5²'66÷R%ÒÐ¢&öÆW2‡W6W"Â§7V5²'&öÆW2%ÒÂ&FÖ–â"Ð¢f÷"¶W’–â‚&Fö7VÖVçEö–B"Â&VF–õöFö7VÖVçEö–B"“ Ð¢–bFFævWB†¶W’“ Ð¢Fö2ÒF"ævWB„Fö7VÖVçBÂ–çB†FF¶¶W•Ò’Ð¢–bæ÷BFö2÷"Fö2çF–VçEö–BÒF–VçEö–C Ð¢&—6R…EEW†6WF–öâƒC#"Â%6÷W&6R×W7B&RFö7VÖVçB&VÆöæv–ærFòF†—2F–VçB"Ð¢–b&öG’æ¶–æBÓÒ'&öFÖ"æBFFævWB‚&7–6ÆR"Â’âFFævWB‚'F÷FÅö7–6ÆW2"Â“ Ð¢&—6R…EEW†6WF–öâƒC#"Â$7W'&VçB7–6ÆR6ææ÷BW†6VVBÆææVB7–6ÆW2"Ð¢–b&öG’æ¶–æBÓÒ&6öÖ×Væ–6F–öâ"æBæ÷B&RægVÆÆÖF6‚‡""ƒó¥³ÕÆGÃ%³Ó5Ò“¥³ÓUÕÆB"ÂFFævWB‚'F–ÖR"Â""’“ Ð¢&—6R…EEW†6WF–öâƒC#"Â$VçFW"F–Ç’6ÆÂF–ÖR2„ƒ¤ÔÒ"Ð¢–b&öG’æ¶–æBÓÒ&6†—"# Ð¢÷&FW"ÒF"ævWB„&÷fÂÂ–çB†FF²&&÷fÅö–B%Ò’Ð¢–bæ÷B÷&FW"÷"÷&FW"çF–VçEö–BÒF–VçEö–B÷"÷&FW"ç7FGW2Ò&&÷fVB# Ð¢&—6R…EEW†6WF–öâƒC#"Â$6–væVB&÷fVB÷&FW"—2&WV—&VB"Ð¢–bFF²'7F'B%ÒãÒFF²&VæB%Ó Ð¢&—6R…EEW†6WF–öâƒC#"Â$6†—"VæB×W7BföÆÆ÷r7F'B"Ð¢f÷"÷F†W"–âF"ç66Æ'2‡6VÆV7B„6&U&V6÷&B’çv†W&R„6&U&V6÷&Bæ¶–æBÓÒ&6†—""Â6&U&V6÷&Bç7FGW2Ò&6ö×ÆWFVB"’“ Ð¢–b÷F†W"æFF²&6†—"%ÒÓÒFF²&6†—"%ÒæB÷F†W"æFF²'7F'B%ÒÂFF²&VæB%ÒæBFF²'7F'B%ÒÂ÷F†W"æFF²&VæB%Ó Ð¢&—6R…EEW†6WF–öâƒC’Â$6†—"—2Ç&VG’ÆÆö6FVBBF†BF–ÖR"Ð¢&÷rÒ6&U&V6÷&B‡F–VçEö–C×F–VçEö–BÂ¶–æCÖ&öG’æ¶–æBÂWF†÷%ö–C×W6W"æ–BÂWF†÷%öæÖS×W6W"ææÖRÀÐ¢WF†÷%÷&öÆS×W6W"ç&öÆRÂFFÖFFÂ7FGW3Ò&G&gB"–b7V2ævWB‚&6Æ–æ–6Â"’÷"&öG’æ¶–æBÓÒ'†÷Fõ÷7–×FöÒ"VÇ6R'&V6÷&FVB"Ð¢F"æFB‡&÷rÐ¢F"æ6öÖÖ—B‚Ð¢fÆrÒ&VEöfÆw2†FFævWB‚'FW‡B"Â""’Âöå÷G&VFÖVçCÖ&ööÂ†F"ævWB…F–VçBÂF–VçEö–B’æ7W'&VçE÷&Vv–ÖVâ’Ð¢–bfÆu²&ÆWfVÂ%ÒãÒ"æB†&öG’æ¶–æBÒ&F–'’"÷"FFævWB‚'6†&Uö6öæ6W&ç2"’÷"fÆu²&ÆWfVÂ%ÒÓÒ2“ Ð¢ÆW'B†F"ÂF–VçEö–BÂfÆu²'&V6öâ%ÒÂb%'·&÷ræ–GÒ"Â&VÖW&vVæ7’"–bfÆu²&ÆWfVÂ%ÒÓÒ2VÇ6R'W&vVçB"Ð¢–b&öG’æ¶–æBÓÒ'–â"æBFFævWB‚'66÷&R"Â’ãÒs Ð¢ÆW'B†F"ÂF–VçEö–BÂ$†–v‚–â66÷&R&W÷'FVB"Âb%'·&÷ræ–GÒ"Ð¢–b&öG’æ¶–æBÓÒ&çWG&—F–öâ"æBFFævWB‚'vV–v‡Eö¶r"“ Ð¢öÆFW"Ò·"f÷""–â&V6÷&G2†F"ÂF–VçEö–BÂ&çWG&—F–öâ"’–b"æ–BÒ&÷ræ–BæB"æFFævWB‚'vV–v‡Eö¶r"’æB"æ7&VFVEöBâWF6æ÷r‚’ÒF–ÖVFVÇF†F—3Ó3•ÐÐ¢–böÆFW"æBFF²'vV–v‡Eö¶r%ÒÂöÆFW%²ÓÒæFF²'vV–v‡Eö¶r%Ò¢ã“S Ð¢ÆW'B†F"ÂF–VçEö–BÂ%&W÷'FVBvV–v‡BÆ÷72W†6VVG2RRöb&V6VçBvV–v‡C²F–WF—F–â&Wf–Wr"Âb%'·&÷ræ–GÒ"Ð¢–b&öG’æ¶–æBÓÒ'&—f7•÷&WVW7B# Ð¢f÷"öff–6W"–âF"ç66Æ'2‡6VÆV7B…W6W"’çv†W&R…W6W"ç&öÆRæ–åò…²'&—f7’"Â&FÖ–â%Ò’’“ Ð¢F"æFB„æ÷F–f–6F–öâ‡W6W%ö–CÖöff–6W"æ–BÂF—FÆSÒ%&—f7’&–v‡G2&WVW7B"Â&öG“Öb%&WVW7B'·&÷ræ–GÓ¢¶FF²w&WVW7E÷G—Ru×Ò"’Ð¢F"æ6öÖÖ—B‚Ð¢–b&öG’æ¶–æBÓÒ'vVÆÆ&V–ær"æBFFævWB‚'&WVW7E÷7W÷'B"“ Ð¢f÷"æf–vF÷"–âF"ç66Æ'2‡6VÆV7B…W6W"’çv†W&R…W6W"ç&öÆRÓÒ&æf–vF÷""ÂW6W"æ7F—fRæ—5ò…G'VR’’“ Ð¢–bF–VçEö–B–âf—6–&ÆUö–G2†F"Âæf–vF÷"Â&æ÷FW2"“ Ð¢F"æFB„æ÷F–f–6F–öâ‡W6W%ö–CÖæf–vF÷"æ–BÂF—FÆSÒ$6&Vv—fW"7W÷'B&WVW7FVB"Â&öG“Öb'·W6W"ææÖWÒ6·2F†Ræf–vF÷"Fò6öçF7BF†VÒâ&—fFRvVÆÆ&V–ær66÷&W2&Ræ÷B6†&VBâ"’Ð¢F"æ6öÖÖ—B‚Ð¢VæEöVF—B†F"ÂW6W"Â&7&VFUò"²&öG’æ¶–æBÂF–VçEö–BÂb%'·&÷ræ–GÒ"Ð¢&WGW&â6W&–Â‡&÷rÐ Ð Ð¦6Æ72&V6÷&D7F–öâ„&6TÖöFVÂ“ Ð¢7F–öã¢Æ—FW&Å²&&÷fR"Â&6ö×ÆWFR"Â&6öæf—&Õöw&FR"Â&6¶æ÷vÆVFvR"Â'&V¦V7B%ÐÐ¢FW‡C¢7G"Òf–VÆB†FVfVÇCÒ""ÂÖ…öÆVæwFƒÓ#Ð¢w&FS¢–çBÂæöæRÒf–VÆB†FVfVÇCÔæöæRÂvSÓÂÆSÓBÐ Ð Ð¤&÷WFW"ç÷7B‚"÷c"÷&V6÷&G2÷·&V6÷&Eö–GÒö7F–öâ"Ð¦FVb&V6÷&Eö7F–öâ‡&V6÷&Eö–C¢–çBÂ&öG“¢&V6÷&D7F–öâÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢&÷rÒF"ævWB„6&U&V6÷&BÂ&V6÷&Eö–BÐ¢–bæ÷B&÷s Ð¢&—6R…EEW†6WF–öâƒCBÂ%&V6÷&Bæ÷Bf÷VæB"Ð¢W6W"Ò–FVçF—G’‡&WVW7BÐ¢–b&÷ræ¶–æBÓÒ'&—f7•÷&WVW7B"æBW6W"ç&öÆR–â²'&—f7’"Â&FÖ–â'Ó Ð¢70Ð¢VÇ6S Ð¢F–VçEö66W72†F"Â&WVW7BÂ&÷rçF–VçEö–BÂtõ$´dÄõu2ævWB‡&÷ræ¶–æBÂ·Ò’ævWB‚'66÷R"Â&æ÷FW2"’Ð¢–b&öG’æ7F–öâ–â²&&÷fR"Â'&V¦V7B'Ó Ð¢&öÆW2‡W6W"Â&Fö7F÷""Ð¢&–Ö'“ÖF"ævWB…G&VF–æt6Æ–æ–6–âÇ&÷rçF–VçEö–BÐ¢–bæ÷B&–Ö'’÷"&–Ö'’çW6W%ö–BÒW6W"æ–C Ð¢&—6R…EEW†6WF–öâƒC2Â%F†RG&VF–æröæ6öÆöv—7B×W7B6–vâ6Æ–æ–6Â6†ævW2"Ð¢–b&÷rç7FGW2æ÷B–â²&G&gB"Â'&V6÷&FVB'Ó Ð¢&—6R…EEW†6WF–öâƒC’Â%F†—2&V6÷&B†2Ç&VG’&VVâ&Wf–WvVB"Ð¢6†ævVBÒF"æW†V7WFR‡WFFR„6&U&V6÷&B’çv†W&R„6&U&V6÷&Bæ–BÓÒ&÷ræ–BÂ6&U&V6÷&Bç7FGW2æ–åò…²&G&gB"Â'&V6÷&FVB%Ò’’çfÇVW2‡7FGW3Ò'&Wf–WuöÆö6¶VB"’Ð¢–b6†ævVBç&÷v6÷VçBÒ Ð¢&—6R…EEW†6WF–öâƒC’Â$æ÷F†W"6Æ–æ–6–â†2Ç&VG’&Wf–WvVBF†—2&V6÷&B"Ð¢&÷rç7FGW2Ò&&÷fVB"–b&öG’æ7F–öâÓÒ&&÷fR"VÇ6R'&V¦V7FVB Ð¢–b&öG’çFW‡C Ð¢&÷ræFFÒ²¢§&÷ræFFÂ'FW‡B#¢&öG’çFW‡GÐÐ¢&÷ræ&÷fVEö'’Â&÷ræ&÷fVEöBÒW6W"ææÖRÂWF6æ÷r‚Ð¢–b&÷rç7FGW2ÓÒ&&÷fVB# Ð¢–b&÷ræFFævWB‚'&VÖ–æFW""’æB&÷ræFFævWB‚'&VÖ–æFW%öB"“ Ð¢F"æFB„6&U&V6÷&B‡F–VçEö–C×&÷rçF–VçEö–BÂ¶–æCÒ'&VÖ–æFW""ÂWF†÷%ö–C×W6W"æ–BÂWF†÷%öæÖS×W6W"ææÖRÀÐ¢WF†÷%÷&öÆS×W6W"ç&öÆRÂ7FGW3Ò'&V6÷&FVB"ÂFF×²'F—FÆR#¢&÷ræFF²'&VÖ–æFW"%ÒÂ&GVUöB#¢&÷ræFF²'&VÖ–æFW%öB%ÒÂ'6÷W&6R#¢b%'·&÷ræ–GÒ'Ò’Ð¢–b&÷ræ¶–æBÓÒ&&ö&EöFV6—6–öâ"æB&÷ræFFævWB‚'Æâ"“ Ð¢F"æFB„6&U&V6÷&B‡F–VçEö–C×&÷rçF–VçEö–BÂ¶–æCÒ'&öFÖ"ÂWF†÷%ö–C×W6W"æ–BÂWF†÷%öæÖS×W6W"ææÖRÀÐ¢WF†÷%÷&öÆS×W6W"ç&öÆRÂ7FGW3Ò&&÷fVB"Â&÷fVEö'“×W6W"ææÖRÂ&÷fVEöC×WF6æ÷r‚’ÀÐ¢FF×²'FW‡B#¢&÷ræFF²'Æâ%ÒÂ'6÷W&6R#¢b%'·&÷ræ–GÒ'Ò’Ð¢æ÷F–g•÷FVÒ†F"Â&÷rçF–VçEö–BÂ%6–væVB6&RWFFR"Âb'µtõ$´dÄõu2ævWB‡&÷ræ¶–æBÂ·Ò’ævWB‚wF—FÆRrÂ&÷ræ¶–æB—Ò—2f–Æ&ÆRâ"Ð¢VÆ–b&öG’æ7F–öâÓÒ&6öæf—&Õöw&FR# Ð¢&öÆW2‡W6W"Â&çW'6R"Â&Fö7F÷""Â&FÖ–â"Ð¢–b&÷ræ¶–æBÒ'†÷Fõ÷7–×FöÒ"÷"&öG’æw&FR—2æöæS Ð¢&—6R…EEW†6WF–öâƒC#"Â%6VÆV7B7–×FöÒ†÷FòæB6öæf—&ÖVBw&FR"Ð¢&÷ræFFÒ²¢§&÷ræFFÂ&6öæf—&ÖVEöw&FR#¢&öG’æw&FRÂ&6öæf—&ÖVEö'’#¢W6W"ææÖWÐÐ¢&÷rç7FGW2Ò&6öæf—&ÖVB Ð¢–b&öG’æw&FRãÒ3 Ð¢ÆW'B†F"Â&÷rçF–VçEö–BÂ$çW'6RÖ6öæf—&ÖVB6WfW&R†÷Fò7–×FöÒ"Âb%'·&÷ræ–GÒ"Ð¢VÇ6S Ð¢–b&÷ræ¶–æBæ÷B–â²'F6²"Â&†æF÷fW""Â'&VÖ–æFW""Â&çW'6Uö†æF÷fW""Â&6†—""Â'&—f7•÷&WVW7B"Â&'VFG’'Ó Ð¢&—6R…EEW†6WF–öâƒC#"Â%F†—2&V6÷&B6ææ÷B&R6ö×ÆWFVBv—F‚F†—27F–öâ"Ð¢–b&÷ræ¶–æBÓÒ'&—f7•÷&WVW7B# Ð¢&öÆW2‡W6W"Â'&—f7’"Â&FÖ–â"Ð¢–bÆVâ†&öG’çFW‡Bç7G&—‚’“Ã Ð¢&—6R…EEW†6WF–öâƒC#"Â%&V6÷&BF†R&—f7’öff–6W"w2&W7öç6RæB&WFVçF–öâFV6—6–öâ"Ð¢&÷ræFF×²¢§&÷ræFFÂ&öff–6W%÷&W7öç6R#¦&öG’çFW‡BÂ&öff–6W"#§W6W"ææÖWÐÐ¢VÇ6S Ð¢&öÆW2‡W6W"Â¥tõ$´dÄõu5·&÷ræ¶–æEÕ²'&öÆW2%ÒÂ&FÖ–â"Ð¢&÷rç7FGW2Ò&6ö×ÆWFVB"–b&öG’æ7F–öâÓÒ&6ö×ÆWFR"VÇ6R&6¶æ÷vÆVFvVB Ð¢&÷rçWFFVEöBÒWF6æ÷r‚Ð¢F"æ6öÖÖ—B‚Ð¢VæEöVF—B†F"ÂW6W"Â&öG’æ7F–öâ²%ò"²&÷ræ¶–æBÂ&÷rçF–VçEö–BÂb%'·&÷ræ–GÒ"Ð¢&WGW&â6W&–Â‡&÷rÐ Ð Ð¦6Æ726†V6´–â„&6TÖöFVÂ“ Ð¢ÆæwVvS¢Æ—FW&Å²&Vâ"Â&†’"Â&×"%ÒÒ&Vâ Ð¢æW6V¢–çBÒf–VÆB†FVfVÇCÓÂvSÓÂÆSÓBÐ¢–ã¢–çBÒf–VÆB†FVfVÇCÓÂvSÓÂÆSÓBÐ¢fF–wVS¢–çBÒf–VÆB†FVfVÇCÓÂvSÓÂÆSÓBÐ¢WF—FS¢–çBÒf–VÆB†FVfVÇCÓÂvSÓÂÆSÓBÐ¢'&VF†–æs¢–çBÒf–VÆB†FVfVÇCÓÂvSÓÂÆSÓBÐ¢FV×W&GW&S¢fÆöBÂæöæRÒf–VÆB†FVfVÇCÔæöæRÂvSÓ3ÂÆSÓCRÐ¢F—7G&W73¢–çBÒf–VÆB†FVfVÇCÓÂvSÓÂÆSÓÐ¢FW‡C¢7G"Òf–VÆB†FVfVÇCÒ""ÂÖ…öÆVæwFƒÓSÐ¢6÷W&6S¢Æ—FW&Å²'F"Â'fö–6R"Â'†öæUöFVÖò%ÒÒ'F Ð Ð Ð¤&÷WFW"ç÷7B‚"÷c"÷F–VçG2÷·F–VçEö–GÒö6†V6¶–â"Ð¦FVb6†V6¶–â‡F–VçEö–C¢7G"Â&öG“¢6†V6´–âÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&6†V6¶–â"Ð¢&öÆW2‡W6W"Â'F–VçB"Â&6&Vv—fW""Â&çW'6R"Â&Fö7F÷""Â&FÖ–â"Ð¢7’Ò·²&¶W’#¢²Â&æÖR#¢²çF—FÆR‚’Â&w&FR#¢vWFGG"†&öG’Â²—Òf÷"²–â‚&æW6V"Â'–â"Â&fF–wVR"Â&WF—FR"Â&'&VF†–ær"•ÐÐ¢fÆrÒ&VEöfÆw2†&öG’çFW‡BÂ7’Â&öG’çFV×W&GW&RÂ&ööÂ†F"ævWB…F–VçBÂF–VçEö–B’æ7W'&VçE÷&Vv–ÖVâ’Ð¢–b&öG’æ'&VF†–ærãÒ3 Ð¢fÆrÒ²&ÆWfVÂ#¢2Â'&V6öâ#¢%6WfW&R'&VF†–ærF–ff–7VÇG’&W÷'FVB'ÐÐ¢&÷rÒ6&U&V6÷&B‡F–VçEö–C×F–VçEö–BÂ¶–æCÒ&6†V6¶–â"ÂWF†÷%ö–C×W6W"æ–BÂWF†÷%öæÖS×W6W"ææÖRÀÐ¢WF†÷%÷&öÆS×W6W"ç&öÆRÂFFÖ&öG’æÖöFVÅöGV×‚’Â²'&W÷'FVEö'’#¢W6W"ç&öÆWÒÂ7FGW3Ò'&V6÷&FVB"Ð¢F"æFB‡&÷rÐ¢F"æFB…7–×FöÕ&W÷'B‡F–VçEö–C×F–VçEö–BÂÆæwVvSÖ&öG’æÆæwVvRÂ7–×Fö×3×7’ÀÐ¢g&VU÷FW‡CÖ&öG’çFW‡B²b"·&W÷'FVB'’·W6W"ç&öÆWÓ¢·W6W"ææÖWÕÒ"ÂfÆvvVCÖfÆu²&ÆWfVÂ%ÒãÒ"’Ð¢F"æ6öÖÖ—B‚Ð¢ÒæöæPÐ¢–bfÆu²&ÆWfVÂ%ÒãÒ# Ð¢ÒÆW'B†F"ÂF–VçEö–BÂfÆu²'&V6öâ%ÒÂb&6†V6¶–â'·&÷ræ–GÒ"Â&VÖW&vVæ7’"–bfÆu²&ÆWfVÂ%ÒÓÒ2VÇ6R'W&vVçB"Ð¢–b&öG’æF—7G&W72ãÒs Ð¢ÆW'B†F"ÂF–VçEö–BÂ$†–v‚F—7G&W73²6öçF7B6÷Vç6VÆÆ÷"òæf–vF÷""Âb%'·&÷ræ–GÒ"Ð¢2W'6öæÂ7–6ÆRf÷&V67BFWf–F–öâ—2&6VBöæÇ’öâF†—2F–VçBw2÷vâ&–÷"&W÷'G2àÐ¢7BÒ·"f÷""–â&V6÷&G2†F"ÂF–VçEö–BÂ&6†V6¶–â"’–b"æ–BÒ&÷ræ–EÐÐ¢–bÆVâ‡7B’ãÒ3 Ð¢&6VÆ–æRÒ7VÒ‡"æFFævWB‚&fF–wVR"Â’²"æFFævWB‚&æW6V"Â’f÷""–â7E³£uÒ’òÖ–âƒrÂÆVâ‡7B’Ð¢–b&öG’æfF–wVR²&öG’ææW6Vâ&6VÆ–æR²3 Ð¢ÆW'B†F"ÂF–VçEö–BÂ%7–×Fö×2&÷fRF†—2F–VçBw2&V6VçB&6VÆ–æR"Âb%'·&÷ræ–GÒ"Ð¢VæEöVF—B†F"ÂW6W"Â&F–Ç•ö6†V6¶–â"ÂF–VçEö–BÂb%'·&÷ræ–GÓ²&W÷'FVB'’·W6W"ç&öÆWÒ"Ð¢&WGW&â²&–B#¢&÷ræ–BÂ&ÆWfVÂ#¢fÆu²&ÆWfVÂ%ÒÂ&ÆW'Eö–B#¢æ–B–bVÇ6RæöæRÀÐ¢&–ç7G'V7F–öâ#¢TÔU$tTä5•¶&öG’æÆæwVvUÒ–bfÆu²&ÆWfVÂ%ÒÓÒ2VÇ6R%–÷W"6&RFVÒ6â6VRF†—26†V6²Ö–ââ"ÀÐ¢&çW'6Uöæ÷F–f–6F–öâ#¢&–åö"–bVÇ6RæöæRÂ&W‡FW&æÅöFVÆ—fW'’#¢&æ÷B6VçC²W6R6öæf–wW&VBÖW76v–ærF—7F6‚"–bVÇ6RæöæWÐÐ Ð Ð¦6Æ72VW7F–öâ„&6TÖöFVÂ“ Ð¢FW‡C¢7G"Òf–VÆB†Ö–åöÆVæwFƒÓÂÖ…öÆVæwFƒÓ3Ð¢ÆæwVvS¢Æ—FW&Å²&Vâ"Â&†’"Â&×"%ÒÒ&Vâ Ð¢6öçfW'6F–öåö–C¢7G"Òf–VÆB†FVfVÇCÒ""ÂÖ…öÆVæwFƒÓƒÐ Ð Ð¦6Æ726ö×æ–öå6†&–æt–â„&6TÖöFVÂ“ Ð¢Væ&ÆVC¢&ööÀÐ Ð Ð¤&÷WFW"ç÷7B‚"÷c"÷F–VçG2÷·F–VçEö–GÒö6ö×æ–öâ"Ð¦FVb6ö×æ–öâ‡F–VçEö–C¢7G"Â&öG“¢VW7F–öâÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&Fö7VÖVçG2"Ð¢&öÆW2‡W6W"Â'F–VçB"Â&6&Vv—fW""Â&Fö7F÷""Â&çW'6R"Â&FÖ–â"Ð¢&W7VÇBÒç7vW"†F"ÂF–VçEö–BÂ&öG’çFW‡BÂ&öG’æÆæwVvRÂW6W"ç&öÆR–â4Ä”ä”4”å2ÀÐ¢F–VçEö–B–âf—6–&ÆUö–G2†F"ÇW6W"Â&æ÷FW2"’Â&öG’æ6öçfW'6F–öåö–BÂW6W"æ–BÂW6W"ç&öÆRÐ¢F"æFB„6&U&V6÷&B‡F–VçEö–C×F–VçEö–BÂ¶–æCÒ&6ö×æ–öâ"ÂWF†÷%ö–C×W6W"æ–BÂWF†÷%öæÖS×W6W"ææÖRÀÐ¢WF†÷%÷&öÆS×W6W"ç&öÆRÂFF×²'VW7F–öâ#¢&öG’çFW‡BÂ&6öçfW'6F–öåö–B#¢&öG’æ6öçfW'6F–öåö–BÂ¢§&W7VÇGÒÂ7FGW3Ò'&V6÷&FVB"’Ð¢F"æ6öÖÖ—B‚Ð¢&WGW&â&W7VÇ@Ð Ð Ð¤&÷WFW"ævWB‚"÷c"÷F–VçG2÷·F–VçEö–GÒö6ö×æ–öâ×6†&–ær"Ð¦FVbvWEö6ö×æ–öå÷6†&–ær‡F–VçEö–C¢7G"Â&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&Fö7VÖVçG2"Ð¢&öÆW2‡W6W"Â'F–VçB"Ð¢g&öÒâç6W'f–6W2æ6ö×æ–öâ–×÷'B6ö×æ–öå÷6†&–æu÷7FFPÐ¢7FFRÒ6ö×æ–öå÷6†&–æu÷7FFR†F"ÂF–VçEö–BÐ¢&WGW&â²&Væ&ÆVB#¢7FFU²&Væ&ÆVB%ÒÂ'6–æ6R#¢7FFU²'6–æ6R%Òæ—6öf÷&ÖB‚’–b7FFU²'6–æ6R%ÒVÇ6RæöæWÐÐ Ð Ð¤&÷WFW"çWB‚"÷c"÷F–VçG2÷·F–VçEö–GÒö6ö×æ–öâ×6†&–ær"Ð¦FVb6WEö6ö×æ–öå÷6†&–ær‡F–VçEö–C¢7G"Â&öG“¢6ö×æ–öå6†&–æt–âÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&Fö7VÖVçG2"Ð¢&öÆW2‡W6W"Â'F–VçB"Ð¢&÷rÒ6&U&V6÷&B‡F–VçEö–C×F–VçEö–BÂ¶–æCÒ&6ö×æ–öå÷6†&–ær"ÂWF†÷%ö–C×W6W"æ–BÀÐ¢WF†÷%öæÖS×W6W"ææÖRÂWF†÷%÷&öÆS×W6W"ç&öÆRÀÐ¢FF×²&Væ&ÆVB#¢&öG’æVæ&ÆVGÒÂ7FGW3Ò'&V6÷&FVB"Ð¢F"æFB‡&÷rÐ¢VæEöVF—B†F"ÂW6W"Â&6ö×æ–öå÷6†&–æu÷WFFVB"ÂF–VçEö–BÀÐ¢&Væ&ÆVB"–b&öG’æVæ&ÆVBVÇ6R&F—6&ÆVB"Ð¢F"æ6öÖÖ—B‚Ð¢&WGW&â²&Væ&ÆVB#¢&öG’æVæ&ÆVBÂ'6–æ6R#¢&÷ræ7&VFVEöBæ—6öf÷&ÖB‚’–b&öG’æVæ&ÆVBVÇ6RæöæWÐÐ Ð Ð¤&÷WFW"ævWB‚"÷c"÷F–VçG2÷·F–VçEö–GÒ÷7VÖÖ'’"Ð¦FVb7VÖÖ'’‡F–VçEö–C¢7G"Â&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&Fö7VÖVçG2"Ð¢&öÆW2‡W6W"Â&Fö7F÷""Â&çW'6R"Â'F–VçB"Â&6&Vv—fW""Ð¢&WGW&âÆ—f–æu÷7VÖÖ'’†F"ÂF–VçEö–BÂF–VçEö–B–âf—6–&ÆUö–G2†F"ÇW6W"Â&æ÷FW2"’ÂF–VçEö–B–âf—6–&ÆUö–G2†F"ÇW6W"Â&6†V6¶–â"’ÂF–VçEö–B–âf—6–&ÆUö–G2†F"ÇW6W"Â&ÖVF–6–æW2"’Ð Ð Ð¦6Æ72ÖW76vT–â„&6TÖöFVÂ“ Ð¢FW‡C¢7G"Òf–VÆB†Ö–åöÆVæwFƒÓÂÖ…öÆVæwFƒÓSÐ Ð Ð¤&÷WFW"ævWB‚"÷c"÷F–VçG2÷·F–VçEö–GÒö6†B"Ð¦FVb6†B‡F–VçEö–C¢7G"Â&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢F–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&6†B"Ð¢&÷w2Ò&V6÷&G2†F"ÂF–VçEö–BÂ&6†B"•³£ÐÐ¢&WGW&â²&ÖW76vW2#¢·6W&–Â‡"’f÷""–â&WfW'6VB‡&÷w2•ÒÂ'7VÖÖ'’#¢¶b'·"æWF†÷%öæÖWÓ¢·"æFF²wFW‡BuÕ³£c×Ò"f÷""–â&÷w5³£5ÕÕ³£¢Ó×ÐÐ Ð Ð¤&÷WFW"ç÷7B‚"÷c"÷F–VçG2÷·F–VçEö–GÒö6†B"Ð¦FVb6VæEö6†B‡F–VçEö–C¢7G"Â&öG“¢ÖW76vT–âÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&6†B"Ð¢fÆrÒ&VEöfÆw2†&öG’çFW‡BÂöå÷G&VFÖVçCÖ&ööÂ†F"ævWB…F–VçBÂF–VçEö–B’æ7W'&VçE÷&Vv–ÖVâ’Ð¢&÷rÒ6&U&V6÷&B‡F–VçEö–C×F–VçEö–BÂ¶–æCÒ&6†B"ÂWF†÷%ö–C×W6W"æ–BÂWF†÷%öæÖS×W6W"ææÖRÀÐ¢WF†÷%÷&öÆS×W6W"ç&öÆRÂFF×²'FW‡B#¢&öG’çFW‡BÂ'W&vVæ7’#¢fÆu²&ÆWfVÂ%×ÒÂ7FGW3Ò'6VçB"Ð¢F"æFB‡&÷rÐ¢F"æ6öÖÖ—B‚Ð¢–bfÆu²&ÆWfVÂ%ÒãÒ# Ð¢ÆW'B†F"ÂF–VçEö–BÂfÆu²'&V6öâ%ÒÂb&6†B'·&÷ræ–GÒ"Â&VÖW&vVæ7’"–bfÆu²&ÆWfVÂ%ÒÓÒ2VÇ6R'W&vVçB"Ð¢æ÷F–g•÷FVÒ†F"ÂF–VçEö–BÂ$6&R6—&6ÆRÖW76vR"Âb$æWrÖW76vRg&öÒ·W6W"ææÖWÒ"Ð¢&WGW&â6W&–Â‡&÷r’Â²&–ç7G'V7F–öâ#¢TÔU$tTä5•²&Vâ%Ò–bfÆu²&ÆWfVÂ%ÒÓÒ2VÇ6RæöæWÐÐ Ð Ð¦6Æ72&WVW7D–â„&6TÖöFVÂ“ Ð¢¶–æC¢Æ—FW&Å²&ÖVF–6–æR"Â'FW7B"Â'Æâ"Â&6Æ–æ–6Å÷VW7F–öâ%ÒÒ&ÖVF–6–æR Ð¢&WVW7C¢7G"Òf–VÆB†Ö–åöÆVæwFƒÓ2ÂÖ…öÆVæwFƒÓ3Ð Ð Ð¦FVb&÷fÅöF–7B‡&÷rÂW6W"“ Ð¢FFÒ6W&–Â‡&÷rÐ¢–bW6W"ç&öÆRæ÷B–â4Ä”ä”4”å2æB&÷rç7FGW2Ò&&÷fVB# Ð¢FFç÷‚&G&gB"ÂæöæRÐ¢&WGW&âFFÐ Ð Ð¤&÷WFW"ævWB‚"÷c"÷F–VçG2÷·F–VçEö–GÒö&÷fÇ2"Ð¦FVb&÷fÇ2‡F–VçEö–C¢7G"Â&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&ÖVF–6–æW2"Ð¢&WGW&â¶&÷fÅöF–7B‡"ÂW6W"’f÷""–âF"ç66Æ'2‡6VÆV7B„&÷fÂ’çv†W&R„&÷fÂçF–VçEö–BÓÒF–VçEö–B’æ÷&FW%ö'’„&÷fÂæ–BæFW62‚’’•ÐÐ Ð Ð¤&÷WFW"ç÷7B‚"÷c"÷F–VçG2÷·F–VçEö–GÒö&÷fÇ2"Ð¦FVb&WVW7Eö&÷fÂ‡F–VçEö–C¢7G"Â&öG“¢&WVW7D–âÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&ÖVF–6–æW2"Ð¢&öÆW2‡W6W"Â'F–VçB"Â&6&Vv—fW""Â&Fö7F÷""Â&çW'6R"Â&FÖ–â"Ð¢fÆrÒ&VEöfÆw2†&öG’ç&WVW7BÂöå÷G&VFÖVçCÖ&ööÂ†F"ævWB…F–VçBÂF–VçEö–B’æ7W'&VçE÷&Vv–ÖVâ’Ð¢–bfÆu²&ÆWfVÂ%ÒÓÒ3 Ð¢ÒÆW'B†F"ÂF–VçEö–BÂfÆu²'&V6öâ%ÒÂ&ÖVF–6–æR&WVW7B"Â&VÖW&vVæ7’"Ð¢&WGW&â²&VÖW&vVæ7’#¢G'VRÂ&–ç7G'V7F–öâ#¢TÔU$tTä5•²&Vâ%ÒÂ&ÆW'Eö–B#¢æ–GÐÐ¢&÷rÒ&÷fÂ‡F–VçEö–C×F–VçEö–BÂ¶–æCÖ&öG’æ¶–æBÂ&WVW7CÖ&öG’ç&WVW7BÂ&WVW7FVEö'“×W6W"ææÖRÀÐ¢G&gC×²'FW‡B#¢b%&Wf–WrF†RF–VçBw2&WVW7C¢·6fU÷FW‡B†&öG’ç&WVW7B—Ò"Â'6fWG’#¢$Fö7F÷"×W7B7V6–g’ÖVF–6–æRæB6ö×ÆWFR6fWG’6†V6·2&Vf÷&R&÷fÂâ'ÒÐ¢F"æFB‡&÷rÐ¢F"æ6öÖÖ—B‚Ð¢æ÷F–g•÷FVÒ†F"ÂF–VçEö–BÂ%&WVW7Bv—F–ærFö7F÷""Âb%&WVW7B7·&÷ræ–GÒ"Ð¢VæEöVF—B†F"ÂW6W"Â'7V&Ö—Eö6Æ–æ–6Å÷&WVW7B"ÂF–VçEö–BÂ7G"‡&÷ræ–B’Ð¢&WGW&â&÷fÅöF–7B‡&÷rÂW6W"Ð Ð Ð¦6Æ72&Wf–Wt–â„&6TÖöFVÂ“ Ð¢7F–öã¢Æ—FW&Å²'&Wf–Wv–ær"Â&&÷fR"Â'&V¦V7B%ÐÐ¢ÖVF–6–æS¢7G"Òf–VÆB†FVfVÇCÒ""ÂÖ…öÆVæwFƒÓSÐ¢F÷6S¢7G"Òf–VÆB†FVfVÇCÒ""ÂÖ…öÆVæwFƒÓƒÐ¢g&WVVæ7“¢7G"Òf–VÆB†FVfVÇCÒ""ÂÖ…öÆVæwFƒÓÐ¢F–ÖW3¢Æ—7E·7G%ÒÒf–VÆB†FVfVÇEöf7F÷'“ÖÆ—7BÂÖ…öÆVæwFƒÓ‚Ð¢–ç7G'V7F–öç3¢7G"Òf–VÆB†FVfVÇCÒ""ÂÖ…öÆVæwFƒÓ3Ð¢&V6öã¢7G"Òf–VÆB†FVfVÇCÒ""ÂÖ…öÆVæwFƒÓ3Ð¢6fWG•ö6öæf—&ÖVC¢&ööÂÒfÇ6PÐ¢Wf–FVæ6U÷W&Ã¢7G"Òf–VÆB†FVfVÇCÒ""ÂÖ…öÆVæwFƒÓÐ Ð Ð¦FVb&W67&—F–öåö6†V6·2†F"Â–BÂ&öG’“ Ð¢&öf–ÆW2Ò&V6÷&G2†F"Â–BÂ&6Æ–æ–6Å÷&öf–ÆR"Ð¢&öf–ÆRÒ&öf–ÆW5³ÒæFF–b&öf–ÆW2VÇ6R·ÐÐ¢ÖVG2ÒF"ç66Æ'2‡6VÆV7B„ÖVF–6F–öâ’çv†W&R„ÖVF–6F–öâçF–VçEö–BÓÒ–BÂÖVF–6F–öâæ7F—fRæ—5ò…G'VR’’’æÆÂ‚Ð¢—77VW2ÒµÐÐ¢–bæ÷B&öf–ÆRævWB‚&ÆÆW&v–W2"“ Ð¢—77VW2æVæB‚$ÆÆW&w’7FGW2æ÷B6öæf—&ÖVB"Ð¢VÆ–b&öG’æÖVF–6–æRæB&öG’æÖVF–6–æRæÆ÷vW"‚’–â&öf–ÆRævWB‚&ÆÆW&v–W2"Â""’æÆ÷vW"‚“ Ð¢—77VW2æVæB‚%÷76–&ÆR&V6÷&FVBÆÆW&w’"Ð¢–bç’†ÒææÖRæÆ÷vW"‚’ÓÒ&öG’æÖVF–6–æRæÆ÷vW"‚’ç7G&—‚’f÷"Ò–âÖVG2“ Ð¢—77VW2æVæB‚$GWÆ–6FR7F—fRÖVF–6–æR"Ð¢–bæ÷B&öf–ÆRævWB‚&Vvg""“ Ð¢—77VW2æVæB‚$¶–FæW’gVæ7F–öâæ÷BFö7VÖVçFVB"Ð¢VÆ–b&öf–ÆU²&Vvg"%ÒÂc Ð¢—77VW2æVæB‚%&VGV6VB&V6÷&FVBTte#²F÷6RæVVG2–æF—f–GVÂ&Wf–Wr"Ð¢ÆFVÆWBÒF"ç66Æ"‡6VÆV7B„Æ%fÇVR’çv†W&R„Æ%fÇVRçF–VçEö–BÓÒ–BÂÆ%fÇVRçFW7BÓÒ%ÆFVÆWG2"’æ÷&FW%ö'’„Æ%fÇVRæÖV7W&VEöBæFW62‚’’æÆ–Ö—Bƒ’Ð¢–bÆFVÆWBæBÆFVÆWBçfÇVRÂæB&Rç6V&6‚‡"&7—&–çÆ–'W&öfVçÆF–6ÆöfVæ7Ææ&÷†Vâ"Â&öG’æÖVF–6–æRÂ&Rä’“ Ð¢—77VW2æVæB‚$Æ÷r&V6÷&FVBÆFVÆWG3¢†&Ö6—7B&Wf–Wröb&ÆVVF–ær&—6²&WV—&VB"Ð¢–b&Rç6V&6‚‡"'v&f&–çÆÖWF†÷G&W†FWÆF÷†÷'V&–6–çÆ&ÆVö×–6–çÆ—W'Æ†W&&Â"Â&öG’æÖVF–6–æRÂ&Rä’“ Ð¢—77VW2æVæB‚$†–v‚×&—6²÷"VçfW&–f–VB&öGV7C¢&÷Fö6öÂò–çFW&7F–öâ&Wf–Wr&WV—&VB"Ð¢'6ÒÖF‚ç7'B‡&öf–ÆU²&†V–v‡Eö6Ò%Ò¢&öf–ÆU²'vV–v‡Eö¶r%Òò3c’–b&öf–ÆRævWB‚&†V–v‡Eö6Ò"’æB&öf–ÆRævWB‚'vV–v‡Eö¶r"’VÇ6RæöæPÐ¢&÷Fö6öÇ2Ò·"f÷""–â&V6÷&G2†F"Â–BÂ&G'Vu÷&÷Fö6öÂ"’–b"ç7FGW2ÓÒ&&÷fVB"æB"æFFævWB‚&G'Vr"Â""’æÆ÷vW"‚’ÓÒ&öG’æÖVF–6–æRæÆ÷vW"‚’ç7G&—‚•ÐÐ¢W‡V7FVBÒæöæPÐ¢–b&÷Fö6öÇ3 Ð¢&÷Fö6öÂÒ&÷Fö6öÇ5³ÒæFFÐ¢–b'6 Ð¢W‡V7FVBÒ&÷VæB‡&÷Fö6öÅ²&F÷6UöÖuöÓ"%Ò¢'6Â"Ð¢7FFVBÒ&RægVÆÆÖF6‚‡"%Ç2¢…ÆB²ƒó¥ÂåÆB²“ò•Ç2¦ÖuÇ2¢"Â&öG’æF÷6RÂ&Rä’Ð¢–b7FFVBæBfÆöB‡7FFVE³Ò’âW‡V7FVB¢ãS Ð¢—77VW2æVæB‚$VçFW&VBF÷6RW†6VVG2F†R6–væVBÖröÜ+"&÷Fö6öÂ6Æ7VÆF–öã²fW&–g’–çFVæFVB&÷VæF–æræB&Vv–ÖVâ"Ð¢VÇ6S Ð¢—77VW2æVæB‚%6–væVB&öG’×6—¦R&÷Fö6öÂW†—7G2Â'WB†V–v‡B÷"vV–v‡B—2Ö—76–ær"Ð¢–b&öf–ÆRævWB‚&Vvg""Â’Â&÷Fö6öÂævWB‚&Ö–åöVvg""Â“ Ð¢—77VW2æVæB‚&Tte"—2&VÆ÷rF†R6–væVBG'Vr×&÷Fö6öÂF‡&W6†öÆB"Ð¢&WGW&â²&—77VW2#¢—77VW2Â&'6öÓ"#¢&÷VæB†'6Â"’–b'6VÇ6RæöæRÂ&Vvg"#¢&öf–ÆRævWB‚&Vvg""’ÀÐ¢'&÷Fö6öÅöF÷6UöÖr#¢W‡V7FVBÂ'&÷Fö6öÅ÷6÷W&6R#¢&÷Fö6öÇ5³ÒæFFævWB‚'6÷W&6U÷W&Â"’–b&÷Fö6öÇ2VÇ6RæöæRÀÐ¢'66÷R#¢%67&VVæ–ær'VÆW2öæÇ’âgVÆÂf÷&×VÆ'’–çFW&7F–öâæBF÷6R6†V6¶–ær&WV—&W2†&Ö6—7Bò6–væVBÆö6Â&÷Fö6öÂâ"ÀÐ¢&7F—fUöÖVF–6–æW2#¢¶ÒææÖR²""²ÒæF÷6Rf÷"Ò–âÖVG5×ÐÐ Ð Ð¤&÷WFW"ç÷7B‚"÷c"ö&÷fÇ2÷¶&÷fÅö–GÒö6†V6·2"Ð¦FVb6†V6µ÷&W67&—F–öâ†&÷fÅö–C¢–çBÂ&öG“¢&Wf–Wt–âÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢&÷rÒF"ævWB„&÷fÂÂ&÷fÅö–BÐ¢–bæ÷B&÷s Ð¢&—6R…EEW†6WF–öâƒCBÂ%&WVW7Bæ÷Bf÷VæB"Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂ&÷rçF–VçEö–BÂ&ÖVF–6–æW2"Ð¢&öÆW2‡W6W"Â&Fö7F÷""Ð¢&WGW&â&W67&—F–öåö6†V6·2†F"Â&÷rçF–VçEö–BÂ&öG’Ð Ð Ð¤&÷WFW"ç÷7B‚"÷c"ö&÷fÇ2÷¶&÷fÅö–GÒ÷&Wf–Wr"Ð¦FVb&Wf–Wr†&÷fÅö–C¢–çBÂ&öG“¢&Wf–Wt–âÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢&÷rÒF"ævWB„&÷fÂÂ&÷fÅö–BÐ¢–bæ÷B&÷s Ð¢&—6R…EEW†6WF–öâƒCBÂ%&WVW7Bæ÷Bf÷VæB"Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂ&÷rçF–VçEö–BÂ&ÖVF–6–æW2"Ð¢&öÆW2‡W6W"Â&Fö7F÷""Ð¢&–Ö'“ÖF"ævWB…G&VF–æt6Æ–æ–6–âÇ&÷rçF–VçEö–BÐ¢–bæ÷B&–Ö'’÷"&–Ö'’çW6W%ö–BÒW6W"æ–C Ð¢&—6R…EEW†6WF–öâƒC2Â%F†RG&VF–æröæ6öÆöv—7B×W7BFV6–FRF†—26Æ–æ–6Â&WVW7B"Ð¢–b&÷rç7FGW2–â²&&÷fVB"Â'&V¦V7FVB'Ó Ð¢&—6R…EEW†6WF–öâƒC’Â%F†—2&WVW7B†2Ç&VG’&VVâFV6–FVB"Ð¢6†ævVBÒF"æW†V7WFR‡WFFR„&÷fÂ’çv†W&R„&÷fÂæ–BÓÒ&÷ræ–BÂ&÷fÂç7FGW2æ–åò…²'6VçB"Â'&Wf–Wv–ær%Ò’’çfÇVW2‡7FGW3Ò'&Wf–WuöÆö6¶VB"’Ð¢–b6†ævVBç&÷v6÷VçBÒ Ð¢&—6R…EEW†6WF–öâƒC’Â$æ÷F†W"6Æ–æ–6–â—2Ç&VG’FV6–F–ærF†—2&WVW7B"Ð¢6†V6·2Ò&W67&—F–öåö6†V6·2†F"Â&÷rçF–VçEö–BÂ&öG’Ð¢–b&öG’æ7F–öâÓÒ&&÷fR# Ð¢–bæ÷B&öG’ç6fWG•ö6öæf—&ÖVB÷"æ÷B&öG’ç&V6öâç7G&—‚“ Ð¢&—6R…EEW†6WF–öâƒC#"Â$6öæf—&Ò6Æ–æ–6Â6fWG’&Wf–WræBVçFW"F†R6–væ–ær&F–öæÆR"Ð¢–b&÷ræ¶–æBÓÒ&ÖVF–6–æR# Ð¢–bæ÷B&öG’æÖVF–6–æRç7G&—‚’÷"æ÷B&öG’æF÷6Rç7G&—‚’÷"æ÷B&öG’çF–ÖW2÷"æ÷B&öG’æg&WVVæ7’ç7G&—‚“ Ð¢&—6R…EEW†6WF–öâƒC#"Â$ÖVF–6–æRÂF÷6RÂg&WVVæ7’æB&VÖ–æFW"F–ÖW2&R&WV—&VB"Ð¢–bç’†æ÷B&RægVÆÆÖF6‚‡""ƒó¥³ÕÆGÃ%³Ó5Ò“¥³ÓUÕÆB"ÂB’f÷"B–â&öG’çF–ÖW2“ Ð¢&—6R…EEW†6WF–öâƒC#"Â%&VÖ–æFW"F–ÖW2×W7BW6R„ƒ¤ÔÒ"Ð¢ÖVBÒÖVF–6F–öâ‡F–VçEö–C×&÷rçF–VçEö–BÂæÖSÖ&öG’æÖVF–6–æRç7G&—‚’ÂF÷6SÖ&öG’æF÷6RÀÐ¢g&WVVæ7“Ö&öG’æg&WVVæ7’ÂF–ÖW3×6÷'FVB‡6WB†&öG’çF–ÖW2’’Â–ç7G'V7F–öç3Ö&öG’æ–ç7G'V7F–öç2ÀÐ¢7F'CÖFFWF–ÖRææ÷r‚’Â7F—fSÕG'VRÐ¢F"æFB†ÖVBÐ¢F"æfÇW6‚‚Ð¢&÷ræÖVF–6F–öåö–BÒÖVBæ–@Ð¢–b&öG’æWf–FVæ6U÷W&ÂæBæ÷B&öG’æWf–FVæ6U÷W&Âç7F'G7v—F‚‚&‡GG3¢òò"“ Ð¢&—6R…EEW†6WF–öâƒC#"Â$Wf–FVæ6RU$Â×W7BW6R…EE2"Ð¢&÷ræG&gBÒ²&ÖVF–6–æR#¢&öG’æÖVF–6–æRÂ&F÷6R#¢&öG’æF÷6RÂ&g&WVVæ7’#¢&öG’æg&WVVæ7’ÀÐ¢'F–ÖW2#¢&öG’çF–ÖW2Â&–ç7G'V7F–öç2#¢&öG’æ–ç7G'V7F–öç2Â&6†V6·2#¢6†V6·2ÀÐ¢&Wf–FVæ6U÷W&Â#¢&öG’æWf–FVæ6U÷W&ÂÂ'6–væVB#¢G'VWÐÐ¢&÷rç7FGW2Ò&&÷fVB Ð¢–b&÷ræ¶–æBÓÒ'Æâ# Ð¢öÆCÕ·"f÷""–â&V6÷&G2†F"Ç&÷rçF–VçEö–BÂ'&öFÖ"’–b"ç7FGW3ÓÒ&&÷fVB%ÐÐ¢FF×²¢¢†öÆE³ÒæFF–böÆBVÇ6R·Ò’Â'FW‡B#¦&öG’ç&V6öâÂ'6÷W&6R#¦b&&÷fÂ·&÷ræ–GÒ'ÐÐ¢F"æFB„6&U&V6÷&B‡F–VçEö–C×&÷rçF–VçEö–BÆ¶–æCÒ'&öFÖ"ÆWF†÷%ö–C×W6W"æ–BÆWF†÷%öæÖS×W6W"ææÖRÆWF†÷%÷&öÆS×W6W"ç&öÆRÀÐ¢FFÖFFÇ7FGW3Ò&&÷fVB"Æ&÷fVEö'“×W6W"ææÖRÆ&÷fVEöC×WF6æ÷r‚’’Ð¢VÇ6S Ð¢&÷rç7FGW2Ò'&Wf–Wv–ær"–b&öG’æ7F–öâÓÒ'&Wf–Wv–ær"VÇ6R'&V¦V7FVB Ð¢&÷rç&V6öâÂ&÷rç&Wf–WvVEö'’Â&÷rçWFFVEöBÒ&öG’ç&V6öâÂW6W"ææÖRÂWF6æ÷r‚Ð¢F"æ6öÖÖ—B‚Ð¢VæEöVF—B†F"ÂW6W"Â&6Æ–æ–6Åò"²&÷rç7FGW2Â&÷rçF–VçEö–BÂb%&WVW7B·&÷ræ–GÒ"Ð¢æ÷F–g•÷FVÒ†F"Â&÷rçF–VçEö–BÂ$Fö7F÷"&Wf–WvVB–÷W"&WVW7B"Â%&WVW7B7FGW3¢"²&÷rç7FGW2Ð¢&WGW&â&÷fÅöF–7B‡&÷rÂW6W"Ð Ð Ð¤&÷WFW"ævWB‚"÷c"öÆW'G2"Ð¦FVbÆW'G2‡&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"Ò–FVçF—G’‡&WVW7BÐ¢–G2Òf—6–&ÆUö–G2†F"ÂW6W"Â&ÆW'G2"Ð¢&WGW&â·6W&–Â†’Â²'F–VçEöæÖR#¢F"ævWB…F–VçBÂçF–VçEö–B’ææÖRÀÐ¢&6ÆÅ÷67&—B#¢$6öæf—&Ò–FVçF—G’æBÆö6F–öââ6²öç6WBæB6WfW&—G’â&Wf–WrF†R&VBfÆrâW66ÆFRFòF†RG&VF–ærFö7F÷#²VÖW&vVæ7’7–×Fö×2&WV—&R–ÖÖVF–FRVÖW&vVæ7’6&Râ"ÀÐ¢&ÆFFW"#¢²$GWG’çW'6R"Â%G&VF–ærFö7F÷""Â$VÖW&vVæ7’FW'FÖVçB%×ÐÐ¢f÷"–âF"ç66Æ'2‡6VÆV7B„ÆW'B’çv†W&R„ÆW'BçF–VçEö–Bæ–åò†–G2’’æ÷&FW%ö'’„ÆW'Bæ–BæFW62‚’’æÆ–Ö—Bƒ’•ÐÐ Ð Ð¦6Æ72ÆW'D7F–öâ„&6TÖöFVÂ“ Ð¢7F–öã¢Æ—FW&Å²&6¶æ÷vÆVFvR"Â&6ÆÂ"Â&W66ÆFR"Â'&W6öÇfR"Â&'&—fVB%ÐÐ¢÷WF6öÖS¢7G"Òf–VÆB†Ö–åöÆVæwFƒÓ2ÂÖ…öÆVæwFƒÓ3Ð Ð Ð¤&÷WFW"ç÷7B‚"÷c"öÆW'G2÷¶ÆW'Eö–GÒö7F–öâ"Ð¦FVb7EöÆW'B†ÆW'Eö–C¢–çBÂ&öG“¢ÆW'D7F–öâÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢&÷rÒF"ævWB„ÆW'BÂÆW'Eö–BÐ¢–bæ÷B&÷s Ð¢&—6R…EEW†6WF–öâƒCBÂ$ÆW'Bæ÷Bf÷VæB"Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂ&÷rçF–VçEö–BÂ&ÆW'G2"Ð¢&öÆW2‡W6W"Â&çW'6R"Â&Fö7F÷""Â&FÖ–â"Ð¢&÷rç7FGW2Ò²&6¶æ÷vÆVFvR#¢&6¶æ÷vÆVFvVB"Â&6ÆÂ#¢&6ÆÆVB"Â&W66ÆFR#¢&W66ÆFVB"Â'&W6öÇfR#¢'&W6öÇfVB"Â&'&—fVB#¢&'&—fVB'Õ¶&öG’æ7F–öåÐÐ¢&÷ræ÷WF6öÖRÒ‡&÷ræ÷WF6öÖR²b%Æç·WF6æ÷r‚’æ—6öf÷&ÖB‚—Ò·W6W"ææÖWÓ¢¶&öG’æ÷WF6öÖWÒ"’ç7G&—‚Ð¢&÷ræ76–væVE÷FòÒW6W"ææÖPÐ¢–b&öG’æ7F–öâÓÒ&'&—fVB"æBæ÷B&÷ræ'&—fÅöC Ð¢&÷ræ'&—fÅöBÒWF6æ÷r‚Ð¢F"æ6öÖÖ—B‚Ð¢VæEöVF—B†F"ÂW6W"Â'G&–vUò"²&öG’æ7F–öâÂ&÷rçF–VçEö–BÂ&öG’æ÷WF6öÖRÐ¢&WGW&â6W&–Â‡&÷rÐ Ð Ð¦6Æ72–çf—FT–â„&6TÖöFVÂ“ Ð¢W6W&æÖS¢7G"Òf–VÆB†Ö–åöÆVæwFƒÓ2ÂÖ…öÆVæwFƒÓÂGFW&ã×"%å¶×£Ó•òä²ÕÒ²B"Ð¢æÖS¢7G"Òf–VÆB†Ö–åöÆVæwFƒÓ"ÂÖ…öÆVæwFƒÓÐ¢77v÷&C¢7G"Òf–VÆB†Ö–åöÆVæwFƒÓ"ÂÖ…öÆVæwFƒÓ#Ð¢66÷W3¢Æ—7E´Æ—FW&Å²&ÖVF–6–æW2"Â&ö–çFÖVçG2"Â&6†V6¶–â"Â&ÆW'G2"Â&6†B"Â&æ÷FW2"Â&Fö7VÖVçG2"Â&çWG&—F–öâ"Â&f–ææ6R"Â&7F—f—G’%ÕÒÒf–VÆB†Ö–åöÆVæwFƒÓÐ¢6öç6VçC¢&ööÀÐ¢†öæS¢7G"Òf–VÆB†FVfVÇCÒ""ÂÖ…öÆVæwFƒÓ#Ð Ð Ð¤&÷WFW"ævWB‚"÷c"÷F–VçG2÷·F–VçEö–GÒö6—&6ÆR"Ð¦FVb6—&6ÆR‡F–VçEö–C¢7G"Â&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÐ¢&öÆW2‡W6W"Â'F–VçB"Â&Fö7F÷""Â&çW'6R"Â&FÖ–â"Ð¢&WGW&â·²&–B#¢ræ–BÂ&æÖR#¢F"ævWB…W6W"ÂrçW6W%ö–B’ææÖRÂ'W6W&æÖR#¢F"ævWB…W6W"ÂrçW6W%ö–B’çW6W&æÖRÂ'6–våö–åö–B#¢6–våö–åö–B†F"ÂF"ævWB…W6W"ÂrçW6W%ö–B’’ÀÐ¢'&öÆR#¢F"ævWB…W6W"ÂrçW6W%ö–B’ç&öÆRÂ'66÷W2#¢rç66÷W2Â&7F—fR#¢ræ7F—fRÂ&6öç6VçEö'’#¢ræ6öç6VçEö'—ÐÐ¢f÷"r–âF"ç66Æ'2‡6VÆV7B„66W74w&çB’çv†W&R„66W74w&çBçF–VçEö–BÓÒF–VçEö–B’•ÐÐ Ð Ð¤&÷WFW"ç÷7B‚"÷c"÷F–VçG2÷·F–VçEö–GÒö6—&6ÆR"Ð¦FVb–çf—FR‡F–VçEö–C¢7G"Â&öG“¢–çf—FT–âÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÐ¢&öÆW2‡W6W"Â'F–VçB"Ð¢–bæ÷B&öG’æ6öç6VçC Ð¢&—6R…EEW†6WF–öâƒC#"Â%F–VçB6öç6VçB—2&WV—&VB"Ð¢–bF"ç66Æ"‡6VÆV7B…W6W"’çv†W&R…W6W"çW6W&æÖRÓÒ&öG’çW6W&æÖR’“ Ð¢&—6R…EEW†6WF–öâƒC’Â$6†ö÷6RæWr6&Vv—fW"W6W&æÖR"Ð¢–b&öG’ç†öæRæBæ÷B&RægVÆÆÖF6‚‡"%Â³õ³Ó•×³ÃWÒ"Â&öG’ç†öæR“ Ð¢&—6R…EEW†6WF–öâƒC#"Â$VçFW"â–çFW&æF–öæÂ†öæRçVÖ&W"v—F†÷WB76W2"Ð¢RÒW6W"‡W6W&æÖSÖ&öG’çW6W&æÖRÂæÖSÖ&öG’ææÖRÂ&öÆSÒ&6&Vv—fW""Â77v÷&Eö†6ƒ×77v÷&Eö†6‚†&öG’ç77v÷&B’Â†öæSÖ&öG’ç†öæRÐ¢F"æFB‡RÐ¢F"æfÇW6‚‚Ð¢rÒ66W74w&çB‡W6W%ö–C×Ræ–BÂF–VçEö–C×F–VçEö–BÂ66÷W3×6÷'FVB‡6WB†&öG’ç66÷W2’’Â6öç6VçEö'“×W6W"ææÖRÐ¢F"æFB†rÐ¢F"æ6öÖÖ—B‚Ð¢VæEöVF—B†F"ÂW6W"Â&6&Vv—fW%ö6öç6VçB"ÂF–VçEö–BÂ&öG’çW6W&æÖR²#¢"²"Â"æ¦ö–â†&öG’ç66÷W2’Ð¢&WGW&â²&–B#¢ræ–BÂ'W6W&æÖR#¢RçW6W&æÖRÂ'6–våö–åö–B#¢6–våö–åö–B†F"ÂR—ÐÐ Ð Ð¤&÷WFW"æFVÆWFR‚"÷c"ö6—&6ÆR÷¶w&çEö–GÒ"Ð¦FVb&VÖ÷fUö6—&6ÆR†w&çEö–C¢–çBÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢&÷rÒF"ævWB„66W74w&çBÂw&çEö–BÐ¢–bæ÷B&÷s Ð¢&—6R…EEW†6WF–öâƒCBÂ$–çf—FF–öâæ÷Bf÷VæB"Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂ&÷rçF–VçEö–BÐ¢&öÆW2‡W6W"Â'F–VçB"Ð¢–bF"ævWB…W6W"Â&÷rçW6W%ö–B’ç&öÆRÒ&6&Vv—fW"# Ð¢&—6R…EEW†6WF–öâƒC2Â$öæÇ’6&Vv—fW"6öç6VçB6â&Rv—F†G&vâ†W&R"Ð¢&÷ræ7F—fRÒfÇ6PÐ¢F"æ6öÖÖ—B‚Ð¢VæEöVF—B†F"ÂW6W"Â'&Wfö¶Uö6&Vv—fW%ö6öç6VçB"Â&÷rçF–VçEö–BÂ7G"†w&çEö–B’Ð¢&WGW&â²&ö²#¢G'VWÐÐ Ð Ð¦6Æ72'&V´vÆ72„&6TÖöFVÂ“ Ð¢F–VçEö–C¢7G Ð¢&V6öã¢7G"Òf–VÆB†Ö–åöÆVæwFƒÓRÂÖ…öÆVæwFƒÓÐ Ð Ð¤&÷WFW"ç÷7B‚"÷c"ö'&V²ÖvÆ72"Ð¦FVb'&VµövÆ72†&öG“¢'&V´vÆ72Â&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢2F†—2VæGö–çB–çFVçF–öæÆÇ’FöW2æ÷BW6RF–VçEö66W73¢—B7&VFW2FV×÷&'’VÖW&vVæ7’66W72àÐ¢W6W"Ò–FVçF—G’‡&WVW7BÐ¢&öÆW2‡W6W"Â&Fö7F÷""Â&çW'6R"Ð¢–bæ÷BF"ævWB…F–VçBÂ&öG’çF–VçEö–B“ Ð¢&—6R…EEW†6WF–öâƒCBÂ%F–VçBæ÷Bf÷VæB"Ð¢öÆBÒF"ç66Æ"‡6VÆV7B„66W74w&çB’çv†W&R„66W74w&çBçF–VçEö–BÓÒ&öG’çF–VçEö–BÂ66W74w&çBçW6W%ö–BÓÒW6W"æ–B’Ð¢–böÆBæBöÆBæ7F—fRæB†æ÷BöÆBæW‡—&W5öB÷"öÆBæW‡—&W5öBâWF6æ÷r‚’“ Ð¢&—6R…EEW†6WF–öâƒC’Â%–÷RÇ&VG’†fR66W72"Ð¢w&çBÒöÆB÷"66W74w&çB‡F–VçEö–CÖ&öG’çF–VçEö–BÂW6W%ö–C×W6W"æ–BÐ¢w&çBæ7F—fRÂw&çBç66÷W2Âw&çBæW‡—&W5öBÒG'VRÂ²&ÆÂ%ÒÂWF6æ÷r‚’²F–ÖVFVÇF†Ö–çWFW3ÓRÐ¢w&çBæ6öç6VçEö'’Ò$VÖW&vVæ7’66W73¢"²&öG’ç&V6öàÐ¢F"æFB†w&çBÐ¢f÷"öff–6W"–âF"ç66Æ'2‡6VÆV7B…W6W"’çv†W&R…W6W"ç&öÆRæ–åò…²'&—f7’"Â&FÖ–â%Ò’’“ Ð¢F"æFB„æ÷F–f–6F–öâ‡W6W%ö–CÖöff–6W"æ–BÂF—FÆSÒ$'&V²ÖvÆ7266W72"Â&öG“Öb'·W6W"ææÖWÒ÷VæVB¶&öG’çF–VçEö–GÓ¢¶&öG’ç&V6öçÒ"’Ð¢F"æ6öÖÖ—B‚Ð¢VæEöVF—B†F"ÂW6W"Â&'&VµövÆ72"Â&öG’çF–VçEö–BÂ&öG’ç&V6öâÐ¢&WGW&â²&W‡—&W5öB#¢w&çBæW‡—&W5öGÐÐ Ð Ð¤&÷WFW"ævWB‚"÷c"öVF—B÷fW&–g’"Ð¦FVbVF—Eö–çFVw&—G’‡&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢–FVçF—G’‡&WVW7BÐ¢&WGW&âfW&–g•ö6†–â†F"Ð Ð Ð¤&÷WFW"ævWB‚"÷c"÷F–VçG2÷·F–VçEö–GÒöVF—B"Ð¦FVbF–VçEöVF—B‡F–VçEö–C¢7G"Â&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"ÒF–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&VF—B"Ð¢g&öÒâç&÷VæC%öÖöFVÇ2–×÷'BVF—D6†–àÐ¢&WGW&â·6W&–Â‡"Â‚&7F÷%ö–B"Â'&Wf–÷W5ö†6‚"’’f÷""–âF"ç66Æ'2‡6VÆV7B„VF—D6†–â’çv†W&R„VF—D6†–âçF–VçEö–BÓÒF–VçEö–B’æ÷&FW%ö'’„VF—D6†–âæ–BæFW62‚’’æÆ–Ö—Bƒ#’•ÐÐ Ð Ð¤&÷WFW"ævWB‚"÷c"öÆ–'&'’"Ð¦FVbÆ–'&'’‡&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"Ò–FVçF—G’‡&WVW7BÐ¢&÷w2ÒF"ç66Æ'2‡6VÆV7B„Æ–'&'”—FVÒ’’æÆÂ‚Ð¢&WGW&â·6W&–Â‡"’f÷""–â&÷w2–b"æ&÷fVEö'’÷"W6W"ç&öÆR–â²&Fö7F÷""Â&F–WF—F–â"Â&FÖ–â'ÕÐÐ Ð Ð¤&÷WFW"ç÷7B‚"÷c"öÆ–'&'’÷¶—FVÕö–GÒö&÷fR"Ð¦FVb&÷fUöÆ–'&'’†—FVÕö–C¢–çBÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W"Ò–FVçF—G’‡&WVW7BÐ¢&öÆW2‡W6W"Â&Fö7F÷""Â&F–WF—F–â"Â&FÖ–â"Ð¢&÷rÒF"ævWB„Æ–'&'”—FVÒÂ—FVÕö–BÐ¢–bæ÷B&÷s Ð¢&—6R…EEW†6WF–öâƒCBÂ$Æ–'&'’—FVÒæ÷Bf÷VæB"Ð¢–b&÷ræ6FVv÷'’Ò&fööB# Ð¢&öÆW2‡W6W"Â&Fö7F÷""Ð¢&Wf–Ww2Ò²¢§&÷ræ6öçFVçBævWB‚%÷&Wf–Ww2"Â·Ò’ÂW6W"ç&öÆS¢W6W"ææÖWÐÐ¢&÷ræ6öçFVçBÒ²¢§&÷ræ6öçFVçBÂ%÷&Wf–Ww2#¢&Wf–Ww7ÐÐ¢&WV—&VBÒ²&Fö7F÷""Â&F–WF—F–â'Ò–b&÷ræ6FVv÷'’ÓÒ&fööB"VÇ6R²&Fö7F÷"'ÐÐ¢–b&WV—&VBæ—77V'6WB‡&Wf–Ww2“ Ð¢&÷ræ&÷fVEö'’Â&÷ræ&÷fVEöBÒ#²"æ¦ö–â‡&Wf–Ww5·%Òf÷""–â6÷'FVB‡&WV—&VB’’ÂWF6æ÷r‚Ð¢F"æ6öÖÖ—B‚Ð¢VæEöVF—B†F"ÂW6W"Â&&÷fUöÆ–'&'’"ÂFWF–Ã×&÷ræ¶W’Ð¢&WGW&â6W&–Â‡&÷rÐ Ð Ð¤&÷WFW"ævWB‚"÷c"÷F–VçG2÷·F–VçEö–GÒ÷vVÆÆæW72"Ð¦FVbvVÆÆæW72‡F–VçEö–C¢7G"Â&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢F–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&çWG&—F–öâ"Ð¢7’Ò&V6÷&G2†F"ÂF–VçEö–BÂ&6†V6¶–â"Ð¢ÆFW7BÒ7•³ÒæFF–b7’VÇ6R·ÐÐ¢Æ'2ÒÆ—f–æu÷7VÖÖ'’†F"ÂF–VçEö–B•²&ÆFW7EöÆ'2%ÐÐ¢Æ÷uö6÷VçG2Òç’†Å²'FW7B%ÒÓÒ$ä2"æBÅ²'fÇVR%ÒÂãRf÷"Â–âÆ'2Ð¢fF–wVRÒÆFW7BævWB‚&fF–wVR"ÂÐ¢¶W—2Ò²&fööE÷6fWG’"Â'6ögEöfööB"–b&Ö÷WF‚"–âÆFW7BævWB‚'FW‡B"Â""’æÆ÷vW"‚’VÇ6R&ÖVÇ2"Â'&W7B"–bfF–wVRãÒ"÷"Æ÷uö6÷VçG2VÇ6R&7F—f—G’"Â&ÖööB"Â'6V6öæÂ'ÐÐ¢&÷fVBÒF"ç66Æ'2‡6VÆV7B„Æ–'&'”—FVÒ’çv†W&R„Æ–'&'”—FVÒæ&÷fVEö'’æ—5öæ÷B„æöæR’ÂÆ–'&'”—FVÒæ¶W’æ–åò†¶W—2’’’æÆÂ‚Ð¢&Vg2Ò&V6÷&G2†F"ÂF–VçEö–BÂ'&VfW&Væ6W2"Ð¢F–WBÒ&Vg5³ÒæFFævWB‚&F–WB"Â'fVvWF&–â"’–b&Vg2VÇ6R'fVvWF&–â Ð¢&WGW&â²&Æ÷uö6÷VçG2#¢Æ÷uö6÷VçG2Â&fF–wVR#¢fF–wVRÂ&F–WB#¢F–WBÀÐ¢&wV–Fæ6R#¢·6W&–Â‡"’f÷""–â&÷fVEÒÀÐ¢&ÖVÅ÷Æâ#¢·²&F’#¢’²Â'7VvvW7F–öâ#¢"æ6öçFVçBævWB†F–WBÂ"æ6öçFVçBævWB‚&Vâ"Â""’’Â&Æ–'&'•ö–B#¢"æ–GÐÐ¢f÷"’–â&ævRƒr’f÷""–â&÷fVB–b"æ¶W’–â²&ÖVÇ2"Â'6ögEöfööB'ÕÒÀÐ¢&7F—f—G’#¢$6†ö÷6R6VFVBW§¦ÆRÂvVçFÆR'&VF†–ær÷"6†÷'B†ö&'’'&V²â"–bfF–wVRãÒ"÷"Æ÷uö6÷VçG2VÇ6R$6²–÷W"FVÒv†WF†W"6†÷'BvÆ²÷"vVçFÆR–övf—G2FöF’w2Æââ"ÀÐ¢&7F—f—G•övFR#¢$F—67W727F—f—G’æB7&÷vBW‡÷7W&Rv—F‚–÷W"FVÒv†–ÆR6÷VçG2&RÆ÷râ"–bÆ÷uö6÷VçG2VÇ6RæöæRÀÐ¢&Æ–'&'•÷&VG’#¢&ööÂ†&÷fVB—ÐÐ Ð Ð¤&÷WFW"ævWB‚"÷c"÷F–VçG2÷·F–VçEö–GÒ÷f—6—B×&W"Ð¦FVbf—6—E÷&W‡F–VçEö–C¢7G"Â&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢F–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&æ÷FW2"Ð¢&Vg2Ò&V6÷&G2†F"ÂF–VçEö–BÂ'&VfW&Væ6W2"Ð¢6†V6¶–ç2Ò&V6÷&G2†F"ÂF–VçEö–BÂ&6†V6¶–â"•³£uÐÐ¢VW7F–öç2Ò²%v†B—2F†RæW‡B7FW–â×’6–væVBÆãò"Â%v†–6‚6†ævW26†÷VÆBÖ¶RÖR6öçF7BF†RFVÒ–ÖÖVF–FVÇ“ò%ÐÐ¢–b&Vg2æB&Vg5³ÒæFFævWB‚'v÷'&–W2"“ Ð¢VW7F–öç2æ–ç6W'BƒÂ$’vçBFòF—67W73¢"²&Vg5³ÒæFF²'v÷'&–W2%ÒÐ¢f÷"2–â6†V6¶–ç5³£5Ó Ð¢–b2æFFævWB‚'FW‡B"“ Ð¢VW7F–öç2æVæB‚$6âvR&Wf–WrF†—27–×FöÒ&W÷'C¢"²2æFF²'FW‡B%Õ³£#ÒÐ¢&WGW&â²'VW7F–öç2#¢VW7F–öç2Â'VæF–æu÷&WVW7G2#¢ÆVâ†F"ç66Æ'2‡6VÆV7B„&÷fÂ’çv†W&R„&÷fÂçF–VçEö–BÓÒF–VçEö–BÂ&÷fÂç7FGW2æ–åò…²'6VçB"Â'&Wf–Wv–ær%Ò’’’æÆÂ‚’—ÐÐ Ð Ð¤&÷WFW"ævWB‚"÷c"÷F–VçG2÷·F–VçEö–GÒ÷vVV²"Ð¦FVbvVV²‡F–VçEö–C¢7G"Â&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢F–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&7F—f—G’"Ð¢6–æ6RÒWF6æ÷r‚’ÒF–ÖVFVÇF†F—3ÓrÐ¢6†V6¶–ç2Ò·"f÷""–â&V6÷&G2†F"ÂF–VçEö–BÂ&6†V6¶–â"’–b"æ7&VFVEöBâ6–æ6UÐÐ¢F—2Ò6÷'FVB‡·"æ7&VFVEöBæFFR‚’æ—6öf÷&ÖB‚’f÷""–â6†V6¶–ç7ÒÐ¢Æöw2ÒF"ç66Æ'2‡6VÆV7B„ÖVDÆör’çv†W&R„ÖVDÆörçF–VçEö–BÓÒF–VçEö–BÂÖVDÆöræÆövvVEöBâ6–æ6R’’æÆÂ‚Ð¢7G2ÒF"ç66Æ'2‡6VÆV7B„7F—f—G’’çv†W&R„7F—f—G’çF–VçEö–BÓÒF–VçEö–BÂ7F—f—G’æFFRâ6–æ6R’’æÆÂ‚Ð¢&WGW&â²&6†V6¶–åöF—2#¢ÆVâ†F—2’Â&F—2#¢F—2Â&F÷6W5÷F¶Vâ#¢7VÒ†Âç7FGW2ÓÒ'F¶Vâ"f÷"Â–âÆöw2’ÀÐ¢&F÷6W5öÖ—76VB#¢7VÒ†Âç7FGW2ÓÒ&Ö—76VB"f÷"Â–âÆöw2’Â'7FW2#¢7VÒ†ç7FW2f÷"–â7G2’ÀÐ¢&v&FVå÷7FvR#¢Ö–âƒRÂÆVâ†F—2’’Â&ÖööB#¢³Ò"æFFævWB‚&F—7G&W72"Â’f÷""–â&WfW'6VB†6†V6¶–ç2•ÒÀÐ¢&&W7EöF’#¢Ö‚†7G2Â¶W“ÖÆÖ&F¢ç7FW2’æFFRæFFR‚’æ—6öf÷&ÖB‚’–b7G2VÇ6RæöæWÐÐ Ð Ð¦6Æ727F—f—G”–â„&6TÖöFVÂ“ Ð¢7FW3¢–çBÒf–VÆB†vSÓÂÆSÓ#Ð¢6ÆVWö†÷W'3¢fÆöBÒf–VÆB†vSÓÂÆSÓ#BÐ¢&W7F–æuö‡#¢–çBÒf–VÆB†vSÓ#ÂÆSÓ#SÐ Ð Ð¤&÷WFW"ç÷7B‚"÷c"÷F–VçG2÷·F–VçEö–GÒö7F—f—G’"Ð¦FVbFEö7F—f—G’‡F–VçEö–C¢7G"Â&öG“¢7F—f—G”–âÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢F–VçEö66W72†F"Â&WVW7BÂF–VçEö–BÂ&7F—f—G’"Ð¢F’ÒFFWF–ÖRææ÷r‚’ç&WÆ6R††÷W#ÓÂÖ–çWFSÓÂ6V6öæCÓÂÖ–7&÷6V6öæCÓÐ¢&÷rÒF"ç66Æ"‡6VÆV7B„7F—f—G’’çv†W&R„7F—f—G’çF–VçEö–BÓÒF–VçEö–BÂ7F—f—G’æFFRÓÒF’’Ð¢–bæ÷B&÷s Ð¢&÷rÒ7F—f—G’‡F–VçEö–C×F–VçEö–BÂFFSÖF’Ð¢F"æFB‡&÷rÐ¢f÷"²Âb–â&öG’æÖöFVÅöGV×‚’æ—FV×2‚“ Ð¢6WFGG"‡&÷rÂ²ÂbÐ¢F"æ6öÖÖ—B‚Ð¢&WGW&â²&ö²#¢G'VRÂ'6÷W&6R#¢&ÖçVÂVçG'’'ÐÐ Ð Ð¦6Æ72vV&&ÆUö–çD–â„&6TÖöFVÂ“ Ð¢ö'6W'fVEöC¢FFWF–ÖPÐ¢ÖWG&–3¢Æ—FW&Å²&†V'E÷&FR"Â'7ó""Â'7—7FöÆ–2"Â&F–7FöÆ–2"Â'7FW2"Â&F—7Fæ6Uö¶Ò"Â&7F—fUöÖ–çWFW2"Â'6ÆVWö†÷W'2"Â'FV×W&GW&Uö2%ÐÐ¢fÇVS¢fÆöBÒf–VÆB†ÆÆ÷uö–æeöæãÔfÇ6RÐ¢Væ—C¢7G"Òf–VÆB†Ö…öÆVæwFƒÓ"Ð Ð Ð¦6Æ72vV&&ÆT&F6„–â„&6TÖöFVÂ“ Ð¢6öç6VçC¢&ööÀÐ¢6÷W&6S¢Æ—FW&Å²&&ÇVWFö÷F‚"Â&æG&ö–Eö&ÆR"Â&†VÇF…ö6öææV7B"Â&†VÇF†¶—B"Â'fVæF÷""Â&ÖçVÂ%ÒÒ&&ÇVWFö÷F‚ Ð¢FWf–6UöæÖS¢7G"Òf–VÆB†FVfVÇCÒ""ÂÖ…öÆVæwFƒÓÐ¢&VF–æw3¢Æ—7EµvV&&ÆUö–çD–åÒÒf–VÆB†Ö–åöÆVæwFƒÓÂÖ…öÆVæwFƒÓÐ Ð Ð¦6Æ72vV&&ÆTFWf–6T–â„&6TÖöFVÂ“ Ð¢6öç6VçC¢&ööÀÐ¢FWf–6UöæÖS¢7G"Òf–VÆB†FVfVÇCÒ$öæ6ô'&–VbæG&ö–B6ö×æ–öâ"ÂÖ…öÆVæwFƒÓÐ Ð Ð¦6Æ72f—FÄÆW'E&÷Fö6öÄ–â„&6TÖöFVÂ“ Ð¢F‡&W6†öÆG3¢F–7E·7G"ÂfÆöEÒÒf–VÆB†Ö…öÆVæwFƒÓRÐ¢6÷W&6U÷W&Ã¢7G"Òf–VÆB‡GFW&ã×"%æ‡GG3¢òò"ÂÖ…öÆVæwFƒÓÐ¢&F–öæÆS¢7G"Òf–VÆB†Ö–åöÆVæwFƒÓÂÖ…öÆVæwFƒÓ3Ð Ð Ð¥tT$$ÄUõTä•E2Ò°Ð¢&†V'E÷&FR#¢&'Ò"Â'7ó"#¢"R"Â'7—7FöÆ–2#¢&ÖÔ†r"Â&F–7FöÆ–2#¢&ÖÔ†r"ÀÐ¢'7FW2#¢'7FW2"Â&F—7Fæ6Uö¶Ò#¢&¶Ò"Â&7F—fUöÖ–çWFW2#¢&Ö–â"ÀÐ¢'6ÆVWö†÷W'2#¢&‚"Â'FV×W&GW&Uö2#¢,+2"ÀÐ§ÐÐ¥tT$$ÄUõ$ätU2Ò°Ð¢&†V'E÷&FR#¢ƒ#Â#c’Â'7ó"#¢ƒSÂ’Â'7—7FöÆ–2#¢ƒSÂ#ƒ’Â&F–7FöÆ–2#¢ƒ#RÂƒ’ÀÐ¢'7FW2#¢ƒÂ#’Â&F—7Fæ6Uö¶Ò#¢ƒÂS’Â&7F—fUöÖ–çWFW2#¢ƒÂCC’ÀÐ¢'6ÆVWö†÷W'2#¢ƒÂ#B’Â'FV×W&GW&Uö2#¢ƒ#RÂCR’ÀÐ§ÐÐ Ð Ð¤&÷WFW"ç÷7B‚"÷c"÷F–VçG2÷·F–VçEö–GÒ÷vV&&ÆRÖFWf–6W2"Ð¦FVb7&VFU÷vV&&ÆUöFWf–6R‡F–VçEö–C¢7G"Â&öG“¢vV&&ÆTFWf–6T–âÂ&WVW7C¢&WVW7BÂF#ÔFWVæG2†vWEöF"’“ Ð¢W6W.¹ïÛh‘éì¶»§q«^u\œÊ‹]Y[ÚY
+NƒBˆ›ÝÈH]Û›ÝÊ
+CBˆÜ˜[ÈH‹œØØ[\œÊÙ[XÝ
+XØÙ\ÜÑÜ˜[
+KÚ\™JBˆXØÙ\ÜÑÜ˜[œ]Y[ÚYOH]Y[ÚYXØÙ\ÜÑÜ˜[˜XÝ]™Kš\×ÊYJCBˆ
+JK˜[
+
+CBˆ[ÜHH×CBˆ›ÜˆÜ˜[[ˆÜ˜[ÎƒBˆØ\™YÚ]™\ˆH‹™Ù]
+\Ù\‹Ü˜[\Ù\—ÚY
+CBˆYˆ
+Ø\™YÚ]™\ˆ[™Ø\™YÚ]™\‹˜XÝ]™H[™Ø\™YÚ]™\‹œ›ÛHOH˜Ø\™YÚ]™\ˆƒBˆ[™
+›ÝÜ˜[™^\™\×Ø]ÜˆÜ˜[™^\™\×Ø]ˆ›ÝÊCBˆ[™
+˜[ˆ[ˆÜ˜[œØÛÜ\ÈÜˆ˜\Ú[Y[Èˆ[ˆÜ˜[œØÛÜ\ÊJNƒBˆ[ÜK˜\[™
+Ø\™YÚ]™\ŠCBˆ™]\›ˆ[ÜCBƒBƒB™Yˆ˜[œÜÜÙ^\›˜[Ü™XÚ\Y[Ê‹]Y[ÚY\™Ù]
+NƒBˆ™XÚ\Y[ÈH×CBˆÛ\×Ü™XYHH›ÛÛ
+ÜË™Ù][Š”ÓT×ÐQTT—ÕT“ŠH[™ÜË™Ù][Š”ÓT×ÐQTT—ÒÑVHŠJCBˆ[XZ[Ü™XYHH›ÛÛ
+ÜË™Ù][Š‘SPRSÐQTT—ÕT“ŠH[™ÜË™Ù][Š‘SPRSÐQTT—ÒÑVHŠJCBƒBˆYˆYØÛÛXÝ
+Û™K[XZ[˜[YJNƒBˆYˆÛ™H[™Û\×Ü™XYNƒBˆ™XÚ\Y[Ë˜\[™
+
+œÛ\È‹Û™K˜[YJJCBˆ[Yˆ[XZ[[™[XZ[Ü™XYNƒBˆ™XÚ\Y[Ë˜\[™
+
+™[XZ[‹[XZ[˜[YJJCBˆ[YˆÛ™NƒBˆ™XÚ\Y[Ë˜\[™
+
+œÛ\È‹Û™K˜[YJJCBˆ[Yˆ[XZ[ƒBˆ™XÚ\Y[Ë˜\[™
+
+™[XZ[‹[XZ[˜[YJJCBƒBˆYˆ\™Ù][ˆÈšÜÜ][‹˜›ÝŸNƒBˆÛ™HHÜË™Ù][Š’ÔÔUSÕS”ÔÔ•ÔÓ‘H‹ˆŠKœÝš\
+
+CBˆ[XZ[HÜË™Ù][Š’ÔÔUSÕS”ÔÔ•ÑSPRS‹ˆŠKœÝš\
+
+CBˆYˆÛ™HÜˆ[XZ[ƒBˆYØÛÛXÝ
+Û™K[XZ[’ÜÜ][˜[œÜÜ\ÚÈŠCBˆ[ÙNƒBˆ™XÚ\Y[Ë˜\[™
+
+œ[™[™È‹ˆ‹’ÜÜ][˜[œÜÜ\ÚÈŠJCBˆYˆ\™Ù][ˆÈ˜Ø\™YÚ]™\ˆ‹˜›ÝŸNƒBˆØ\™YÚ]™\œÈH˜[œÜÜØØ\™YÚ]™\œÊ‹]Y[ÚY
+CBˆYˆ›ÝØ\™YÚ]™\œÎƒBˆ™XÚ\Y[Ë˜\[™
+
+œ[™[™È‹ˆ‹“[šÙYØ\™YÚ]™\ˆŠJCBˆ›ÜˆØ\™YÚ]™\ˆ[ˆØ\™YÚ]™\œÎƒBˆÛ™HH
+Ø\™YÚ]™\‹œÛ™HÜˆˆŠKœÝš\
+
+CBˆ[XZ[HØ\™YÚ]™\‹\Ù\›˜[YKœÝš\
+
+HYˆ™K™[X]Ú
+ˆ–××JÐ××J×–××JÈ‹Ø\™YÚ]™\‹\Ù\›˜[YKœÝš\
+
+JH[ÙHˆƒBˆYˆÛ™HÜˆ[XZ[ƒBˆYØÛÛXÝ
+Û™K[XZ[Ø\™YÚ]™\‹›˜[YJCBˆ[ÙNƒBˆ™XÚ\Y[Ë˜\[™
+
+œ[™[™È‹ˆ‹Ø\™YÚ]™\‹›˜[YJJCBˆ™]\›ˆ\Ý
+ÊÚ[›™[Y™\ÜÊNˆ
+Ú[›™[Y™\ÜË˜[YJCBˆ›ÜˆÚ[›™[Y™\ÜË˜[YH[ˆ™XÚ\Y[ßK˜[Y\Ê
+JCBƒBƒB™Yˆ›ÝYžWÝ˜[œÜÜØØ\™YÚ]™\œÊ‹]Y[ÚY]K›ÙJNƒBˆ›ÜˆØ\™YÚ]™\ˆ[ˆ˜[œÜÜØØ\™YÚ]™\œÊ‹]Y[ÚY
+NƒBˆ‹˜Y
+›ÝYšXØ][ÛŠ\Ù\—ÚYXØ\™YÚ]™\‹šY]Y[ÚY\]Y[ÚYÚ[›™[H˜[œÜÜ‹Bˆ]O]]K›ÙOX›ÙJJCBˆ‹˜ÛÛ[Z]
+
+CBƒBƒB™Yˆ™]›ÚÙWÝ˜[œÜÜÛØØ][ÛŠ‹›ÝËÝ]\ÏHœÝÜYŠNƒBˆ]HHXÝ
+›ÝË™]HÜˆßJCBˆ]VÈ›ØØ][Û—ÜÚ\š[™È—HHÝ]\ÃBˆ]KœÜ
+›ØØ][Ûˆ‹›Û™JCBˆÚ\™WÚYH]K™Ù]
+›ØØ][Û—ÜÚ\™WÚYŠCBˆYˆÚ\™WÚYƒBˆÚ\™HH‹™Ù]
+Ú\™S[šËÚ\™WÚY
+CBˆYˆÚ\™NƒBˆÚ\™Kœ™]›ÚÙYHYCBˆ›ÝË™]HH]CBƒBƒB™YˆÙ[™Ý˜[œÜÜÛY\ÜØYÙ\Ê‹]Y[ÚY\Ú[Y[XÚÝ\Ø]\™Ù]ØØ][Û—Ý\›™\]Y\ÝÙ]JNƒBˆ™\Ý[ÈH×CBˆ™XÚ\Y[ÈH˜[œÜÜÙ^\›˜[Ü™XÚ\Y[Ê‹]Y[ÚY\™Ù]
+CBˆ›ÜˆÚ[›™[Y™\ÜË˜[YH[ˆ™XÚ\Y[ÎƒBˆYˆÚ[›™[OHœ[™[™ÈŽƒBˆ™\Ý[Ë˜\[™
+Èœ™XÚ\Y[Žˆ˜[YK˜Ú[›™[ŽˆœÛ\ËÙ[XZ[‹œÝ]\ÈŽˆ››ÝØÛÛ™šYÝ\™YŸJCBˆÛÛ[YCBˆ^H
+ˆ“Û˜ÛÐœšYYˆ˜[œÜÜ™\]Y\Ý›Üˆ]Y[Ü]Y[ÚYKˆƒBˆˆ”XÚÝ\™\]Y\ÝYÜXÚÝ\Ø]‰Y	Xˆ	VH]	R‰S_KˆƒBˆˆ”XÚÝ\Y™\ÜÎˆÜ™\]Y\ÝÙ]K™Ù]
+	ÜXÚÝ\ØY™\ÜÉË	ÉÊ_KˆƒBˆˆ\Ú[Y[ˆØ\Ú[Y[™\\Y[HÛˆØ\Ú[Y[œÝ\‰Y	Xˆ	VH]	R‰S_KˆŠCBˆYˆ™\]Y\ÝÙ]K™Ù]
+›[™X\šÈŠNƒBˆ^
+ÏHˆˆ[™X\šÎˆÜ™\]Y\ÝÙ]VÉÛ[™X\šÉ×_KˆƒBˆÝ\ÜH™\]Y\ÝÙ]K™Ù]
+œÝ\Ü‹×JCBˆÝ\ÜÛX™[ÈHÈ›[Øš[]WØ\ÜÚ\Ý[˜ÙHŽˆ›[Øš[]H\ÜÚ\Ý[˜ÙH‹BˆÚY[ÚZ\—ØXØÙ\ÜÚX›HŽˆÚY[ÚZ\‹XXØÙ\ÜÚX›H™ZXÛH‹Bˆ˜Ø\™YÚ]™\—ØXØÛÛ\[žZ[™ÈŽˆ˜Ø\™YÚ]™\ˆ˜]™[[™ÈŸCBˆYˆÝ\ÜƒBˆ^
+ÏHˆXØÙ\ÜÚXš[]KÜÝ\Üˆˆ
+È‹‹š›Ú[ŠÝ\ÜÛX™[Ë™Ù]
+˜[YK˜[YJH›Üˆ˜[YH[ˆÝ\Ü
+H
+È‹ˆƒBˆYˆ™\]Y\ÝÙ]K™Ù]
+™˜\™WÜÝ\ÜŠNƒBˆ^
+ÏHˆ˜]™[XÛÜÝÝ\Ü™\]Y\ÝYˆƒBˆYˆØØ][Û—Ý\›ƒBˆ^
+ÏHˆˆ]™Hš\ØØ][Ûˆ
+]˜Z[X›HÛ›HÚ[HÚ\š[™ÊNˆÛØØ][Û—Ý\›HƒBˆžNƒBˆYˆÚ[›™[OHœÛ\ÈŽƒBˆ[]™\ŠœÛ\È‹ÈÈŽˆY™\ÜË˜›ÙHŽˆ^JCBˆ[ÙNƒBˆ[]™\Š™[XZ[‹ÈÈŽˆY™\ÜËœÝXš™XÝŽˆ“Û˜ÛÐœšYYˆ˜[œÜÜ™\]Y\Ý‹˜›ÙHŽˆ^JCBˆ™\Ý[Ë˜\[™
+Èœ™XÚ\Y[Žˆ˜[YK˜Ú[›™[ŽˆÚ[›™[œÝ]\ÈŽˆ˜XØÙ\YŸJCBˆ^Ù\^Ù\[Ûˆ\È^ÎƒBˆ™\Ý[Ë˜\[™
+Èœ™XÚ\Y[Žˆ˜[YK˜Ú[›™[ŽˆÚ[›™[BˆœÝ]\ÈŽˆ››ÝØÛÛ™šYÝ\™YˆYˆ^ËœÝ]\×ØÛÙHOHLÈ[ÙH™˜Z[YŸJCBˆ^Ù\^Ù\[ÛŽƒBˆ™\Ý[Ë˜\[™
+Èœ™XÚ\Y[Žˆ˜[YK˜Ú[›™[ŽˆÚ[›™[œÝ]\ÈŽˆ™˜Z[YŸJCBˆ™]\›ˆ™\Ý[ÃBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹Ý˜[œÜÜ\™\]Y\ÝËÞÜ™\]Y\ÝÚYKÛØØ][Û‹ÜÝ\ŠCB™YˆÝ\Ý˜[œÜÜÛØØ][ÛŠ™\]Y\ÝÚYˆ[™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ›ÝÈH‹™Ù]
+Ø\™T™XÛÜ™™\]Y\ÝÚY
+CBˆYˆ›Ý›ÝÈÜˆ›ÝËšÚ[™OH˜[œÜÜÜ™\]Y\ÝŽƒBˆ˜Z\ÙH^Ù\[ÛŠ•˜[œÜÜ™\]Y\Ý›Ý›Ý[™ŠCBˆ\Ù\ˆH]Y[ØXØÙ\ÜÊ‹™\]Y\Ý›ÝËœ]Y[ÚY˜\Ú[Y[ÈŠCBˆ›Û\Ê\Ù\‹œ]Y[‹˜Ø\™YÚ]™\ˆŠCBˆ]HHXÝ
+›ÝË™]HÜˆßJCBˆYˆ›Ý]K™Ù]
+›ØØ][Û—ØÛÛœÙ[ŠNƒBˆ˜Z\ÙH^Ù\[ÛŠË•H]Y[\È›ÝÛÛœÙ[YÈ]™K[ØØ][ÛˆÚ\š[™ÈŠCBˆYˆ›ÝËœÝ]\È[ˆÈ˜ÛÛ\]Y‹˜Ø[˜Ù[Y‹[˜X›HŸNƒBˆ˜Z\ÙH^Ù\[ÛŠK•\È˜[œÜÜ™\]Y\Ý\ÈÛÜÙYŠCBˆÚ\™HH‹™Ù]
+Ú\™S[šË]K™Ù]
+›ØØ][Û—ÜÚ\™WÚYŠJHYˆ]K™Ù]
+›ØØ][Û—ÜÚ\™WÚYŠH[ÙH›Û™CBˆYˆ›ÝÚ\™HÜˆÚ\™Kœ™]›ÚÙYÜˆÚ\™K™^\™\×Ø]]Û›ÝÊ
+NƒBˆ˜Z\ÙH^Ù\[ÛŠL•Hš\ØØ][Ûˆ[šÈ\È^\™YŠCBˆ]VÈ›ØØ][Û—ÜÚ\š[™È—HH˜XÝ]™HƒBˆ]VÈ›ØØ][Û—ÜÝ\YØ]—HH]Û›ÝÊ
+Kš\ÛÙ›Ü›X]
+
+CBˆ]KœÜ
+›ØØ][Ûˆ‹›Û™JCBˆ›ÝË™]K›ÝË\]YØ]H]K]Û›ÝÊ
+CBˆ‹˜ÛÛ[Z]
+
+CBˆ\[™Ø]Y]
+‹\Ù\‹˜[œÜÜÛØØ][Û—ÜÝ\Y‹›ÝËœ]Y[ÚYˆ”™\]Y\ÝÜ›ÝËšYHŠCBˆ™]\›ˆÈœÝ]\ÈŽˆ˜XÝ]™HŸCBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹Ý˜[œÜÜ\™\]Y\ÝËÞÜ™\]Y\ÝÚYKÛØØ][ÛˆŠCB™Yˆ\]WÝ˜[œÜÜÛØØ][ÛŠ™\]Y\ÝÚYˆ[›ÙNˆ˜[œÜÜØØ][Û’[‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ›ÝÈH‹™Ù]
+Ø\™T™XÛÜ™™\]Y\ÝÚY
+CBˆYˆ›Ý›ÝÈÜˆ›ÝËšÚ[™OH˜[œÜÜÜ™\]Y\ÝŽƒBˆ˜Z\ÙH^Ù\[ÛŠ•˜[œÜÜ™\]Y\Ý›Ý›Ý[™ŠCBˆ\Ù\ˆH]Y[ØXØÙ\ÜÊ‹™\]Y\Ý›ÝËœ]Y[ÚY˜\Ú[Y[ÈŠCBˆ›Û\Ê\Ù\‹œ]Y[‹˜Ø\™YÚ]™\ˆŠCBˆ]HHXÝ
+›ÝË™]HÜˆßJCBˆYˆ›Ý]K™Ù]
+›ØØ][Û—ØÛÛœÙ[ŠHÜˆ]K™Ù]
+›ØØ][Û—ÜÚ\š[™ÈŠHOH˜XÝ]™HŽƒBˆ˜Z\ÙH^Ù\[ÛŠK”Ý\ÛÛœÙ[Yš\Ú\š[™È™Y›Ü™HÙ[™[™ÈHØØ][ÛˆŠCBˆÚ\™HH‹™Ù]
+Ú\™S[šË]K™Ù]
+›ØØ][Û—ÜÚ\™WÚYŠJHYˆ]K™Ù]
+›ØØ][Û—ÜÚ\™WÚYŠH[ÙH›Û™CBˆYˆ›ÝÚ\™HÜˆÚ\™Kœ™]›ÚÙYÜˆÚ\™K™^\™\×Ø]]Û›ÝÊ
+NƒBˆ˜Z\ÙH^Ù\[ÛŠL•Hš\ØØ][Ûˆ[šÈ\È^\™YŠCBˆØœÙ\™YØ]H]Û›ÝÊ
+CBˆ]VÈ›ØØ][Ûˆ—HHÈ›]]YHŽˆ›ÙK›]]YK›Û™Ú]YHŽˆ›ÙK›Û™Ú]YKBˆ˜XØÝ\˜XÞWÛHŽˆ›ÙK˜XØÝ\˜XÞWÛK›ØœÙ\™YØ]ŽˆØœÙ\™YØ]š\ÛÙ›Ü›X]
+
+_CBˆ›ÝË™]K›ÝË\]YØ]H]KØœÙ\™YØ]Bˆ‹˜ÛÛ[Z]
+
+CBˆ™]\›ˆÈœÝ]\ÈŽˆ˜XÝ]™H‹\]YØ]ŽˆØœÙ\™YØ]š\ÛÙ›Ü›X]
+
+_CBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹Ý˜[œÜÜ\™\]Y\ÝËÞÜ™\]Y\ÝÚYKÛØØ][Û‹ÜÝÜŠCB™YˆÝÜÝ˜[œÜÜÛØØ][ÛŠ™\]Y\ÝÚYˆ[™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ›ÝÈH‹™Ù]
+Ø\™T™XÛÜ™™\]Y\ÝÚY
+CBˆYˆ›Ý›ÝÈÜˆ›ÝËšÚ[™OH˜[œÜÜÜ™\]Y\ÝŽƒBˆ˜Z\ÙH^Ù\[ÛŠ•˜[œÜÜ™\]Y\Ý›Ý›Ý[™ŠCBˆ\Ù\ˆH]Y[ØXØÙ\ÜÊ‹™\]Y\Ý›ÝËœ]Y[ÚY˜\Ú[Y[ÈŠCBˆ›Û\Ê\Ù\‹œ]Y[‹˜Ø\™YÚ]™\ˆŠCBˆ]HHXÝ
+›ÝË™]HÜˆßJCBˆYˆ]K™Ù]
+›ØØ][Û—ØÛÛœÙ[ŠNƒBˆ™]›ÚÙWÝ˜[œÜÜÛØØ][ÛŠ‹›ÝÊCBˆ›ÝË\]YØ]H]Û›ÝÊ
+CBˆ‹˜ÛÛ[Z]
+
+CBˆ\[™Ø]Y]
+‹\Ù\‹˜[œÜÜÛØØ][Û—ÜÝÜY‹›ÝËœ]Y[ÚYˆ”™\]Y\ÝÜ›ÝËšYHŠCBˆ™]\›ˆÈœÝ]\ÈŽˆœÝÜYŸCBƒBƒB›Ý]\‹™Ù]
+‹ÜÚ\™YÝ˜[œÜÜÞÝÚÙ[ŸHŠCB™YˆÚ\™YÝ˜[œÜÜÛØØ][ÛŠÚÙ[ŽˆÝ‹Q\[™ÊÙ]ÙŠJNƒBˆÚ\™HH‹œØØ[\ŠÙ[XÝ
+Ú\™S[šÊKÚ\™JÚ\™S[šËÚÙ[—Ú\ÚOHYÙ\Ý
+ÚÙ[ŠKBˆÚ\™S[šËšÚ[™OH˜[œÜÜÛØØ][ÛˆŠJCBˆYˆ›ÝÚ\™HÜˆÚ\™Kœ™]›ÚÙYÜˆÚ\™K™^\™\×Ø]]Û›ÝÊ
+NƒBˆ˜Z\ÙH^Ù\[ÛŠ•\Èš\ØØ][Ûˆ[šÈ\È^\™YÜˆØ\ÈÚ]˜]ÛˆŠCBˆžNƒBˆ™\]Y\ÝÚYH[
+
+Ú\™K™šY[ÈÜˆÈœ™\]Y\ÝŒ—JVÌKœÜ]
+Žˆ‹JVÌWJCBˆ^Ù\
+[™^\œ›Ü‹˜[YQ\œ›ÜŠNƒBˆ˜Z\ÙH^Ù\[ÛŠ•\Èš\ØØ][Ûˆ[šÈ\È[˜[YŠCBˆ›ÝÈH‹™Ù]
+Ø\™T™XÛÜ™™\]Y\ÝÚY
+CBˆYˆ›Ý›ÝÈÜˆ›ÝËœ]Y[ÚYOHÚ\™Kœ]Y[ÚYÜˆ›ÝËšÚ[™OH˜[œÜÜÜ™\]Y\ÝŽƒBˆ˜Z\ÙH^Ù\[ÛŠ•\Èš\ØØ][Ûˆ\È[˜]˜Z[X›HŠCBˆ]HH›ÝË™]HÜˆßCBˆÝ]\ÈH]K™Ù]
+›ØØ][Û—ÜÚ\š[™È‹˜]˜Z[X›HŠCBˆ™]\›ˆÈœÝ]\ÈŽˆÝ]\Ë›ØØ][ÛˆŽˆ]K™Ù]
+›ØØ][ÛˆŠHYˆÝ]\ÈOH˜XÝ]™Hˆ[ÙH›Û™KBˆ\]YØ]Žˆ
+]K™Ù]
+›ØØ][ÛˆŠHÜˆßJK™Ù]
+›ØœÙ\™YØ]ŠKBˆ™^\™\×Ø]ŽˆÚ\™K™^\™\×Ø]š\ÛÙ›Ü›X]
+
+_CBƒBƒB›Ý]\‹™Ù]
+‹ÝŒ‹Ü]Y[ËÞÜ]Y[ÚYKÝ˜[œÜÜ\™\]Y\ÝÈŠCB™Yˆ]Y[Ý˜[œÜÜÜ™\]Y\ÝÊ]Y[ÚYˆÝ‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ]Y[ØXØÙ\ÜÊ‹™\]Y\Ý]Y[ÚY˜\Ú[Y[ÈŠCBˆ›ÝÜÈH‹œØØ[\œÊÙ[XÝ
+Ø\™T™XÛÜ™
+KÚ\™JBˆØ\™T™XÛÜ™œ]Y[ÚYOH]Y[ÚYØ\™T™XÛÜ™šÚ[™OH˜[œÜÜÜ™\]Y\ÝƒBˆ
+K›Ü™\—ØžJØ\™T™XÛÜ™˜Ü™X]YØ]™\ØÊ
+KØ\™T™XÛÜ™šY™\ØÊ
+JK›[Z]
+L
+JK˜[
+
+CBˆ™]\›ˆÝ˜[œÜÜÜ^[ØY
+‹›ÝÊH›Üˆ›ÝÈ[ˆ›ÝÜ×CBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹Ü]Y[ËÞÜ]Y[ÚYKÝ˜[œÜÜ\™\]Y\ÝÈŠCB™YˆÜ™X]WÝ˜[œÜÜÜ™\]Y\Ý
+]Y[ÚYˆÝ‹›ÙNˆ˜[œÜÜ™\]Y\Ý[‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\ˆH]Y[ØXØÙ\ÜÊ‹™\]Y\Ý]Y[ÚY˜\Ú[Y[ÈŠCBˆ›Û\Ê\Ù\‹œ]Y[‹˜Ø\™YÚ]™\ˆŠCBˆYˆ›Ý›ÙK˜ÛÛœÙ[ƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹ÛÛœÙ[\È™\]Z\™YÈÚ\™HXÚÝ\]Z[ÈÚ][Ý\ˆØ\™HX[HŠCBˆ\Ú[Y[H‹™Ù]
+\Ú[Y[›ÙK˜\Ú[Y[ÚY
+CBˆYˆ›Ý\Ú[Y[Üˆ\Ú[Y[œ]Y[ÚYOH]Y[ÚYƒBˆ˜Z\ÙH^Ù\[ÛŠÚÛÜÙH[ˆ\Ú[Y[[ˆ\È]Y[™XÛÜ™ŠCBˆYˆ\Ú[Y[œÝ]\ÈOH˜›ÛÚÙYˆÜˆ\Ú[Y[œÝ\H]][YK››ÝÊ
+NƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹•˜[œÜÜ™\]Y\ÝÈ\™H›Üˆ\ÛÛZ[™È›ÛÚÙY\Ú[Y[ÈŠCBˆXÚÝ\Ø]H›ÙKœXÚÝ\Ø]˜\Ý[Y^›Û™J
+Kœ™\XÙJš[™›ÏS›Û™JHYˆ›ÙKœXÚÝ\Ø]š[™›È[ÙH›ÙKœXÚÝ\Ø]BˆYˆXÚÝ\Ø]H]][YK››ÝÊ
+HÜˆXÚÝ\Ø]H\Ú[Y[œÝ\ƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹ÚÛÜÙHH]\™HXÚÝ\[YH™Y›Ü™HH\Ú[Y[ŠCBˆXÝ]™HH‹œØØ[\œÊÙ[XÝ
+Ø\™T™XÛÜ™
+KÚ\™JBˆØ\™T™XÛÜ™œ]Y[ÚYOH]Y[ÚYØ\™T™XÛÜ™šÚ[™OH˜[œÜÜÜ™\]Y\Ý‹BˆØ\™T™XÛÜ™œÝ]\Ëš[—ÊÈœ™\]Y\ÝY‹˜ÛÛÜ™[˜][™È‹˜\œ˜[™ÙY—JCBˆ
+JK˜[
+
+CBˆYˆ[žJ
+›ÝË™]HÜˆßJK™Ù]
+˜\Ú[Y[ÚYŠHOH\Ú[Y[šY›Üˆ›ÝÈ[ˆXÝ]™JNƒBˆ˜Z\ÙH^Ù\[ÛŠKH˜[œÜÜ™\]Y\Ý[™XYH^\ÝÈ›Üˆ\È\Ú[Y[ŠCBˆ]HHÃBˆ˜\Ú[Y[ÚYŽˆ\Ú[Y[šYBˆœXÚÝ\Ø]ŽˆXÚÝ\Ø]š\ÛÙ›Ü›X]
+
+KBˆœXÚÝ\ØY™\ÜÈŽˆ›ÙKœXÚÝ\ØY™\ÜËœÝš\
+
+KBˆ›[™X\šÈŽˆ›ÙK›[™X\šËœÝš\
+
+KBˆœšYWÝ\HŽˆ›ÙKœšYWÝ\KBˆœÝ\ÜŽˆÛÜY
+Ù]
+›ÙKœÝ\Ü
+JKBˆ˜ÛÛ\[š[Û—ØÛÝ[Žˆ›ÙK˜ÛÛ\[š[Û—ØÛÝ[Bˆ™˜\™WÜÝ\ÜŽˆ›ÙK™˜\™WÜÝ\ÜBˆ››Ý\ÈŽˆ›ÙK››Ý\ËœÝš\
+
+KBˆ›ØØ][Û—ØÛÛœÙ[Žˆ›ÙK›ØØ][Û—ØÛÛœÙ[Bˆ›ØØ][Û—ÜÚ\š[™ÈŽˆ˜]˜Z[X›HˆYˆ›ÙK›ØØ][Û—ØÛÛœÙ[[ÙH››ÝÜ™\]Y\ÝY‹Bˆ˜\œ˜[™ÙYÝšXHŽˆˆ‹Bˆ˜ÛÛ™š\›YYÜXÚÝ\Ø]Žˆˆ‹Bˆ˜ÛÛÜ™[˜][Û—Û›ÝHŽˆˆ‹BˆœÝ]\×Ú\ÝÜžHŽˆÞÈœÝ]\ÈŽˆœ™\]Y\ÝY‹˜žHŽˆ\Ù\‹›˜[YK˜]Žˆ]Û›ÝÊ
+Kš\ÛÙ›Ü›X]
+
+_WKBˆCBˆ›ÝÈHØ\™T™XÛÜ™
+]Y[ÚY\]Y[ÚYÚ[™H˜[œÜÜÜ™\]Y\Ý‹]]Ü—ÚY]\Ù\‹šYBˆ]]Ü—Û˜[YO]\Ù\‹›˜[YK]]Ü—Ü›ÛO]\Ù\‹œ›ÛKÝ]\ÏHœ™\]Y\ÝY‹]OY]JCBˆ‹˜Y
+›ÝÊCBˆ‹˜ÛÛ[Z]
+
+CBƒBˆØØ][Û—Ý\›HˆƒBˆYˆ›ÙK›ØØ][Û—ØÛÛœÙ[ƒBˆÚÙ[ˆHÙXÜ™]ËÚÙ[—Ý\›ØY™JÌŠCBˆÚ\™HHÚ\™S[šÊ]Y[ÚY\]Y[ÚYÚÙ[—Ú\ÚYYÙ\Ý
+ÚÙ[ŠKÚ[™H˜[œÜÜÛØØ][Ûˆ‹BˆšY[ÏVÙˆœ™\]Y\ÝžÜ›ÝËšYH—K^\™\×Ø]X\Ú[Y[™[™
+È[YY[JÝ\œÏLŠKBˆÜ™X]YØžO]\Ù\‹šY™XÚ\Y[H’ÜÜ][˜[œÜÜX[H[™[šÙYØ\™YÚ]™\ˆŠCBˆ‹˜Y
+Ú\™JCBˆ‹™›\Ú
+
+CBˆ]HHXÝ
+›ÝË™]HÜˆßJCBˆ]VÈ›ØØ][Û—ÜÚ\™WÚY—HHÚ\™KšYBˆ›ÝË™]HH]CBˆ‹˜ÛÛ[Z]
+
+CBˆ˜\ÙHHÜË™Ù][Š”P“P×ÐTÑWÕT“ŠHÜˆÜË™Ù][Š”‘S‘T—ÑVT“SÕT“ŠHÜˆÝŠ™\]Y\Ý˜˜\ÙWÝ\›
+KœœÝš\
+‹ÈŠCBˆØØ][Û—Ý\›H˜\ÙKœœÝš\
+‹ÈŠH
+È‹Ý˜[œÜÜ]˜XÚËÈˆ
+ÈÚÙ[ƒBƒBˆ\™Ù]H›ÙKœšYWÝ\HYˆ›ÙKœšYWÝ\H[ˆÈšÜÜ][‹˜Ø\™YÚ]™\ˆŸH[ÙHˆƒBˆYˆ›ÙK›ØØ][Û—ØÛÛœÙ[ƒBˆ\™Ù]H˜›ÝƒBˆ^\›˜[Ü™\Ý[ÈHÙ[™Ý˜[œÜÜÛY\ÜØYÙ\Ê‹]Y[ÚY\Ú[Y[XÚÝ\Ø]\™Ù]ØØ][Û—Ý\››ÝË™]HÜˆßJCBˆ]HHXÝ
+›ÝË™]HÜˆßJCBˆ]VÈ™[]™\žWÜÝ[[X\žH—HHÃBˆ™^\›˜[ØXØÙ\YŽˆÝ[J™\Ý[ÈœÝ]\È—HOH˜XØÙ\Yˆ›Üˆ™\Ý[[ˆ^\›˜[Ü™\Ý[ÊKBˆ™^\›˜[Ü[™[™ÈŽˆÝ[J™\Ý[ÈœÝ]\È—HOH››ÝØÛÛ™šYÝ\™Yˆ›Üˆ™\Ý[[ˆ^\›˜[Ü™\Ý[ÊKBˆ™^\›˜[Ù˜Z[YŽˆÝ[J™\Ý[ÈœÝ]\È—HOH™˜Z[Yˆ›Üˆ™\Ý[[ˆ^\›˜[Ü™\Ý[ÊKBˆ›ØØ][Û—ØÛÛœÙ[Žˆ›ÙK›ØØ][Û—ØÛÛœÙ[BˆCBˆ›ÝË™]HH]CBˆ‹˜ÛÛ[Z]
+
+CBƒBˆ\[™Ø]Y]
+‹\Ù\‹˜[œÜÜÜ™\]Y\ÝØÜ™X]Y‹]Y[ÚYBˆˆ\Ú[Y[Ø\Ú[Y[šYNÈØ›ÙKœšYWÝ\_NÈØØ][ÛˆÛÛœÙ[^Ø›ÙK›ØØ][Û—ØÛÛœÙ[HŠCBˆÚ\™WÛ›ÝHHˆˆ]™Hš\[šÎˆÛØØ][Û—Ý\›HˆYˆØØ][Û—Ý\›[ÙHˆƒBˆÛÛÜ™[˜]Ü—ØÛÝ[H›ÝYžWÝ˜[œÜÜØÛÛÜ™[˜]ÜœÊBˆ‹]Y[ÚY•˜[œÜÜ[™\]Y\ÝY‹BˆˆHØ›ÙKœšYWÝ\_H™\]Y\ÝØ\ÈÝX›Z]Y›ÜˆØ\Ú[Y[™\\Y[HÛˆØ\Ú[Y[œÝ\‰Y	Xˆ]	R‰S_KžÜÚ\™WÛ›Ý_HƒBˆ
+CBˆØ\™YÚ]™\—ØÛÝ[HBˆYˆ›ÙKœšYWÝ\HOH˜Ø\™YÚ]™\ˆˆÜˆ›ÙK›ØØ][Û—ØÛÛœÙ[ƒBˆ›ÝYžWÝ˜[œÜÜØØ\™YÚ]™\œÊBˆ‹]Y[ÚY•˜[œÜÜ[™\]Y\ÝY‹BˆˆH˜[œÜÜ™\]Y\ÝØ\ÈÝX›Z]Y›ÜˆØ\Ú[Y[™\\Y[HÛˆØ\Ú[Y[œÝ\‰Y	Xˆ]	R‰S_KžÜÚ\™WÛ›Ý_HƒBˆ
+CBˆØ\™YÚ]™\—ØÛÝ[H[Š˜[œÜÜØØ\™YÚ]™\œÊ‹]Y[ÚY
+JCBˆ]HHXÝ
+›ÝË™]HÜˆßJCBˆ]VÈ™[]™\žWÜÝ[[X\žH—HH]K™Ù]
+™[]™\žWÜÝ[[X\žH‹ßJHÃBˆš[—Ø\ÚÜÜ][ŽˆÛÛÜ™[˜]Ü—ØÛÝ[š[—Ø\ØØ\™YÚ]™\ˆŽˆØ\™YÚ]™\—ØÛÝ[BˆCBˆ›ÝË™]HH]CBˆ‹˜ÛÛ[Z]
+
+CBˆ™]\›ˆ˜[œÜÜÜ^[ØY
+‹›ÝÊCBƒBƒB›Ý]\‹™Ù]
+‹ÝŒ‹Ý˜[œÜÜ\™\]Y\ÝÈŠCB™Yˆ˜[œÜÜÜ™\]Y\ÝÜ]Y]YJ™\]Y\Ýˆ™\]Y\ÝÝ]\Îˆ]\˜[Èœ™\]Y\ÝY‹˜ÛÛÜ™[˜][™È‹˜\œ˜[™ÙY‹[˜X›H‹˜ÛÛ\]Y‹˜Ø[˜Ù[Y—H›Û™HH›Û™KBˆQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\ˆHY[]J™\]Y\Ý
+CBˆ›Û\Ê\Ù\‹
+•S”ÔÔ•Ô“ÓTÊCBˆ]Y[ÚYÈHš\ÚX›WÚYÊ‹\Ù\‹˜\Ú[Y[ÈŠCBˆYˆ›Ý]Y[ÚYÎƒBˆ™]\›ˆ×CBˆÝ]HÙ[XÝ
+Ø\™T™XÛÜ™
+KÚ\™JØ\™T™XÛÜ™šÚ[™OH˜[œÜÜÜ™\]Y\Ý‹Ø\™T™XÛÜ™œ]Y[ÚYš[—Ê]Y[ÚYÊJCBˆYˆÝ]\ÎƒBˆÝ]HÝ]Ú\™JØ\™T™XÛÜ™œÝ]\ÈOHÝ]\ÊCBˆ›ÝÜÈH‹œØØ[\œÊÝ]›Ü™\—ØžJØ\™T™XÛÜ™˜Ü™X]YØ]™\ØÊ
+KØ\™T™XÛÜ™šY™\ØÊ
+JK›[Z]
+L
+JK˜[
+
+CBˆ™]\›ˆÝ˜[œÜÜÜ^[ØY
+‹›ÝÊH›Üˆ›ÝÈ[ˆ›ÝÜ×CBƒBƒB›Ý]\‹œ]Ú
+‹ÝŒ‹Ý˜[œÜÜ\™\]Y\ÝËÞÜ™\]Y\ÝÚYHŠCB™Yˆ\]WÝ˜[œÜÜÜ™\]Y\Ý
+™\]Y\ÝÚYˆ[›ÙNˆ˜[œÜÜ\]R[‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\ˆHY[]J™\]Y\Ý
+CBˆ›Û\Ê\Ù\‹
+•S”ÔÔ•Ô“ÓTÊCBˆ›ÝÈH‹™Ù]
+Ø\™T™XÛÜ™™\]Y\ÝÚY
+CBˆYˆ›Ý›ÝÈÜˆ›ÝËšÚ[™OH˜[œÜÜÜ™\]Y\ÝŽƒBˆ˜Z\ÙH^Ù\[ÛŠ•˜[œÜÜ™\]Y\Ý›Ý›Ý[™ŠCBˆ]Y[ØXØÙ\ÜÊ‹™\]Y\Ý›ÝËœ]Y[ÚY˜\Ú[Y[ÈŠCBˆ˜[œÚ][ÛœÈHÃBˆœ™\]Y\ÝYŽˆÈ˜ÛÛÜ™[˜][™È‹˜\œ˜[™ÙY‹[˜X›HŸKBˆ˜ÛÛÜ™[˜][™ÈŽˆÈ˜\œ˜[™ÙY‹[˜X›HŸKBˆ˜\œ˜[™ÙYŽˆÈ˜ÛÛÜ™[˜][™È‹[˜X›H‹˜ÛÛ\]YŸKBˆ[˜X›HŽˆÈ˜ÛÛÜ™[˜][™È‹˜\œ˜[™ÙYŸKBˆCBˆYˆ›ÙKœÝ]\ÈOH›ÝËœÝ]\È[™›ÙKœÝ]\È›Ý[ˆ˜[œÚ][ÛœË™Ù]
+›ÝËœÝ]\ËÙ]
+
+JNƒBˆ˜Z\ÙH^Ù\[ÛŠKˆHÜ›ÝËœÝ]\ßH™\]Y\ÝØ[››Ý[Ý™HÈØ›ÙKœÝ]\ßHŠCBˆ]HHXÝ
+›ÝË™]HÜˆßJCBˆ\Ú[Y[H‹™Ù]
+\Ú[Y[]K™Ù]
+˜\Ú[Y[ÚYŠJCBˆÛÛ™š\›YYÜXÚÝ\Ø]H›ÙK˜ÛÛ™š\›YYÜXÚÝ\Ø]BˆYˆÛÛ™š\›YYÜXÚÝ\Ø][™ÛÛ™š\›YYÜXÚÝ\Ø]š[™›ÎƒBˆÛÛ™š\›YYÜXÚÝ\Ø]HÛÛ™š\›YYÜXÚÝ\Ø]˜\Ý[Y^›Û™J
+Kœ™\XÙJš[™›ÏS›Û™JCBˆYˆ›ÙKœÝ]\ÈOH˜\œ˜[™ÙYŽƒBˆYˆ›Ý›ÙK˜\œ˜[™ÙYÝšXKœÝš\
+
+HÜˆ›ÝÛÛ™š\›YYÜXÚÝ\Ø]ƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹‘[\ˆÚÈ\œ˜[™ÙYHšYH[™]ÈÛÛ™š\›YYXÚÝ\[YHŠCBˆYˆÛÛ™š\›YYÜXÚÝ\Ø]H]][YK››ÝÊ
+NƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹ÛÛ™š\›YYXÚÝ\[YH]\Ý™H[ˆH]\™HŠCBˆYˆ\Ú[Y[[™ÛÛ™š\›YYÜXÚÝ\Ø]H\Ú[Y[œÝ\ƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹ÛÛ™š\›YYXÚÝ\[YH]\Ý™H™Y›Ü™HH\Ú[Y[ŠCBˆ]VÈ˜\œ˜[™ÙYÝšXH—HH›ÙK˜\œ˜[™ÙYÝšXKœÝš\
+
+CBˆ]VÈ˜ÛÛ™š\›YYÜXÚÝ\Ø]—HHÛÛ™š\›YYÜXÚÝ\Ø]š\ÛÙ›Ü›X]
+
+CBˆ[Yˆ›ÙK˜\œ˜[™ÙYÝšXKœÝš\
+
+NƒBˆ]VÈ˜\œ˜[™ÙYÝšXH—HH›ÙK˜\œ˜[™ÙYÝšXKœÝš\
+
+CBˆ[YˆÛÛ™š\›YYÜXÚÝ\Ø]ƒBˆ]VÈ˜ÛÛ™š\›YYÜXÚÝ\Ø]—HHÛÛ™š\›YYÜXÚÝ\Ø]š\ÛÙ›Ü›X]
+
+CBˆYˆ›ÙKœÝ]\È[ˆÈ˜ÛÛÜ™[˜][™È‹[˜X›HŸNƒBˆ]VÈ˜\œ˜[™ÙYÝšXH—HHˆƒBˆ]VÈ˜ÛÛ™š\›YYÜXÚÝ\Ø]—HHˆƒBˆYˆ›ÙK˜ÛÛÜ™[˜][Û—Û›ÝKœÝš\
+
+NƒBˆ]VÈ˜ÛÛÜ™[˜][Û—Û›ÝH—HH›ÙK˜ÛÛÜ™[˜][Û—Û›ÝKœÝš\
+
+CBˆ\ÝÜžHH\Ý
+]K™Ù]
+œÝ]\×Ú\ÝÜžH‹×JJCBˆYˆ›ÙKœÝ]\ÈOH›ÝËœÝ]\ÎƒBˆ\ÝÜžK˜\[™
+ÈœÝ]\ÈŽˆ›ÙKœÝ]\Ë˜žHŽˆ\Ù\‹›˜[YK˜]Žˆ]Û›ÝÊ
+Kš\ÛÙ›Ü›X]
+
+_JCBˆ]VÈœÝ]\×Ú\ÝÜžH—HH\ÝÜžVËLŒ—CBˆ›ÝË™]K›ÝËœÝ]\Ë›ÝË\]YØ]H]K›ÙKœÝ]\Ë]Û›ÝÊ
+CBˆYˆ›ÙKœÝ]\È[ˆÈ˜ÛÛ\]Y‹[˜X›HŸH[™]K™Ù]
+›ØØ][Û—ÜÚ\š[™ÈŠHOH˜XÝ]™HŽƒBˆ™]›ÚÙWÝ˜[œÜÜÛØØ][ÛŠ‹›ÝÊCBˆ‹˜ÛÛ[Z]
+
+CBˆ‹˜Y
+›ÝYšXØ][ÛŠ\Ù\—ÚY\›ÝË˜]]Ü—ÚY]Y[ÚY\›ÝËœ]Y[ÚYBˆÚ[›™[H˜[œÜÜ‹]OH•˜[œÜÜ™\]Y\Ý\]H‹›ÙOYˆ–[Ý\ˆšYH™\]Y\Ý\ÈØ›ÙKœÝ]\Ëœ™\XÙJ	×ÉË	È	Ê_KˆŠJCBˆ‹˜ÛÛ[Z]
+
+CBˆ\[™Ø]Y]
+‹\Ù\‹˜[œÜÜÜ™\]Y\ÝÝ\]Y‹›ÝËœ]Y[ÚYBˆˆ”™\]Y\ÝÜ›ÝËšYNˆØ›ÙKœÝ]\ßHŠCBˆ™]\›ˆ˜[œÜÜÜ^[ØY
+‹›ÝÊCBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹Ý˜[œÜÜ\™\]Y\ÝËÞÜ™\]Y\ÝÚYKØØ[˜Ù[ŠCB™YˆØ[˜Ù[Ý˜[œÜÜÜ™\]Y\Ý
+™\]Y\ÝÚYˆ[™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ›ÝÈH‹™Ù]
+Ø\™T™XÛÜ™™\]Y\ÝÚY
+CBˆYˆ›Ý›ÝÈÜˆ›ÝËšÚ[™OH˜[œÜÜÜ™\]Y\ÝŽƒBˆ˜Z\ÙH^Ù\[ÛŠ•˜[œÜÜ™\]Y\Ý›Ý›Ý[™ŠCBˆ\Ù\ˆH]Y[ØXØÙ\ÜÊ‹™\]Y\Ý›ÝËœ]Y[ÚY˜\Ú[Y[ÈŠCBˆ›Û\Ê\Ù\‹œ]Y[‹˜Ø\™YÚ]™\ˆŠCBˆYˆ›ÝËœÝ]\È[ˆÈ˜ÛÛ\]Y‹˜Ø[˜Ù[YŸNƒBˆ˜Z\ÙH^Ù\[ÛŠK•\È˜[œÜÜ™\]Y\Ý\È[™XYHÛÜÙYŠCBˆ]HHXÝ
+›ÝË™]HÜˆßJCBˆ\ÝÜžHH\Ý
+]K™Ù]
+œÝ]\×Ú\ÝÜžH‹×JJCBˆ\ÝÜžK˜\[™
+ÈœÝ]\ÈŽˆ˜Ø[˜Ù[Y‹˜žHŽˆ\Ù\‹›˜[YK˜]Žˆ]Û›ÝÊ
+Kš\ÛÙ›Ü›X]
+
+_JCBˆ]VÈœÝ]\×Ú\ÝÜžH—HH\ÝÜžVËLŒ—CBˆ›ÝË™]K›ÝËœÝ]\Ë›ÝË\]YØ]H]K˜Ø[˜Ù[Y‹]Û›ÝÊ
+CBˆYˆ]K™Ù]
+›ØØ][Û—ÜÚ\š[™ÈŠHOH˜XÝ]™HŽƒBˆ™]›ÚÙWÝ˜[œÜÜÛØØ][ÛŠ‹›ÝÊCBˆ‹˜ÛÛ[Z]
+
+CBˆ\[™Ø]Y]
+‹\Ù\‹˜[œÜÜÜ™\]Y\ÝØØ[˜Ù[Y‹›ÝËœ]Y[ÚYˆ”™\]Y\ÝÜ›ÝËšYHŠCBˆ›ÝYžWÝ˜[œÜÜØÛÛÜ™[˜]ÜœÊ‹›ÝËœ]Y[ÚY•˜[œÜÜ™\]Y\ÝØ[˜Ù[Y‹ˆHšYH™\]Y\Ý›ÜˆÜ›ÝËœ]Y[ÚYHØ\ÈØ[˜Ù[YˆŠCBˆ™]\›ˆ˜[œÜÜÜ^[ØY
+‹›ÝÊCBƒBƒB›Ý]\‹™Ù]
+‹ÝŒ‹Ü]Y[ËÞÜ]Y[ÚYKÙØ]K\\ˆŠCB™YˆØ]WÜ\Š]Y[ÚYˆÝ‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ]Y[ØXØÙ\ÜÊ‹™\]Y\Ý]Y[ÚY˜\Ú[Y[ÈŠCBˆ[\Ü\˜ÛÙCBˆ˜\ÙO[ÜË™Ù][Š”P“P×ÐTÑWÕT“ŠHÜˆÜË™Ù][Š”‘S‘T—ÑVT“SÕT“ŠHÜˆÝŠ™\]Y\Ý˜˜\ÙWÝ\›
+KœœÝš\
+‹ÈŠCBˆYZ[Ëž]\ÒSÊ
+CBˆ\˜ÛÙK›XZÙJˆžØ˜\Ù_KØ\ÙØ]O^Ü]Y[ÚYHŠKœØ]™JY‹›Ü›X]H”‘ÈŠCBˆ™]\›ˆ™\ÜÛœÙJY‹™Ù]˜[YJ
+KYYXWÝ\OHš[XYÙKÜ™ÈŠCBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹Ü]Y[ËÞÜ]Y[ÚYKÙØ]HŠCB™YˆØ]WØ\œš]˜[
+]Y[ÚYˆÝ‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\\]Y[ØXØÙ\ÜÊ‹™\]Y\Ý]Y[ÚY˜\Ú[Y[ÈŠCBˆÝ\Y]][YK››ÝÊ
+Kœ™\XÙJÝ\LZ[]OLÙXÛÛ™LZXÜ›ÜÙXÛÛ™L
+CBˆ›ÝÜÏY‹œØØ[\œÊÙ[XÝ
+\Ú[Y[
+KÚ\™J\Ú[Y[œ]Y[ÚYO\]Y[ÚY\Ú[Y[œÝ\\Ý\\Ú[Y[œÝ\Ý\
+Ý[YY[J^\ÏLJK\Ú[Y[œÝ]\ÏOH˜›ÛÚÙYŠJK˜[
+
+CBˆ›Üˆ›ÝÈ[ˆ›ÝÜÎƒBˆ›ÝËœÝ]\ÏH˜\œš]™YƒBˆ‹˜ÛÛ[Z]
+
+CBˆ›ÝYžWÝX[J‹]Y[ÚY”]Y[\œš]™Y]HØ]H‹ˆžÛ[Š›ÝÜÊ_H›ÛÚÙY\\Y[È\]YˆŠCBˆ\[™Ø]Y]
+‹\Ù\‹™Ø]WØÚXÚÚ[ˆ‹]Y[ÚY
+CBˆ™]\›ˆÈ˜\œš]™YÙ\\Y[ÈŽ›[Š›ÝÜÊK›Y\ÜØYÙHŽˆ\œš]˜[™XÛÜ™Yˆ[Ý\ˆ›ÛÚÙY\\Y[ÈØ[ˆÙYH][ÝH\™H\™KˆŸCBƒBƒB˜Û\ÜÈ\Ú[Y[XÝ[ÛŠ˜\ÙS[Ù[
+NƒBˆXÝ[ÛŽˆ]\˜[È˜\œš]™Y‹š[—Ü›ÙÜ™\ÜÈ‹˜ÛÛ\]Y‹›Z\ÜÙY‹˜Ø[˜Ù[Y—CBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹Ø\Ú[Y[ËÞØ\Ú[Y[ÚYKÜÝ]\ÈŠCB™Yˆ\Ú[Y[ÜÝ]\Ê\Ú[Y[ÚYˆ[›ÙNˆ\Ú[Y[XÝ[Û‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ›ÝÈH‹™Ù]
+\Ú[Y[\Ú[Y[ÚY
+CBˆYˆ›Ý›ÝÎƒBˆ˜Z\ÙH^Ù\[ÛŠ\Ú[Y[›Ý›Ý[™ŠCBˆ\Ù\ˆH]Y[ØXØÙ\ÜÊ‹™\]Y\Ý›ÝËœ]Y[ÚY˜\Ú[Y[ÈŠCBˆYˆ›ÙK˜XÝ[ÛˆOH˜\œš]™YŽƒBˆ›Û\Ê\Ù\‹™œ›Û\ÚÈ‹›\œÙH‹™ØÝÜˆ‹˜YZ[ˆŠCBˆ›ÝËœÝ]\ÈH›ÙK˜XÝ[ÛƒBˆ‹˜ÛÛ[Z]
+
+CBˆ›ÝYžWÝX[J‹›ÝËœ]Y[ÚY\Ú[Y[\]H‹ˆžÜ›ÝË™\\Y[NˆØ›ÙK˜XÝ[ÛŸHŠCBˆ™]\›ˆÙ\šX[
+›ÝÊCBƒBƒB›Ý]\‹™Ù]
+‹ÝŒ‹Ø\Ú[Y[ËÞØ\Ú[Y[ÚYKÜÝYÙÙ\Ý\ÛÝŠCB™YˆÝYÙÙ\ÝÜÛÝ
+\Ú[Y[ÚYˆ[™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ›ÝÈH‹™Ù]
+\Ú[Y[\Ú[Y[ÚY
+CBˆYˆ›Ý›ÝÎƒBˆ˜Z\ÙH^Ù\[ÛŠ\Ú[Y[›Ý›Ý[™ŠCBˆ]Y[ØXØÙ\ÜÊ‹™\]Y\Ý›ÝËœ]Y[ÚY˜\Ú[Y[ÈŠCBˆÝ\œÈH‹œØØ[\œÊÙ[XÝ
+\Ú[Y[
+KÚ\™J\Ú[Y[šYOH›ÝËšY\Ú[Y[œÝ]\ÈOH˜Ø[˜Ù[YŠJK˜[
+
+CBˆ\˜][ÛˆH›ÝË™[™H›ÝËœÝ\BˆÝ\H›ÝËœÝ\œ™\XÙJÝ\NZ[]OLÙXÛÛ™LZXÜ›ÜÙXÛÛ™L
+CBˆØ[™Y]\ÈHÜÝ\
+È[YY[JZ[]\ÏLL
+ˆJH›ÜˆH[ˆ˜[™ÙJM
+WCBˆØ[™Y]\ËœÛÜ
+Ù^O[[X™HˆXœÊ
+H›ÝËœÝ\
+KÝ[ÜÙXÛÛ™Ê
+JJCBˆ›Üˆ[ˆØ[™Y]\ÎƒBˆYˆ
+È\˜][ÛˆˆÝ\œ™\XÙJÝ\LMÊNƒBˆÛÛ[YCBˆYˆ›Ý[žJK™[™[™KœÝ\
+È\˜][Ûˆ[™
+Kœ]Y[ÚYOH›ÝËœ]Y[ÚYÜˆKœ›ÛÛHOH›ÝËœ›ÛÛJH›ÜˆH[ˆÝ\œÊNƒBˆ™]\›ˆÈœÝ\Žˆš\ÛÙ›Ü›X]
+
+K™[™Žˆ
+
+È\˜][ÛŠKš\ÛÙ›Ü›X]
+
+Kœ›ÛÛHŽˆ›ÝËœ›ÛÛK˜\›Ý˜[Ü™\]Z\™YŽˆY_CBˆ˜Z\ÙH^Ù\[ÛŠK“›Èœ™YHÛÝ]š]ÈÛˆ\È^HŠCBƒBƒB˜Û\ÜÈ™\ØÚY[R[Š˜\ÙS[Ù[
+NƒBˆÝ\ˆ]][YCBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹Ø\Ú[Y[ËÞØ\Ú[Y[ÚYKÜ™\ØÚY[HŠCBÙ\šX[ÜØÚY[CB™Yˆ™\ØÚY[J\Ú[Y[ÚYˆ[›ÙNˆ™\ØÚY[R[‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ›ÝÈH‹™Ù]
+\Ú[Y[\Ú[Y[ÚY
+CBˆYˆ›Ý›ÝÎƒBˆ˜Z\ÙH^Ù\[ÛŠ\Ú[Y[›Ý›Ý[™ŠCBˆ\Ù\ˆH]Y[ØXØÙ\ÜÊ‹™\]Y\Ý›ÝËœ]Y[ÚY˜\Ú[Y[ÈŠCBˆ›Û\Ê\Ù\‹™œ›Û\ÚÈ‹›\œÙH‹˜YZ[ˆŠCBˆÝ\H›ÙKœÝ\œ™\XÙJš[™›ÏS›Û™JCBˆ[™HÝ\
+È
+›ÝË™[™H›ÝËœÝ\
+CBˆœ›ÛHÜ[[Ú[^H[\ÜÜ—ÃBˆÛ\ÚH‹œØØ[\ŠÙ[XÝ
+\Ú[Y[
+KÚ\™J\Ú[Y[šYOH›ÝËšY\Ú[Y[œÝ]\ÈOH˜Ø[˜Ù[Y‹\Ú[Y[œÝ\[™Bˆ\Ú[Y[™[™ˆÝ\Ü—Ê\Ú[Y[œ]Y[ÚYOH›ÝËœ]Y[ÚY\Ú[Y[œ›ÛÛHOH›ÝËœ›ÛÛJJJCBˆYˆÛ\ÚƒBˆ˜Z\ÙH^Ù\[ÛŠK”ÛÝØ\ÈZÙ[‹ˆ™\]Y\ÝH™]ÈÝYÙÙ\Ý[Û‹ˆŠCBˆ›ÝËœÝ\›ÝË™[™HÝ\[™Bˆ‹˜ÛÛ[Z]
+
+CBˆ\[™Ø]Y]
+‹\Ù\‹™š^ÜØÚY[WØÛ\Ú‹›ÝËœ]Y[ÚYÝŠ›ÝËšY
+JCBˆ™]\›ˆÙ\šX[
+›ÝÊCBƒBƒB˜Û\ÜÈÚ\™R[Š˜\ÙS[Ù[
+NƒBˆÚ[™ˆ]\˜[È™[Y\™Ù[˜ÞH‹œÙXÛÛ™ÛÜ[š[Ûˆ—CBˆšY[Îˆ\ÝÓ]\˜[Èœ™YÚ[Y[ˆ‹˜[\™ÚY\È‹˜ÛÝ[È‹˜ÛÛXÝ‹œÝ[[X\žH‹™ØÝ[Y[È—WHHšY[
+Z[—Û[™ÝLJCBˆÝ\œÎˆ[HšY[
+Y˜][LÙOLKOLMŽ
+CBˆÛÛœÙ[ˆ›ÛÛBˆ™XÚ\Y[ˆÝˆHšY[
+Y˜][Hˆ‹X^Û[™ÝLML
+CBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹Ü]Y[ËÞÜ]Y[ÚYKÜÚ\™\ÈŠCB™YˆÚ\™J]Y[ÚYˆÝ‹›ÙNˆÚ\™R[‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\ˆH]Y[ØXØÙ\ÜÊ‹™\]Y\Ý]Y[ÚY™ØÝ[Y[ÈŠCBˆ›Û\Ê\Ù\‹œ]Y[ŠCBˆYˆ›Ý›ÙK˜ÛÛœÙ[ƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹”]Y[ÛÛœÙ[\È™\]Z\™Y›ÜˆXXÚÚ\™HŠCBˆYˆ›ÙKšÚ[™OH™[Y\™Ù[˜ÞHˆ[™[žJˆ[ˆ›ÙK™šY[È›Üˆˆ[ˆ
+™ØÝ[Y[È‹œÝ[[X\žHŠJNƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹‘[Y\™Ù[˜ÞHØ\™È^ÜÙHÛ›HÙ[XÝY[Y\™Ù[˜ÞHšY[ÈŠCBˆÚÙ[ˆHÙXÜ™]ËÚÙ[—Ý\›ØY™J
+CBˆ›ÝÈHÚ\™S[šÊ]Y[ÚY\]Y[ÚYÚÙ[—Ú\ÚYYÙ\Ý
+ÚÙ[ŠKÚ[™X›ÙKšÚ[™šY[ÏX›ÙK™šY[ËBˆ^\™\×Ø]]]Û›ÝÊ
+H
+È[YY[JÝ\œÏX›ÙKšÝ\œÊKÜ™X]YØžO]\Ù\‹šY™XÚ\Y[X›ÙKœ™XÚ\Y[
+CBˆ‹˜Y
+›ÝÊCBˆ‹˜ÛÛ[Z]
+
+CBˆ\[™Ø]Y]
+‹\Ù\‹˜ÛÛœÙ[Èˆ
+È›ÙKšÚ[™]Y[ÚY‘šY[Îˆˆ
+È‹‹š›Ú[Š›ÙK™šY[ÊJCBˆ[\Ü˜\ÙMBˆ[\Ü\˜ÛÙCBˆ˜\ÙHHÜË™Ù][Š”P“P×ÐTÑWÕT“ŠHÜˆÜË™Ù][Š”‘S‘T—ÑVT“SÕT“ŠHÜˆÝŠ™\]Y\Ý˜˜\ÙWÝ\›
+KœœÝš\
+‹ÈŠCBˆYˆH[Ëž]\ÒSÊ
+CBˆ\˜ÛÙK›XZÙJˆžØ˜\Ù_KÜÚ\™KÞÝÚÙ[ŸHŠKœØ]™JY‹›Ü›X]H”‘ÈŠCBˆ™]\›ˆÈšYŽˆ›ÝËšY\›Žˆˆ‹ÜÚ\™KÞÝÚÙ[ŸH‹˜\WÝ\›Žˆˆ‹Ø\KÜÚ\™YÞÝÚÙ[ŸH‹™^\™\×Ø]Žˆ›ÝË™^\™\×Ø]Bˆœ\—Ü™ÈŽˆ™]Nš[XYÙKÜ™ÎØ˜\ÙMˆ
+È˜\ÙM˜[˜ÛÙJY‹™Ù]˜[YJ
+JK™XÛÙJ
+_CBƒBƒB›Ý]\‹™Ù]
+‹ÝŒ‹Ü]Y[ËÞÜ]Y[ÚYKÜÚ\™\ÈŠCB™YˆÚ\™\Ê]Y[ÚYˆÝ‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\ˆH]Y[ØXØÙ\ÜÊ‹™\]Y\Ý]Y[ÚY
+CBˆ›Û\Ê\Ù\‹œ]Y[ŠCBˆ™]\›ˆÜÙ\šX[
+‹
+ÚÙ[—Ú\Ú‹
+JH›Üˆˆ[ˆ‹œØØ[\œÊÙ[XÝ
+Ú\™S[šÊKÚ\™JÚ\™S[šËœ]Y[ÚYOH]Y[ÚY
+JWCBƒBƒB›Ý]\‹™[]J‹ÝŒ‹ÜÚ\™\ËÞÜÚ\™WÚYHŠCB™Yˆ™]›ÚÙWÜÚ\™JÚ\™WÚYˆ[™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ›ÝÈH‹™Ù]
+Ú\™S[šËÚ\™WÚY
+CBˆYˆ›Ý›ÝÈÜˆ›ÝË˜Ü™X]YØžHOHY[]J™\]Y\Ý
+KšYƒBˆ˜Z\ÙH^Ù\[ÛŠ”Ú\™H›Ý›Ý[™ŠCBˆ›ÝËœ™]›ÚÙYHYCBˆ‹˜ÛÛ[Z]
+
+CBˆ™]\›ˆÈ›ÚÈŽˆY_CBƒBƒB™YˆØYÜÚ\™JÚÙ[‹ŠNƒBˆ›ÝÈH‹œØØ[\ŠÙ[XÝ
+Ú\™S[šÊKÚ\™JÚ\™S[šËÚÙ[—Ú\ÚOHYÙ\Ý
+ÚÙ[ŠJJCBˆYˆ›Ý›ÝÈÜˆ›ÝËšÚ[™›Ý[ˆÈ™[Y\™Ù[˜ÞH‹œÙXÛÛ™ÛÜ[š[ÛˆŸHÜˆ›ÝËœ™]›ÚÙYÜˆ›ÝË™^\™\×Ø]]Û›ÝÊ
+NƒBˆ˜Z\ÙH^Ù\[ÛŠ•\ÈÛÛœÙ[[šÈ\È^\™YÜˆØ\ÈÚ]˜]ÛˆŠCBˆ™]\›ˆ›ÝÃBƒBƒB›Ý]\‹™Ù]
+‹ÜÚ\™YÞÝÚÙ[ŸHŠCB™YˆX›X×ÜÚ\™JÚÙ[ŽˆÝ‹Q\[™ÊÙ]ÙŠJNƒBˆ›ÝÈHØYÜÚ\™JÚÙ[‹ŠCBˆH‹™Ù]
+]Y[›ÝËœ]Y[ÚY
+CBˆÝ]HÈšÚ[™Žˆ›ÝËšÚ[™œ]Y[ÚYŽˆšY™^\™\×Ø]Žˆ›ÝË™^\™\×Ø]œ™XÚ\Y[Žˆ›ÝËœ™XÚ\Y[CBˆ›Ùš[HH™XÛÜ™Ê‹šY˜Û[šXØ[Ü›Ùš[HŠCBˆ›Ùš[HH›Ùš[VÌK™]HYˆ›Ùš[H[ÙHßCBˆYˆœ™YÚ[Y[ˆˆ[ˆ›ÝË™šY[ÎƒBˆÝ]Èœ™YÚ[Y[ˆ—HH˜Ý\œ™[Ü™YÚ[Y[ƒBˆYˆ˜[\™ÚY\Èˆ[ˆ›ÝË™šY[ÎƒBˆÝ]È˜[\™ÚY\È—HH›Ùš[K™Ù]
+˜[\™ÚY\È‹“›Ý™XÛÜ™YÈ™\šYžHÚ]™X][™ÈX[HŠCBˆYˆ˜ÛÛXÝˆ[ˆ›ÝË™šY[ÎƒBˆÝ]È˜ÛÛXÝ—HH›Ùš[K™Ù]
+›Û˜ÛÛÙÚ\ÝÜÛ™H‹ÜË™Ù][Š’ÔÔUSÑSQT‘ÑSÖWÔÓ‘H‹“›ÝÛÛ™šYÝ\™YŠJCBˆYˆ˜ÛÝ[Èˆ[ˆ›ÝË™šY[ÎƒBˆÝ]È˜ÛÝ[È—HH]š[™×ÜÝ[[X\žJ‹šY
+VÈ›]\ÝÛXœÈ—CBˆYˆœÝ[[X\žHˆ[ˆ›ÝË™šY[ÎƒBˆÝ]ÈœÝ[[X\žH—HH]š[™×ÜÝ[[X\žJ‹šY
+CBˆYˆ™ØÝ[Y[Èˆ[ˆ›ÝË™šY[ÎƒBˆÝ]È™ØÝ[Y[È—HHÞÈšYŽˆšY]HŽˆ]K^ŽˆØY™WÝ^
+›ØÜ—Ý^
+K™]HŽˆœ™XÛÜ™Ù]_CBˆ›Üˆ[ˆ‹œØØ[\œÊÙ[XÝ
+ØÝ[Y[
+KÚ\™JØÝ[Y[œ]Y[ÚYOHšY
+JWCBˆšY]Ù\ˆH\J•šY]Ù\ˆ‹
+
+KÈšYŽˆœ›ÛHŽˆ™^\›˜[‹›˜[YHŽˆÛÛœÙ[[šÈšY]Ù\ˆŸJJ
+CBˆ\[™Ø]Y]
+‹šY]Ù\‹›Ü[—Èˆ
+È›ÝËšÚ[™
+È—ÜÚ\™H‹šY”Ù[XÝYšY[ÈÛ›HŠCBˆYˆ›ÝËšÚ[™OH™[Y\™Ù[˜ÞHŽƒBˆ[\
+‹šY‘[Y\™Ù[˜ÞHYYXØ[Ø\™Ü[™YÈ™\šYžHÚ]\ˆ]Y[\È][ˆTˆ‹™[Y\™Ù[˜ÞHTˆ‹\™Ù[ŠCBˆ™]\›ˆÝ]BƒBƒB›Ý]\‹™Ù]
+‹ÝŒ‹Ü]Y[ËÞÜ]Y[ÚYKÜXÚÈŠCB™YˆXÚÊ]Y[ÚYˆÝ‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\ˆH]Y[ØXØÙ\ÜÊ‹™\]Y\Ý]Y[ÚY™ØÝ[Y[ÈŠCBˆ›Û\Ê\Ù\‹™ØÝÜˆ‹œ]Y[‹˜YZ[ˆŠCBˆ™]\›ˆÈœ]Y[ÚYŽˆ]Y[ÚYœÝ[[X\žHŽˆ]š[™×ÜÝ[[X\žJ‹]Y[ÚY
+KBˆœ]Y\Ý[ÛœÈŽˆš\Ú]Ü™\
+]Y[ÚY™\]Y\ÝŠVÈœ]Y\Ý[ÛœÈ—HYˆ]Y[ÚY[ˆš\ÚX›WÚYÊ‹\Ù\‹››Ý\ÈŠH[ÙH×KBˆšÙ^WÚ[XYÙ\ÈŽˆÞÈšYŽˆšY]HŽˆ]_H›Üˆ[ˆ‹œØØ[\œÊÙ[XÝ
+ØÝ[Y[
+KÚ\™JØÝ[Y[œ]Y[ÚYOH]Y[ÚYØÝ[Y[˜Ø]YÛÜžHOH’[XYÚ[™ÈŠJWKBˆœÚYÛ™YÙXÚ\Ú[ÛœÈŽˆÜÙ\šX[
+ŠH›Üˆˆ[ˆ™XÛÜ™Ê‹]Y[ÚY˜›Ø\™ÙXÚ\Ú[ÛˆŠHYˆ‹œÝ]\ÈOH˜\›Ý™Y—_CBƒBƒB›Ý]\‹™Ù]
+‹ÝŒ‹Ü]Y[ËÞÜ]Y[ÚYKÜXÚËœˆŠCB™YˆXÚ×ÜŠ]Y[ÚYˆÝ‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ]HHXÚÊ]Y[ÚY™\]Y\ÝŠCBˆœ›ÛH™\ÜX‹›X‹œÝ[\È[\ÜÙ]Ø[\TÝ[TÚY]Bˆœ›ÛH™\ÜX‹œ]\\È[\ÜÚ[\QØÕ[\]K\˜YÜ˜\ÜXÙ\‹[XYÙH\È’[XYÙKYÙPœ™XZÃBˆœ›ÛH[œØ^œØ^][È[\Ü\ØØ\CBˆYˆH[Ëž]\ÒSÊ
+CBˆœ›ÛH‹œÙ\šXÙ\Ëœ—Ù›ÛÈ[\Ü\WÙ›ÛÃBˆÝ[\ÈH\WÙ›ÛÊÙ]Ø[\TÝ[TÚY]
+
+JCBˆÝÜžHHÔ\˜YÜ˜\
+“Û˜ÛÐœšYYˆØ\ÙHXÚÎˆˆ
+È\ØØ\J]Y[ÚY
+KÝ[\ÖÈ•]H—JWCBˆ›Üˆ[™H[ˆ]VÈœÝ[[X\žH—VÈ^—KœÜ][™\Ê
+NƒBˆÝÜžK™^[™
+Ô\˜YÜ˜\
+\ØØ\J[™JKÝ[\ÖÈ›ÙU^—JKÜXÙ\ŠKŠWJCBˆÝÜžK˜\[™
+\˜YÜ˜\
+“Ü[ˆ]Y\Ý[ÛœÈ‹Ý[\ÖÈ’XY[™Ìˆ—JJCBˆÝÜžK™^[™
+\˜YÜ˜\
+\ØØ\JJKÝ[\ÖÈ›ÙU^—JH›ÜˆH[ˆ]VÈœ]Y\Ý[ÛœÈ—JCBˆYˆ]VÈšÙ^WÚ[XYÙ\È—NƒBˆœ›ÛH‹˜ÛÛ™šYÈ[\ÜÕÔQÑWÑTƒBˆœ›ÛH‹œÙXÝ\š]H[\Ü™XYÙš[CBˆœ›ÛH‹œÙ\šXÙ\Ëœ›ÝXÝYÙš[\È[\Ü™[™\—ÜYÙCBˆÝÜžK™^[™
+ÔYÙPœ™XZÊ
+K\˜YÜ˜\
+’Ù^H[XYÚ[™ÈÛÝ\˜ÙHYÙ\È‹Ý[\ÖÈ’XY[™ÌH—JWJCBˆ›Üˆ][H[ˆ]VÈšÙ^WÚ[XYÙ\È—VËLÎ—NƒBˆØÏY‹™Ù]
+ØÝ[Y[][VÈšY—JCBˆ]JÕÔQÑWÑT‹œ\™[ÙØË™š[WÜ]
+Kœ™\ÛÛ™J
+CBˆYˆ]š\×Ü™[]]™WÝÊÕÔQÑWÑT‹œ™\ÛÛ™J
+JH[™]™^\ÝÊ
+NƒBˆžNƒBˆ[XYÙOZ[Ëž]\ÒSÊ™[™\—ÜYÙJ™XYÙš[J]
+KØË›Z[YKY[]J™\]Y\Ý
+K›˜[YJJCBˆXÏT’[XYÙJ[XYÙJCBˆØØ[O[Z[ŠŒÜXËš[XYÙUÚYLÜXËš[XYÙRZYÚ
+CBˆXË™˜]ÕÚYXË™˜]ÒZYÚ\XËš[XYÙUÚY
+œØØ[KXËš[XYÙRZYÚ
+œØØ[CBˆÝÜžK™^[™
+Ô\˜YÜ˜\
+\ØØ\Jˆ‘ÙØËšYNˆÙØË]_HŠKÝ[\ÖÈ’XY[™Ìˆ—JKXËÜXÙ\ŠKN
+WJCBˆ^Ù\
+˜[YQ\œ›Ü‹^Ù\[ÛŠNƒBˆÝÜžK˜\[™
+\˜YÜ˜\
+“Ü[ˆHÜšYÚ[˜[ÛÝ\˜ÙH[ˆH]Y[›Û\‹ˆ‹Ý[\ÖÈ›ÙU^—JJCBˆšY]Ù\ZY[]J™\]Y\Ý
+K›˜[YK™[˜ÛÙJ	Ø\ØÚZIË	Ü™\XÙIÊK™XÛÙJ
+CBˆYˆ›ÛÝ\ŠØ[˜\ËØÝ[Y[
+NƒBˆØ[˜\ËœØ]™TÝ]J
+CBˆØ[˜\ËœÙ]›Û
+	Ò[™]XØIË
+CBˆØ[˜\ËœÙ]š[ÛÛÜ”‘ÐŠŒÍKŒKJCBˆØ[˜\Ë™˜]ÔÝš[™ÊŒˆ“Û˜ÛÐœšYYˆÝšY]Ù\ŸHÝ]Û›ÝÊ
+N‰VKI[KIY	R‰S_HUÈYÙHÙØÝ[Y[œYÙ_HŠCBˆØ[˜\Ëœ™\ÝÜ™TÝ]J
+CBˆÚ[\QØÕ[\]JY‹›ÝÛSX\™Ú[M
+K˜Z[
+ÝÜžKÛ‘š\œÝYÙOY›ÛÝ\‹Û“]\”YÙ\ÏY›ÛÝ\ŠCBˆ™]\›ˆ™\ÜÛœÙJY‹™Ù]˜[YJ
+KYYXWÝ\OH˜\XØ][Û‹Üˆ‹XY\œÏ^ÈÛÛ[Q\ÜÜÚ][ÛˆŽˆ‰Ø]XÚY[Èš[[˜[YOHžÜ]Y[ÚYKXØ\ÙK\XÚËœˆ‰ßJCBƒBƒB˜Û\ÜÈY\\’[Š˜\ÙS[Ù[
+NƒBˆÙ\šXÙNˆ]\˜[ÈœÛ\È‹Ú]Ø\‹œÛ™H‹œÜYXÚ‹˜[œÛ][Ûˆ‹šX[È‹œšXÙ\È‹ÙX]\ˆ‹š\Ú[Ûˆ‹ÙX\˜X›\È‹[[YYXÚ[™H‹™\ˆ‹™›Ü›][\žH‹™]šY[˜ÙH—CBˆ^[ØYˆXÝBˆÛÛœÙ[ˆ›ÛÛBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹Ü]Y[ËÞÜ]Y[ÚYKÚ[YÜ˜][ÛˆŠCB™Yˆ[YÜ˜][ÛŠ]Y[ÚYˆÝ‹›ÙNˆY\\’[‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\ˆH]Y[ØXØÙ\ÜÊ‹™\]Y\Ý]Y[ÚY
+CBˆ›Û\Ê\Ù\‹™ØÝÜˆ‹›\œÙH‹›˜]šYØ]Üˆ‹œ]Y[‹˜Ø\™YÚ]™\ˆ‹™Y]]X[ˆ‹˜YZ[ˆŠCBˆYˆ›Ý›ÙK˜ÛÛœÙ[ƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹ÛÛœÙ[\È™\]Z\™Y™Y›Ü™HÚ\š[™È]HÚ]\ÈÙ\šXÙHŠCBˆ™\]Z\™YÜØÛÜHHÈ™›Ü›][\žHŽˆ›YYXÚ[™\È‹™\ˆŽˆ™ØÝ[Y[È‹œÛ™HŽˆ˜ÚXÚÚ[ˆ‹œÜYXÚŽˆ››Ý\È‹˜[œÛ][ÛˆŽˆ™ØÝ[Y[È‹š\Ú[ÛˆŽˆ™ØÝ[Y[È‹šX[ÈŽˆ™ØÝ[Y[È‹œšXÙ\ÈŽˆ›YYXÚ[™\È‹ÙX\˜X›\ÈŽˆ˜XÝ]š]H‹[[YYXÚ[™HŽˆ˜\Ú[Y[ÈŸK™Ù]
+›ÙKœÙ\šXÙK˜Ú]ŠCBˆ™\]Z\™WÜ]Y[
+‹\Ù\‹]Y[ÚY™\]Z\™YÜØÛÜJCBˆYˆ›ÙKœÙ\šXÙH[ˆÈšX[È‹œšXÙ\È‹™›Ü›][\žH‹™]šY[˜ÙHŸNƒBˆ›Û\Ê\Ù\‹™ØÝÜˆŠCBˆYˆ›ÙKœÙ\šXÙHOH™\ˆŽƒBˆ›Û\Ê\Ù\‹™ØÝÜˆ‹›\œÙHŠCBˆYˆ›ÙKœÙ\šXÙH[ˆÈœÛ™H‹œÛ\È‹Ú]Ø\ŸNƒBˆ›Û\Ê\Ù\‹›\œÙH‹™ØÝÜˆ‹›˜]šYØ]Üˆ‹˜YZ[ˆŠCBˆH‹™Ù]
+]Y[]Y[ÚY
+CBˆÈ[ˆY\\ˆØ[››Ý™H\ÙY\ÈH›ÞH›Üˆ\˜š]˜\žH™XÚ\Y[ÈÜˆÝ\ˆ]Y[ËƒBˆ^[ØYHÚÎˆˆ›ÜˆËˆ[ˆ›ÙKœ^[ØYš][\Ê
+HYˆÈ[ˆÈ^‹œÛÝ\˜ÙWÛ[™ÝXYÙH‹\™Ù]Û[™ÝXYÙH‹œ]Y\žH‹™ØÝ[Y[ÚY‹ÜXÈŸ_CBˆYˆ[ŠœÛÛ‹™[\Ê^[ØY
+JHˆŒƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹’[YÜ˜][Ûˆ^[ØYÛÈ\™ÙHŠCBˆYˆ^[ØY™Ù]
+™ØÝ[Y[ÚYŠNƒBˆØÈH‹™Ù]
+ØÝ[Y[^[ØYÈ™ØÝ[Y[ÚY—JCBˆYˆ›ÝØÈÜˆØËœ]Y[ÚYOH]Y[ÚYƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹‘ØÝ[Y[™[Û™ÜÈÈ[›Ý\ˆ]Y[ŠCBˆ^[ØYÈ^—HHØY™WÝ^
+ØË›ØÜ—Ý^
+VÎŒLŒCBˆYˆ›ÙKœÙ\šXÙH[ˆÈš\Ú[Ûˆ‹œÜYXÚŸNƒBˆ[\Ü˜\ÙMBˆœ›ÛH‹˜ÛÛ™šYÈ[\ÜÕÔQÑWÑTƒBˆœ›ÛH‹œÙXÝ\š]H[\Ü™XYÙš[CBˆ]H
+ÕÔQÑWÑT‹œ\™[ÈØË™š[WÜ]
+Kœ™\ÛÛ™J
+CBˆYˆ›Ý]š\×Ü™[]]™WÝÊÕÔQÑWÑT‹œ™\ÛÛ™J
+JNƒBˆ˜Z\ÙH^Ù\[ÛŠ
+CBˆ]HH™XYÙš[J]
+CBˆYˆ›ÙKœÙ\šXÙHOHš\Ú[ÛˆŽƒBˆYˆ›ÝØË›Z[YKœÝ\ÝÚ]
+š[XYÙKÈŠNƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹ÚÛÜÙH[ˆ[XYÙHØÝ[Y[›Üˆš\Ú[ÛˆŠCBˆœ›ÛHS[\Ü[XYÙCBˆ[YÈH[XYÙK›Ü[Š[Ëž]\ÒSÊ]JJK˜ÛÛ™\
+”‘ÐˆŠCBˆ[YË[X›˜Z[
+
+LŽLŽ
+JCBˆYˆH[Ëž]\ÒSÊ
+CBˆ[YËœØ]™JY‹›Ü›X]H’”QÈ‹]X[]ONJCBˆ]HHY‹™Ù]˜[YJ
+CBˆ^[ØYÈ›Z[YH—HHš[XYÙKÚœYÈƒBˆ[ÙNƒBˆYˆ›ÝØË›Z[YKœÝ\ÝÚ]
+˜]Y[ËÈŠNƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹ÚÛÜÙH[ˆ]Y[ÈØÝ[Y[›ÜˆÜYXÚ˜[œØÜš\[ÛˆŠCBˆ^[ØYÈ›Z[YH—HHØË›Z[YCBˆ^[ØYÈ›YYXWØ˜\ÙM—HH˜\ÙM˜[˜ÛÙJ]JK™XÛÙJ
+CBˆYˆ›ÙKœÙ\šXÙH[ˆÈœÛ™H‹œÛ\È‹Ú]Ø\ŸNƒBˆ^[ØYÈÈ—HHœÛ™CBˆYˆ›ÙKœÙ\šXÙHOHœÛ™HŽƒBˆœ›ÛH‹œÙ\šXÙ\Ë[\ÛžH[\ÜØ[Ü^[ØYBˆ^[ØY\]JØ[Ü^[ØY
+‹]Y[ÚY\Ù\‹šY
+JCBˆYˆ›ÙKœÙ\šXÙH[ˆÈšX[È‹™]šY[˜ÙHŸNƒBˆ^[ØYHÈ˜Ø[˜Ù\—Ý\HŽˆ˜Ø[˜Ù\—Ý\KœÝYÙHŽˆœÝYÙK˜š[ÛX\šÙ\œÈŽˆ
+™XÛÜ™Ê‹]Y[ÚY˜Û[šXØ[Ü›Ùš[HŠHÜˆÓ›Û™WJVÌK™]K™Ù]
+˜š[ÛX\šÙ\œÈŠHYˆ™XÛÜ™Ê‹]Y[ÚY˜Û[šXØ[Ü›Ùš[HŠH[ÙHˆŸCBˆYˆ›ÙKœÙ\šXÙHOH™\ˆŽƒBˆ›Ùš[HH™XÛÜ™Ê‹]Y[ÚY˜Û[šXØ[Ü›Ùš[HŠCBˆ^[ØYHÈœ]Y[ÚYŽˆ]Y[ÚYœ™YÚ[Y[ˆŽˆ˜Ý\œ™[Ü™YÚ[Y[‹Bˆ˜[\™ÚY\ÈŽˆ›Ùš[VÌK™]K™Ù]
+˜[\™ÚY\È‹“›Ý™XÛÜ™YŠHYˆ›Ùš[H[ÙH“›Ý™XÛÜ™Y‹Bˆ˜ÛÝ[ÈŽˆ]š[™×ÜÝ[[X\žJ‹]Y[ÚY
+VÈ›]\ÝÛXœÈ—K˜Ø\™WØÛÛXÝŽˆÜË™Ù][Š’ÔÔUSÑSQT‘ÑSÖWÔÓ‘H‹ˆŠKBˆœ™X\ÛÛˆŽˆ›ÙKœ^[ØY™Ù]
+^‹‘[Y\™Ù[˜ÞH™KX[\ŠVÎŒL_CBˆ™\Ý[H[]™\Š›ÙKœÙ\šXÙK^[ØY
+CBˆ\[™Ø]Y]
+‹\Ù\‹™^\›˜[Èˆ
+È›ÙKœÙ\šXÙK]Y[ÚY‘^XÚ]ÛÛœÙ[ÈY\\ˆ[›ÚÙYŠCBˆÈ[Ý[X[Û[šXØ[Ýš\Ú[Û‹ÝšX[Ý]]È™[XZ[ˆ™]šY]ØX›H˜YËƒBˆ›ÝÈHØ\™T™XÛÜ™
+]Y[ÚY\]Y[ÚYÚ[™Hš[YÜ˜][Û—Ü™\Ý[‹]]Ü—ÚY]\Ù\‹šY]]Ü—Û˜[YO]\Ù\‹›˜[YKBˆ]]Ü—Ü›ÛO]\Ù\‹œ›ÛKÝ]\ÏH™˜Y‹]O^ÈœÙ\šXÙHŽˆ›ÙKœÙ\šXÙKœ™\Ý[Žˆ™\Ý[JCBˆ‹˜Y
+›ÝÊCBˆ‹˜ÛÛ[Z]
+
+CBˆ^ÜÙHH\Ù\‹œ›ÛH[ˆÓS’PÒPS”ÈÜˆ
+\Ù\‹œ›ÛHOH™Y]]X[ˆˆ[™›ÙKœÙ\šXÙHOHš\Ú[ÛˆŠHÜˆ›ÙKœÙ\šXÙH[ˆÈ˜[œÛ][Ûˆ‹œÜYXÚ‹[[YYXÚ[™H‹ÙX]\ˆ‹ÙX\˜X›\ÈŸCBˆ™]\›ˆÈœÝ]\ÈŽˆœ›ÝšY\—Ü™\ÜÛœÙH‹œ™XÛÜ™ÚYŽˆ›ÝËšYœ™\Ý[Žˆ™\Ý[Yˆ^ÜÙH[ÙHÈ›Y\ÜØYÙHŽˆ”™XÙZ]™YÈ]ØZ][™ÈÛ[šXØ[™]šY]ÈŸK˜Û[šXØ[Ü™]šY]×Ü™\]Z\™YŽˆY_CBƒBƒB›Ý]\‹™Ù]
+‹ÝŒ‹Üš]˜XÞK\™\]Y\ÝÈŠCB™Yˆš]˜XÞWÜ™\]Y\ÝÊ™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ›Û\ÊY[]J™\]Y\Ý
+Kœš]˜XÞH‹˜YZ[ˆŠCBˆ™]\›ˆÜÙ\šX[
+ŠH›Üˆˆ[ˆ‹œØØ[\œÊÙ[XÝ
+Ø\™T™XÛÜ™
+KÚ\™JØ\™T™XÛÜ™šÚ[™OHœš]˜XÞWÜ™\]Y\ÝŠK›Ü™\—ØžJØ\™T™XÛÜ™šY™\ØÊ
+JJWCBƒBƒB˜Û\ÜÈÛ™T™\Ý[
+˜\ÙS[Ù[
+NƒBˆY[]WÝ™\šYšYYˆ›ÛÛBˆ[œÝÙ\œÎˆÚXÚÒ[ƒBƒBƒB›Ý]\‹œÜÝ
+‹ÝÙXšÛÚÜËÝ[\ÛžHŠCB™YˆÛ™WÜ™\Ý[
+›ÙNˆÛ™T™\Ý[™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆÚÙ[ˆH™\]Y\ÝšXY\œË™Ù]
+˜]]Üš^˜][Ûˆ‹ˆŠKœ™[[Ý™\™Yš^
+™X\™\ˆŠCBˆXÚÙ]H‹œØØ[\ŠÙ[XÝ
+Ú\™S[šÊKÚ\™JÚ\™S[šËÚÙ[—Ú\ÚOHYÙ\Ý
+ÚÙ[ŠKÚ\™S[šËšÚ[™OHœÛ™WØØ[˜XÚÈŠJCBˆYˆ›ÝXÚÙ]ÜˆXÚÙ]œ™]›ÚÙYÜˆXÚÙ]™^\™\×Ø]]Û›ÝÊ
+HÜˆ›Ý›ÙKšY[]WÝ™\šYšYYƒBˆ˜Z\ÙH^Ù\[ÛŠË’[˜[Y^\™YÜˆ[™\šYšYYØ[Ø[˜XÚÈŠCBˆ\Ù\ˆH‹™Ù]
+\Ù\‹XÚÙ]˜Ü™X]YØžJCBˆ™\]Z\™WÜ]Y[
+‹\Ù\‹XÚÙ]œ]Y[ÚY˜ÚXÚÚ[ˆŠCBˆ™\]Y\ÝœÝ]K\Ù\ˆH\Ù\ƒBˆÛÛœÝ[YYY‹™^XÝ]J\]JÚ\™S[šÊKÚ\™JÚ\™S[šËšYO]XÚÙ]šYÚ\™S[šËœ™]›ÚÙYš\×Ê˜[ÙJJK˜[Y\Ê™]›ÚÙYUYJJCBˆYˆÛÛœÝ[YYœ›ÝØÛÝ[OLNƒBˆ˜Z\ÙH^Ù\[ÛŠËØ[˜XÚÈXÚÙ]\È[™XYH™Y[ˆ™YY[YYŠCBˆ‹˜ÛÛ[Z]
+
+CBˆ]HH›ÙK˜[œÝÙ\œË›[Ù[ØÛÜJ\]O^ÈœÛÝ\˜ÙHŽˆ›ÚXÙHŸJCBˆ™\Ý[HÚXÚÚ[ŠXÚÙ]œ]Y[ÚY]K™\]Y\ÝŠCBˆ\[™Ø]Y]
+‹\Ù\‹™\šYšYYÜÛ™WØÚXÚÚ[ˆ‹XÚÙ]œ]Y[ÚY“Û™K][YHØ[˜XÚÈXÚÙ]™YY[YYŠCBˆ™]\›ˆ™\Ý[BƒBƒB›Ý]\‹™Ù]
+‹ÝŒ‹Ú[˜›ÞŠCB™YˆÛX\Ú[˜›Þ
+™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\ˆHY[]J™\]Y\Ý
+CBˆ›Û\Ê\Ù\‹™ØÝÜˆ‹›\œÙHŠCBˆYÈHš\ÚX›WÚYÊ‹\Ù\‹˜Ú]ŠCBˆ›ÝÜÈH‹œØØ[\œÊÙ[XÝ
+Ø\™T™XÛÜ™
+KÚ\™JØ\™T™XÛÜ™šÚ[™OH˜Ú]‹Ø\™T™XÛÜ™œ]Y[ÚYš[—ÊYÊKBˆØ\™T™XÛÜ™˜]]Ü—Ü›ÛKš[—ÊÈœ]Y[‹˜Ø\™YÚ]™\ˆ—JKØ\™T™XÛÜ™œÝ]\ÈOHœÙ[ŠK›Ü™\—ØžJØ\™T™XÛÜ™šY™\ØÊ
+JK›[Z]
+L
+JK˜[
+
+CBˆ™]\›ˆÛÜY
+ÞÊŠœÙ\šX[
+ŠKœ]Y[Û˜[YHŽˆ‹™Ù]
+]Y[‹œ]Y[ÚY
+K›˜[YKBˆ™˜YÜ™\HŽˆSQT‘ÑSÖVÈ™[ˆ—HYˆ‹™]K™Ù]
+\™Ù[˜ÞHŠHOHÈ[ÙH•[šÈ[ÝH›Üˆ][™È\ÈÛ›ÝËˆHÚ[™]šY]È\ÈÚ][Ý\ˆØ\™HX[KˆX\ÙHÛÛ[YH[Ý\ˆÝ\œ™[ÚYÛ™Y[‹ˆŸCBˆ›Üˆˆ[ˆ›ÝÜ×KÙ^O[[X™HŽœ–È™]H—K™Ù]
+\™Ù[˜ÞH‹
+K™]™\œÙOUYJCBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹ÛY\ÜØYÙ\ËÞÜ™XÛÜ™ÚYKÜ™\HŠCB™Yˆ[˜›ÞÜ™\J™XÛÜ™ÚYˆ[›ÙNˆY\ÜØYÙR[‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ›ÝÈH‹™Ù]
+Ø\™T™XÛÜ™™XÛÜ™ÚY
+CBˆYˆ›Ý›ÝÈÜˆ›ÝËšÚ[™OH˜Ú]ŽƒBˆ˜Z\ÙH^Ù\[ÛŠ“Y\ÜØYÙH›Ý›Ý[™ŠCBˆ\Ù\ˆH]Y[ØXØÙ\ÜÊ‹™\]Y\Ý›ÝËœ]Y[ÚY˜Ú]ŠCBˆ›Û\Ê\Ù\‹™ØÝÜˆ‹›\œÙHŠCBˆ™\HHØ\™T™XÛÜ™
+]Y[ÚY\›ÝËœ]Y[ÚYÚ[™H˜Ú]‹]]Ü—ÚY]\Ù\‹šY]]Ü—Û˜[YO]\Ù\‹›˜[YK]]Ü—Ü›ÛO]\Ù\‹œ›ÛKBˆ]O^È^Žˆ›ÙK^œ™\WÝÈŽˆ›ÝËšY\™Ù[˜ÞHŽˆKÝ]\ÏHœÙ[ŠCBˆ›ÝËœÝ]\ÈHœ™\YYƒBˆ‹˜Y
+™\JCBˆ‹˜ÛÛ[Z]
+
+CBˆ›ÝYžWÝX[J‹›ÝËœ]Y[ÚYØ\™HX[H™\YY‹H™\H\È]˜Z[X›H[ˆ[Ý\ˆØ\™HÚ\˜ÛHÚ]ˆŠCBˆ\[™Ø]Y]
+‹\Ù\‹œ™]šY]×Ø[™ÜÙ[™Ü™\H‹›ÝËœ]Y[ÚYˆ”žÜ›ÝËšYHŠCBˆ™]\›ˆÙ\šX[
+™\JCBƒBƒB˜Û\ÜÈXXÚ˜XÚÊ˜\ÙS[Ù[
+NƒBˆ[œÝÙ\œÎˆ\ÝÜÝ—HHšY[
+Z[—Û[™ÝLËX^Û[™ÝLÊCBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹Ü]Y[ËÞÜ]Y[ÚYKÝXXÚX˜XÚÈŠCB™YˆXXÚØ˜XÚÊ]Y[ÚYˆÝ‹›ÙNˆXXÚ˜XÚË™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\ˆH]Y[ØXØÙ\ÜÊ‹™\]Y\Ý]Y[ÚY››Ý\ÈŠCBˆÛÜœ™XÝHÈ˜ÛÛXÝ‹™ØÝÜˆ‹›ÜšYÚ[˜[—CBˆØÛÜ™HHÝ[JHOHˆ›ÜˆKˆ[ˆš\
+›ÙK˜[œÝÙ\œËÛÜœ™XÝ
+JCBˆ›ÝÈHØ\™T™XÛÜ™
+]Y[ÚY\]Y[ÚYÚ[™HXXÚØ˜XÚÈ‹]]Ü—ÚY]\Ù\‹šY]]Ü—Û˜[YO]\Ù\‹›˜[YKBˆ]]Ü—Ü›ÛO]\Ù\‹œ›ÛK]O^È˜[œÝÙ\œÈŽˆ›ÙK˜[œÝÙ\œËœØÛÜ™HŽˆØÛÜ™K›Ý]ÛÙˆŽˆßKÝ]\ÏHœ™XÛÜ™YŠCBˆ‹˜Y
+›ÝÊCBˆ‹˜ÛÛ[Z]
+
+CBˆYˆØÛÜ™HÎƒBˆ[\
+‹]Y[ÚY•XXÚX˜XÚÎˆ\œÙH^[˜][Ûˆ™\]Y\ÝY‹ˆ”žÜ›ÝËšYH‹Ø\›š[™ÈŠCBˆ™]\›ˆÈœØÛÜ™HŽˆØÛÜ™K›Ý]ÛÙˆŽˆË›Y\ÜØYÙHŽˆ–[ÝH[™\œÝÛÙ[™YHÚ[ËˆˆYˆØÛÜ™HOHÈ[ÙH”X\ÙH™]šY]ÈH^[˜][ÛœÈÚ][Ý\ˆ\œÙKˆHÝ\Ü™\]Y\ÝØ\È™XÛÜ™YˆŸCBƒBƒB›Ý]\‹™Ù]
+‹ÝŒ‹Ú[™Ý™\ˆŠCB™Yˆ\œÙWÚ[™Ý™\Š™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\ZY[]J™\]Y\Ý
+CBˆ›Û\Ê\Ù\‹™ØÝÜˆ‹›\œÙHŠCBˆYÏ]š\ÚX›WÚYÊ‹\Ù\‹˜[\ÈŠCBˆ[\ÏY‹œØØ[\œÊÙ[XÝ
+[\
+KÚ\™J[\œ]Y[ÚYš[—ÊYÊK[\œÝ]\ÈOHœ™\ÛÛ™YŠJK˜[
+
+CBˆ[™[™ÏY‹œØØ[\œÊÙ[XÝ
+\›Ý˜[
+KÚ\™J\›Ý˜[œ]Y[ÚYš[—ÊYÊK\›Ý˜[œÝ]\Ëš[—ÊÈœÙ[‹œ™]šY]Ú[™È—JJJK˜[
+
+CBˆ\ÚÜÏY‹œØØ[\œÊÙ[XÝ
+Ø\™T™XÛÜ™
+KÚ\™JØ\™T™XÛÜ™œ]Y[ÚYš[—ÊYÊKØ\™T™XÛÜ™šÚ[™OH\ÚÈ‹Ø\™T™XÛÜ™œÝ]\ÈOH˜ÛÛ\]YŠJK˜[
+
+CBˆ[™\ÏVÙˆ”ÚY[™Ý™\ˆÙ[™\˜]YÝ]Û›ÝÊ
+Kš\ÛÙ›Ü›X]
+
+_HUÈ‹“ÔSˆST•È—CBˆ[™\È
+ÏHÙˆžØKœ]Y[ÚYHÈ^ØKšYNˆØKœ™X\ÛÛŸNÈØKœÝ]\ßNÈØK˜\ÜÚYÛ™YÝßHˆ›ÜˆH[ˆ[\×HÜˆÈ“›Û™H—CBˆ[™\È
+ÏHÈ”S‘S‘ÈÐÕÔˆT“ÕSÈ—H
+ÈÙˆžØKœ]Y[ÚYHÈÞØKšYNˆØKœ™\]Y\ÝNÈØKœÝ]\ßHˆ›ÜˆH[ˆ[™[™×CBˆ[™\È
+ÏHÈ“ÔSˆTÒÔÈ—H
+ÈÙˆžÝœ]Y[ÚYHÈžÝšYNˆÝ™]K™Ù]
+	Ý]IË	ÉÊ_NÈÝ™]K™Ù]
+	Ø\ÜÚYÛ™YÝÉË	ÉÊ_Hˆ›Üˆ[ˆ\ÚÜ×CBˆ™]\›ˆÈ^Žˆ—ˆ‹š›Ú[Š[™\ÊK˜[\ÈŽ›[Š[\ÊKœ[™[™ÈŽ›[Š[™[™ÊK\ÚÜÈŽ›[Š\ÚÜÊ_CBƒBƒB›Ý]\‹™Ù]
+‹ÝŒ‹Ü]Y[ËÞÜ]Y[ÚYKØYK[X]Ú\ÈŠCB™YˆYWÛX]Ú\Ê]Y[ÚYˆÝ‹™\]Y\Ýˆ™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\\]Y[ØXØÙ\ÜÊ‹™\]Y\Ý]Y[ÚY››Ý\ÈŠCBˆ›Û\Ê\Ù\‹œ]Y[‹›˜]šYØ]ÜˆŠCBˆ][ÜË™Ù][Š•QWÑT‘PÕÔ–WÔU‹ˆŠCBˆYˆ›Ý]ƒBˆ™]\›ˆÈœÙ]\Ü™\]Z\™YŽ•YK›X]Ú\ÈŽ–×K›Y\ÜØYÙHŽˆ”Ù]•QWÑT‘PÕÔ–WÔUÈHÜÜ][	ÜÈ™\šYšYYÛÛœÙ[Y›Û[Y\ˆ\™XÝÜžKˆŸCBˆœ›ÛH]Xˆ[\Ü]BˆžNƒBˆ\™XÝÜžOZœÛÛ‹›ØYÊ]
+]
+Kœ™XYÝ^
+[˜ÛÙ[™ÏH]‹NŠJCBˆYˆ›Ý\Ú[œÝ[˜ÙJ\™XÝÜžK\Ý
+NƒBˆ˜Z\ÙH˜[YQ\œ›ÜŠ
+CBˆ^Ù\
+ÔÑ\œ›Ü‹˜[YQ\œ›ÜŠNƒBˆ˜Z\ÙH^Ù\[ÛŠLËYH\™XÝÜžH\È›ÝH˜[Y”ÓÓˆ\ÝŠCBˆY‹™Ù]
+]Y[]Y[ÚY
+CBˆX]Ú\ÏVÞÚÎ‹™Ù]
+ÊH›ÜˆÈ[ˆ
+›Û[Y\—ÚY‹™\Ü^WÛ˜[YH‹›[™ÝXYÙH‹˜Ø[˜Ù\—Ý\HŠ_H›Üˆˆ[ˆ\™XÝÜžHYˆ\Ú[œÝ[˜ÙJ‹XÝ
+CBˆ[™‹™Ù]
+˜Z[™YŠH\ÈYH[™‹™Ù]
+›[Ù\˜]YŠH\ÈYH[™‹™Ù]
+˜ÛÛœÙ[YŠH\ÈYCBˆ[™‹™Ù]
+›[™ÝXYÙHŠOO\œ™Y™\œ™YÛ[™ÝXYÙH[™ÝŠ‹™Ù]
+˜Ø[˜Ù\—Ý\H‹ˆŠJK›ÝÙ\Š
+OO\ÝŠ˜Ø[˜Ù\—Ý\HÜˆˆŠK›ÝÙ\Š
+WCBˆ™]\›ˆÈœÙ]\Ü™\]Z\™YŽ‘˜[ÙK›X]Ú\ÈŽ›X]Ú\ÖÎŒLK›Y\ÜØYÙHŽˆH˜]šYØ]ÜˆÛÛ™š\›\È]˜Z[Xš[]H[™\œ˜[™Ù\È[ˆ[›ÙXÝ[Û‹ˆ[š]HÛ›HÚ]H]Y[	ÜÈÛÛœÙ[È\ÙHH[Ù\˜]YØ\™HÚ\˜ÛKˆŸCBƒBƒB˜Û\ÜÈØÜšX™R[œ]
+˜\ÙS[Ù[
+NƒBˆ^œÝQšY[
+Z[—Û[™ÝLKX^Û[™ÝLŒ
+CBˆ[™ÝXYÙN“]\˜[È™[ˆ‹šH‹›\ˆ—OH™[ˆƒBˆÛÛœÙ[˜›ÛÛBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹Ü]Y[ËÞÜ]Y[ÚYKÜØÜšX™KY˜YŠCB™YˆØÜšX™WÙ˜Y
+]Y[ÚYœÝ‹›ÙN”ØÜšX™R[œ]™\]Y\Ý”™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\\]Y[ØXØÙ\ÜÊ‹™\]Y\Ý]Y[ÚY™ØÝ[Y[ÈŠCBˆ›Û\Ê\Ù\‹™ØÝÜˆŠCBˆYˆ›Ý›ÙK˜ÛÛœÙ[ƒBˆ˜Z\ÙH^Ù\[ÛŠŒ‹”™XÛÜ™[™È[™›ØÙ\ÜÚ[™ÈÛÛœÙ[\È™\]Z\™YŠCBˆœ›ÛH‹œÙ\šXÙ\Ë™˜YÈ[\ÜØÜšX™WÙ˜Y\ÈÜ™X]WÙ˜YBˆ™]\›ˆÜ™X]WÙ˜Y
+‹]Y[ÚY›ÙK^›ÙK›[™ÝXYÙJCBƒBƒB›Ý]\‹œÜÝ
+‹ÝŒ‹Ü]Y[ËÞÜ]Y[ÚYKØØ\™K\™]šY]ËY˜YŠCB™YˆØ\™WÜ™]šY]Ê]Y[ÚYœÝ‹™\]Y\Ý”™\]Y\ÝQ\[™ÊÙ]ÙŠJNƒBˆ\Ù\\]Y[ØXØÙ\ÜÊ‹™\]Y\Ý]Y[ÚY™ØÝ[Y[ÈŠCBˆ›Û\Ê\Ù\‹™ØÝÜˆŠCBˆœ›ÛH‹œÙ\šXÙ\Ë™˜YÈ[\ÜØ\™WÜ™]šY]×Ù˜YBˆ˜YXØ\™WÜ™]šY]×Ù˜Y
+‹]Y[ÚY
+CBˆ›ÝÏP\›Ý˜[
+]Y[ÚY\]Y[ÚYÚ[™Hœ[ˆ‹™\]Y\ÝH”™]šY]È™XÙ[™\ÜËÚXÚËZ[œÈ[™ÚYÛ™Yš\Ú]›Ý\È‹˜YY˜Y™\]Y\ÝYØžO]\Ù\‹›˜[YJCBˆ‹˜Y
+›ÝÊCBˆ‹˜ÛÛ[Z]
+
+CBˆ\[™Ø]Y]
+‹\Ù\‹™˜YØØ\™WÜ™]šY]È‹]Y[ÚYˆ\›Ý˜[Ü›ÝËšYHŠCBˆ™]\›ˆÙ\šX[
+›ÝÊCB

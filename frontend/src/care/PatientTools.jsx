@@ -256,7 +256,7 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
   };
   return (
     <Panel
-      title={clinician ? "Ask the chart" : "Ask my records"}
+      title={clinician ? "AI Chat · patient records" : "AI Chat"}
       hint="Answers cite this patient's folder. Clinical questions go to the treating doctor."
     >
       <div className="care-chat-log">
@@ -317,7 +317,7 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
         />
         <Error message={error} />
         <button className="btn primary" disabled={busy}>
-          {busy ? "Reading your folder…" : "Ask my records"}
+          {busy ? "Reading your folder…" : "Send to AI Chat"}
         </button>
       </form>
     </Panel>

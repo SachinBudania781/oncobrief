@@ -41,7 +41,7 @@ import {
   SourceLinks,
   Voice,
 } from "./UI";
-import { CheckIn, Companion, Medicines, Wellness } from "./PatientTools";
+import { CheckIn, Medicines, Wellness } from "./PatientTools";
 import {
   AlertConsole,
   ApprovalQueue,
@@ -75,7 +75,7 @@ import "./interface.css";
 const NAV = [
   ["home", "Overview", Home, "profile"],
   ["checkin", "Daily check-in", HeartPulse, "checkin"],
-  ["companion", "Ask my records", MessageCircle, "documents"],
+  ["companion", "AI Chat", MessageCircle, "documents"],
   ["medicines", "Medicines & requests", Pill, "medicines"],
   ["clinical", "Care journey", Stethoscope, "documents"],
   ["journal", "Plans & journal", BookHeart, "notes"],
@@ -407,11 +407,12 @@ function CareSpace() {
                 </div>
               )}
               {tab === "companion" && (
-                <Companion
+                <AIAssistantWidget
                   pid={pid}
                   language={language}
-                  clinician={user.role === "doctor"}
                   onOpen={setDocId}
+                  embedded
+                  userRole={user.role}
                 />
               )}
               {tab === "medicines" && (
@@ -494,7 +495,7 @@ function CareSpace() {
         />
       )}
       {docId && <DocViewer docId={docId} onClose={() => setDocId(null)} />}
-      {portal === "patient" && can("documents") && pid && <AIAssistantWidget pid={pid} language={language} onOpen={setDocId} />}
+      {["patient", "doctor"].includes(portal) && can("documents") && pid && tab !== "companion" && <AIAssistantWidget pid={pid} language={language} onOpen={setDocId} userRole={user.role} />}
     </div>
   );
 }
