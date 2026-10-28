@@ -28,6 +28,7 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, embedd
   const [listening, setListening] = useState(false);
   const [error, setError] = useState("");
   const [sharing, setSharing] = useState(false);
+  const [sharingLoaded, setSharingLoaded] = useState(false);
   const [sharingBusy, setSharingBusy] = useState(false);
   const [sharingError, setSharingError] = useState("");
   const recognition = useRef(null);
@@ -48,10 +49,11 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, embedd
     voiceSession.current = false;
     clearTimeout(restartTimer.current);
     setSharing(false);
+    setSharingLoaded(false);
     setSharingError("");
     if (userRole === "patient") {
       request("/v2/patients/" + pid + "/companion-sharing")
-        .then((result) => setSharing(Boolean(result.enabled)))
+        .then((result) => { setSharing(Boolean(result.enabled)); setSharingLoaded(true); })
         .catch((e) => setSharingError(e.message));
     }
   }, [pid, userRole]);
@@ -85,7 +87,7 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, embedd
         conversation_id: conversationId.current,
       });
       setMessages((items) => [...items, { id: "a-" + Date.now(), role: "assistant", result }]);
-      if (spoken) {
+      if (spoken && voiceSession.current) {
         try {
           const responseText = result.level === 3 ? (result.instruction || result.answer) : result.answer;
           if (!window.speechSynthesis) throw new Error("Speech playback is unavailable in this browser.");
@@ -207,7 +209,7 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, embedd
           </div>
 
           {userRole === "patient" && <div className="care-ai-sharing">
-            <label><input type="checkbox" checked={sharing} disabled={sharingBusy} onChange={updateSharing} />
+            <label><input type="checkbox" checked={sharing} disabled={sharingBusy || !sharingLoaded} onChange={updateSharing} />
               <span><b>Share chat excerpts with my care team</b><small>Only your questions from now on. Turn this off any time.</small></span>
             </label>
             {sharingError && <small role="alert">{sharingError}</small>}
