@@ -43,7 +43,7 @@ import {
   SourceLinks,
   Voice,
 } from "./UI";
-import { CheckIn, Medicines, Wellness } from "./PatientTools";
+import { CheckIn, DoseReminder, Medicines, Wellness } from "./PatientTools";
 import {
   AlertConsole,
   ApprovalQueue,
@@ -199,6 +199,7 @@ function CareSpace() {
   const dock = dockKeys.map(k => nav.find(n => n[0] === k)).filter(Boolean).slice(0, 4);
   return (
     <div className={`care-app portal-${portal}`}>
+      {user.role === "patient" && pid && <DoseReminder pid={pid} />}
       <aside className={`care-sidebar ${menu ? "open" : ""}`}>
         <Link to="/" className="care-logo">
           <span className="care-brand-mark"><HeartPulse size={23} /></span>
