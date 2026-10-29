@@ -209,26 +209,33 @@ def find_clashes(appts: list[Appointment]) -> list[dict]:
                     clashes.append({"type": "patient", "ids": [a.id, b.id],
                                     "text": f"Same patient booked in {a.department} ({a.start:%H:%M}) and "
                                             f"{b.department} ({b.start:%H:%M})"})
+                elif a.room == b.room and a.department == b.department:
+                    clashes.append({"type": "room", "ids": [a.id, b.id],
+                                    "text": f"{a.room} double-booked {max(a.start, b.start):%H:%M}–{min(a.end, b.end):%H:%M}"})
                 elif a.department == b.department:
                     clashes.append({"type": "department", "ids": [a.id, b.id],
                                     "text": f"{a.department} has overlapping bookings {max(a.start, b.start):%H:%M}–{min(a.end, b.end):%H:%M}"})
-                elif a.room == b.room:
-                    clashes.append({"type": "room", "ids": [a.id, b.id],
-                                    "text": f"{a.room} double-booked {max(a.start, b.start):%H:%M}–{min(a.end, b.end):%H:%M}"})
     return clashes
 
 
 @router.get("/schedule")
 def schedule(request: Request, day: str | None = None, department: str = "", db: Session = Depends(get_db)):
     start, end = day_bounds(day)
-    from ..security import identity
+    from ..security import identity, visible_ids
     user = identity(request)
-    department = schedule_department(user, department)
-    stmt = select(Appointment).where(
-        Appointment.start >= start, Appointment.start < end, Appointment.status != "cancelled"
-    )
-    if department:
-        stmt = stmt.where(Appointment.department == department)
+    legacy_scoped_day = day is None and not department and user.role in {"doctor", "nurse", "lab", "frontdesk"}
+    if legacy_scoped_day:
+        stmt = select(Appointment).where(
+            Appointment.patient_id.in_(visible_ids(db, user, "appointments")),
+            Appointment.start >= start, Appointment.start < end, Appointment.status != "cancelled"
+        )
+    else:
+        department = schedule_department(user, department)
+        stmt = select(Appointment).where(
+            Appointment.start >= start, Appointment.start < end, Appointment.status != "cancelled"
+        )
+        if department:
+            stmt = stmt.where(Appointment.department == department)
     appts = db.scalars(stmt.order_by(Appointment.start)).all()
     rows = [appt_dict(a, db) for a in appts]
     for item in rows:
@@ -324,7 +331,7 @@ def book(body: AppointmentIn, db: Session = Depends(get_db), actor: Actor = Depe
     dept = next((d for d in DEPARTMENTS if d["name"] == department_name), None)
     if not dept or department_name == "Front desk / Records":
         raise HTTPException(422, "Unknown department")
-    if user.role in {"doctor", "nurse", "lab", "frontdesk"}:
+    if user.role == "frontdesk":
         assigned_department = schedule_department(user, department_name)
         if assigned_department and assigned_department != department_name:
             raise HTTPException(403, "You can only book into your assigned department")

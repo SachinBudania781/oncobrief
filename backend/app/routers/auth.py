@@ -192,9 +192,15 @@ def create_user(body: UserIn, request: Request, db=Depends(get_db)):
     user = identity(request)
     roles(user, "admin")
     department_names = {d["name"] for d in DEPARTMENTS if d["name"] != "Front desk / Records"}
-    if body.role in {"doctor", "nurse", "lab"} and body.department not in department_names:
-        raise HTTPException(422, "Doctors, nurses and lab staff must be assigned to a department")
-    if body.role == "frontdesk" and body.department and body.department not in department_names:
+    if body.role in {"doctor", "nurse", "lab"} and body.department and body.department not in department_names:
+        raise HTTPException(422, "Choose a valid department")
+    default_departments = {
+        "doctor": "Medical Oncology OPD",
+        "nurse": "Day-care Chemotherapy",
+        "lab": "Biochemistry & Haematology Lab",
+    }
+    department = body.department or default_departments.get(body.role, "")
+    if body.role == "frontdesk" and department and department not in department_names:
         raise HTTPException(422, "Choose a valid clinical department or leave central front desk unassigned")
     if body.role=="patient" and (len(body.patient_ids)!=1 or not body.phone):
         raise HTTPException(422,"A patient account needs exactly one patient folder and a registered phone number")
@@ -204,7 +210,9 @@ def create_user(body: UserIn, request: Request, db=Depends(get_db)):
         raise HTTPException(422, "Unknown patient")
     import pyotp
     secret = pyotp.random_base32()
-    row = User(**body.model_dump(exclude={"password", "patient_ids"}), password_hash=password_hash(body.password), totp_secret=secret)
+    row_data = body.model_dump(exclude={"password", "patient_ids"})
+    row_data["department"] = department
+    row = User(**row_data, password_hash=password_hash(body.password), totp_secret=secret)
     db.add(row)
     db.flush()
     for pid in body.patient_ids:
