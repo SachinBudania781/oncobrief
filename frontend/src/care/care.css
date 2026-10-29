@@ -638,6 +638,57 @@
   min-height: 29px;
   height: 29px;
 }
+.care-reminder-settings {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+}
+.care-reminder-settings .btn {
+  flex: 0 0 auto;
+  gap: 8px;
+}
+.care-reminder-settings p {
+  flex: 1 1 220px;
+  margin: 6px 0 0;
+}
+.care-dose-reminder {
+  position: fixed;
+  z-index: 1000;
+  right: 20px;
+  bottom: calc(20px + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: min(370px, calc(100vw - 32px));
+  padding: 16px 17px;
+  color: #294b57;
+  background: #fff;
+  border: 1px solid #d7e7eb;
+  border-left: 4px solid #16818a;
+  border-radius: 14px;
+  box-shadow: 0 14px 42px #244b5a24;
+}
+.care-dose-reminder b {
+  display: block;
+  font-size: 13px;
+}
+.care-dose-reminder p {
+  margin: 5px 0 0;
+  color: #66808a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.care-dose-reminder button {
+  margin-left: auto;
+  border: 0;
+  color: #6d8791;
+  background: transparent;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
 .care-tracker {
   display: flex;
   gap: 6px;

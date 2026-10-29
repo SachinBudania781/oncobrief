@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Camera, CheckCircle2, Flower2, Heart, Send } from "lucide-react";
+import { Bell, BellOff, Camera, CheckCircle2, Flower2, Heart, Send } from "lucide-react";
 import { request, useResource, dateTime, nice } from "./client";
 import {
   Action,
@@ -57,6 +57,51 @@ const labels = {
   },
 };
 
+const doseReminderKey = (pid) => `oncobrief-dose-reminders:${pid}`;
+let doseReminderAudio = null;
+
+function isDoseReminderEnabled(pid) {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(doseReminderKey(pid)) === "on";
+  } catch {
+    return false;
+  }
+}
+
+async function unlockDoseReminderAudio() {
+  const AudioContextType = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextType) return false;
+  if (!doseReminderAudio || doseReminderAudio.state === "closed") {
+    doseReminderAudio = new AudioContextType();
+  }
+  await doseReminderAudio.resume();
+  return doseReminderAudio.state === "running";
+}
+
+function playDoseReminderTone() {
+  const context = doseReminderAudio;
+  if (!context || context.state !== "running") return;
+  const start = context.currentTime;
+  [660, 880, 660].forEach((frequency, index) => {
+    const toneStart = start + index * 0.27;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(frequency, toneStart);
+    gain.gain.setValueAtTime(0.0001, toneStart);
+    gain.gain.exponentialRampToValueAtTime(0.1, toneStart + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.0001, toneStart + 0.2);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(toneStart);
+    oscillator.stop(toneStart + 0.22);
+  });
+}
+
+function localDoseDay(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
 export function CheckIn({ pid, language, onUpdate, phoneDemo = false }) {
   const [values, setValues] = useState({
     nausea: 0,
@@ -256,7 +301,7 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
   };
   return (
     <Panel
-      title={clinician ? "Ask the chart" : "Ask my records"}
+      title={clinician ? "AI Chat · patient records" : "AI Chat"}
       hint="Answers cite this patient's folder. Clinical questions go to the treating doctor."
     >
       <div className="care-chat-log">
@@ -317,7 +362,7 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
         />
         <Error message={error} />
         <button className="btn primary" disabled={busy}>
-          {busy ? "Reading your folder…" : "Ask my records"}
+          {busy ? "Reading your folder…" : "Send to AI Chat"}
         </button>
       </form>
     </Panel>
@@ -334,6 +379,45 @@ export function Medicines({ pid, user, onUpdate }) {
     [scan, setScan] = useState(null);
   const [scanFile, setScanFile] = useState(null),
     [selectedMed, setSelectedMed] = useState("");
+  const [remindersEnabled, setRemindersEnabled] = useState(() => isDoseReminderEnabled(pid));
+  const [reminderMessage, setReminderMessage] = useState("");
+  useEffect(() => {
+    setRemindersEnabled(isDoseReminderEnabled(pid));
+    setReminderMessage("");
+  }, [pid]);
+  const toggleDoseReminders = async () => {
+    if (remindersEnabled) {
+      try { window.localStorage.removeItem(doseReminderKey(pid)); } catch {}
+      setRemindersEnabled(false);
+      setReminderMessage("Dose reminders are off on this device.");
+    } else {
+      const audioPromise = unlockDoseReminderAudio().catch(() => false);
+      let permission = "unsupported";
+      if ("Notification" in window) {
+        try {
+          permission = window.Notification.permission === "default"
+            ? await window.Notification.requestPermission()
+            : window.Notification.permission;
+        } catch {
+          permission = "denied";
+        }
+      }
+      const audioReady = await audioPromise;
+      try {
+        window.localStorage.setItem(doseReminderKey(pid), "on");
+      } catch {
+        setReminderMessage("This browser could not save the reminder setting.");
+        return;
+      }
+      setRemindersEnabled(true);
+      setReminderMessage(permission === "denied"
+        ? "Browser notifications are blocked; the in-app sound and reminder card can still alert you while OncoBrief is open."
+        : !audioReady
+          ? "Enabled. Keep OncoBrief open; this browser may show reminders without sound."
+          : "Enabled on this device. Keep OncoBrief open for scheduled reminders.");
+    }
+    window.dispatchEvent(new Event("ob-dose-reminders-change"));
+  };
   const ask = async (e) => {
     e.preventDefault();
     setBusy(true);
@@ -359,6 +443,17 @@ export function Medicines({ pid, user, onUpdate }) {
           title="Today's medicines"
           hint="Only active, signed prescriptions appear here."
         >
+          {user.role === "patient" && (
+            <div className="care-reminder-settings">
+              <button className="btn" type="button" onClick={toggleDoseReminders}>
+                {remindersEnabled ? <BellOff size={16} /> : <Bell size={16} />}
+                {remindersEnabled ? "Turn off dose reminders" : "Enable dose reminders"}
+              </button>
+              <p className="small muted">
+                {reminderMessage || "Get a gentle sound and browser alert at each scheduled dose. The patient app must remain open."}
+              </p>
+            </div>
+          )}
           <Load resource={meds}>
             {(items) =>
               items.length ? (
@@ -388,6 +483,7 @@ export function Medicines({ pid, user, onUpdate }) {
                             }
                             onDone={() => {
                               meds.refresh();
+                              window.dispatchEvent(new Event("ob-dose-reminders-refresh"));
                               onUpdate?.();
                             }}
                           >
@@ -554,7 +650,97 @@ export function Medicines({ pid, user, onUpdate }) {
   );
 }
 
-export function Wellness({ pid, language, canTeachBack = true }) {
+export function DoseReminder({ pid }) {
+  const [enabled, setEnabled] = useState(() => isDoseReminderEnabled(pid));
+  const [notice, setNotice] = useState(null);
+  const meds = useResource(enabled && pid ? `/patients/${pid}/medications` : null, 60000);
+
+  useEffect(() => {
+    setEnabled(isDoseReminderEnabled(pid));
+    setNotice(null);
+  }, [pid]);
+
+  useEffect(() => {
+    const sync = () => setEnabled(isDoseReminderEnabled(pid));
+    window.addEventListener("ob-dose-reminders-change", sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener("ob-dose-reminders-change", sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, [pid]);
+
+  useEffect(() => {
+    const refresh = () => meds.refresh();
+    window.addEventListener("ob-dose-reminders-refresh", refresh);
+    return () => window.removeEventListener("ob-dose-reminders-refresh", refresh);
+  }, [meds.refresh]);
+
+  useEffect(() => {
+    if (!enabled || !pid || !Array.isArray(meds.data)) return;
+    const checkDueDoses = () => {
+      const now = new Date();
+      const today = localDoseDay(now);
+      const nowMs = now.getTime();
+      const dueDoses = [];
+      for (const medicine of meds.data) {
+        for (const dose of medicine.today || []) {
+          if (dose.status !== "due") continue;
+          const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(dose.time || ""));
+          if (!match) continue;
+          const scheduled = new Date(now);
+          scheduled.setHours(Number(match[1]), Number(match[2]), 0, 0);
+          const minutesLate = (nowMs - scheduled.getTime()) / 60000;
+          if (minutesLate < 0 || minutesLate > 15) continue;
+          const marker = `${doseReminderKey(pid)}:fired:${today}:${medicine.id}:${dose.time}`;
+          try {
+            if (window.localStorage.getItem(marker)) continue;
+            window.localStorage.setItem(marker, String(nowMs));
+          } catch {
+            continue;
+          }
+          dueDoses.push({ medicine, dose });
+        }
+      }
+      if (!dueDoses.length) return;
+      playDoseReminderTone();
+      if ("Notification" in window && window.Notification.permission === "granted") {
+        for (const { medicine, dose } of dueDoses) {
+          try {
+            new window.Notification("OncoBrief medicine reminder", {
+              body: `Time for ${medicine.name} ${medicine.dose} · scheduled at ${dose.time}`,
+              tag: `${pid}-${medicine.id}-${today}-${dose.time}`,
+            });
+          } catch {}
+        }
+      }
+      const names = dueDoses.map(({ medicine }) => medicine.name);
+      setNotice({
+        id: nowMs,
+        time: dueDoses[0].dose.time,
+        message: dueDoses.length === 1
+          ? `Time for ${names[0]}. Open Medicines to record this dose.`
+          : `Time for ${dueDoses.length} scheduled medicines. Open Medicines to record each dose.`,
+      });
+    };
+    checkDueDoses();
+    const timer = window.setInterval(checkDueDoses, 15000);
+    return () => window.clearInterval(timer);
+  }, [enabled, meds.data, pid]);
+
+  if (!notice) return null;
+  return (
+    <div className="care-dose-reminder" role="status" aria-live="assertive" key={notice.id}>
+      <div>
+        <b>Medicine reminder · {notice.time}</b>
+        <p>{notice.message}</p>
+      </div>
+      <button type="button" aria-label="Dismiss medicine reminder" onClick={() => setNotice(null)}>×</button>
+    </div>
+  );
+}
+export function Wellness({ pid, language, canTeachBack = true, viewerRole = "patient" }) {
+  const patientView = viewerRole === "patient";
   const resource = useResource(`/v2/patients/${pid}/wellness`),
     week = useResource(`/v2/patients/${pid}/week`);
   const [played, setPlayed] = useState(false),
@@ -621,18 +807,18 @@ export function Wellness({ pid, language, canTeachBack = true }) {
                     <b>{w.doses_taken}</b>
                     <span>doses taken</span>
                   </div>
-                  <div>
+                  {!patientView && <div>
                     <b>{w.steps.toLocaleString()}</b>
                     <span>steps recorded</span>
-                  </div>
+                  </div>}
                   <div>
                     <b>{w.garden_stage}/5</b>
                     <span>garden stage</span>
                   </div>
                 </div>
                 <p className="small">
-                  Missed a day? You can begin again today. Best step day:{" "}
-                  {w.best_day || "not recorded yet"}.
+                  Missed a day? You can begin again today.
+                  {!patientView && <> Best step day: {w.best_day || "not recorded yet"}.</>}
                 </p>
                 <button className="btn" onClick={() => window.print()}>
                   Print my Week Wrapped
@@ -647,9 +833,9 @@ export function Wellness({ pid, language, canTeachBack = true }) {
         >
           <MemoryGame key={pid} />
         </Panel>
-        <Panel title="Activity & wearable log">
+        {!patientView && <Panel title="Activity & wearable log">
           <SimpleActivity pid={pid} onDone={() => week.refresh()} />
-        </Panel>
+        </Panel>}
       </div>
     </div>
   );

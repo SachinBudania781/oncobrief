@@ -6,6 +6,7 @@ import {
   ScanLine,
   Upload,
   ArrowRight,
+  Video,
 } from "lucide-react";
 import { request, useResource, dateTime } from "./client";
 import { Action, Empty, Error, Load, Panel, Status } from "./UI";
@@ -15,6 +16,10 @@ import Records from "../apps/doctor/Records";
 export function RecordsDesk({ pid, user, onOpen }) {
   const taxonomy = useResource("/taxonomy"),
     [version, setVersion] = useState(0);
+  const [department, setDepartment] = useState(
+    user.department || "Biochemistry & Haematology Lab",
+  );
+  const staffUpload = ["doctor", "nurse", "lab", "admin"].includes(user.role);
   return (
     <div className="stack">
       <Panel
@@ -42,18 +47,21 @@ export function RecordsDesk({ pid, user, onOpen }) {
           >
             <Load resource={taxonomy}>
               {(t) => (
-                <UploadForm
-                  key={pid}
-                  taxonomy={t}
-                  mode={
-                    ["patient", "caregiver"].includes(user.role)
-                      ? "patient"
-                      : "staff"
-                  }
-                  fixedPatientId={pid}
-                  department={user.department || "Patient"}
-                  onUploaded={() => setVersion((v) => v + 1)}
-                />
+                <div className="stack">
+                  {staffUpload && <label className="field"><span>Filing department</span><select className="select" value={department} onChange={(e) => setDepartment(e.target.value)}>{t.departments.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}</select></label>}
+                  <UploadForm
+                    key={pid}
+                    taxonomy={t}
+                    mode={
+                      ["patient", "caregiver"].includes(user.role)
+                        ? "patient"
+                        : "staff"
+                    }
+                    fixedPatientId={pid}
+                    department={staffUpload ? department : "Patient"}
+                    onUploaded={() => setVersion((v) => v + 1)}
+                  />
+                </div>
               )}
             </Load>
           </Panel>
@@ -274,8 +282,25 @@ export function DayPass({ pid, user }) {
   );
   const taxonomy = useResource("/taxonomy"),
     [dept, setDept] = useState("Medical Oncology OPD"),
-    [start, setStart] = useState(""),
+    [bookingDay, setBookingDay] = useState(new Date().toLocaleDateString("en-CA")),
+    [selectedSlot, setSelectedSlot] = useState(""),
     [error, setError] = useState("");
+  const [visitMode, setVisitMode] = useState("in_person"),
+    [clinicianType, setClinicianType] = useState("oncologist"),
+    [patientEmail, setPatientEmail] = useState(""),
+    [caregiverEmail, setCaregiverEmail] = useState(""),
+    [clinicianEmail, setClinicianEmail] = useState(""),
+    [includeCaregiver, setIncludeCaregiver] = useState(true),
+    [invitationConsent, setInvitationConsent] = useState(false),
+    [bookingNote, setBookingNote] = useState("");
+  const bookingDepartment = visitMode === "google_meet"
+    ? (clinicianType === "psychiatrist" ? "Psycho-oncology" : "Medical Oncology OPD")
+    : dept;
+  const slotResource = useResource(
+    `/slots?department=${encodeURIComponent(bookingDepartment)}&day=${bookingDay}&patient_id=${encodeURIComponent(pid)}`,
+    30000,
+  );
+  useEffect(() => setSelectedSlot(""), [bookingDay, bookingDepartment]);
   return (
     <div className="care-columns">
       <Panel
@@ -305,27 +330,28 @@ export function DayPass({ pid, user }) {
                   alt="Hospital gate check-in QR"
                   style={{ width: 120, height: 120 }}
                 />
-                <Action
+                {d.stops.some((stop) => !stop.virtual_visit) && <Action
                   run={() => request(`/v2/patients/${pid}/gate`, "POST")}
                   onDone={resource.refresh}
                 >
                   Check in at hospital gate
-                </Action>
+                </Action>}
                 <div className="care-stops">
                   {d.stops.map((s, i) => (
                     <article key={s.id}>
                       <span className="care-step">{i + 1}</span>
                       <div>
                         <b>{s.department}</b>
-                        <p>
-                          {s.room} · {dateTime(s.start)}
-                        </p>
+                        <p>{s.virtual_visit ? "Video consultation" : s.room} · {String(s.start).slice(11, 16)}–{String(s.end).slice(11, 16)}</p>
+                        <p className="small muted">Faculty · {s.clinician || "Assignment pending"}</p>
                         <Status value={s.status} />
-                        <p>
-                          {s.ahead} ahead · about {s.wait_minutes} min
-                        </p>
-                        <p className="small muted">{s.directions}</p>
-                        <div className="row wrap">
+                        {s.virtual_visit && <div className="ob-meet-card">
+                          <div className="row wrap"><Video size={17} /><b>Google Meet · {s.virtual_visit.clinician_type}</b><Status value={s.virtual_visit.status} /></div>
+                          {s.virtual_visit.status === "scheduled" && s.virtual_visit.meeting_url ? <a className="btn primary" href={s.virtual_visit.meeting_url} target="_blank" rel="noopener noreferrer">Join video consultation</a> : <p className="small muted">The hospital team will add the meeting link. Check this appointment again before your visit.</p>}
+                          {s.virtual_visit.caregiver_included && <p className="small muted">Your caregiver is included in the calendar invitation.</p>}
+                        </div>}
+                        {!s.virtual_visit && <><p>{s.ahead} ahead · about {s.wait_minutes} min</p><p className="small muted">{s.directions}</p></>}
+                        {!s.virtual_visit && <div className="row wrap">
                           {(user.role === "patient" || user.role === "caregiver"
                             ? ["arrived"]
                             : ["arrived", "in_progress", "completed", "missed"]
@@ -344,7 +370,7 @@ export function DayPass({ pid, user }) {
                               {action.replaceAll("_", " ")}
                             </Action>
                           ))}
-                        </div>
+                        </div>}
                       </div>
                     </article>
                   ))}
@@ -375,7 +401,7 @@ export function DayPass({ pid, user }) {
       </Panel>
       <Panel
         title="Plan one trip"
-        hint="Choose the same date for tests and review. The scheduler checks room and patient clashes."
+        hint="Choose a department and date to see only appointment times that are still free."
       >
         <form
           className="stack"
@@ -383,159 +409,164 @@ export function DayPass({ pid, user }) {
             e.preventDefault();
             setError("");
             try {
-              await request("/appointments", "POST", {
+              const result = await request("/appointments", "POST", {
                 patient_id: pid,
                 department: dept,
-                start,
+                start: `${bookingDay}T${selectedSlot}`,
                 visit_type: "follow_up",
+                visit_mode: visitMode,
+                ...(visitMode === "google_meet" ? {
+                  clinician_type: clinicianType,
+                  patient_email: patientEmail,
+                  clinician_email: clinicianEmail,
+                  caregiver_email: caregiverEmail,
+                  include_caregiver: includeCaregiver,
+                  invitation_consent: invitationConsent,
+                } : {}),
               });
+              setBookingNote(visitMode === "google_meet"
+                ? (result.virtual_visit?.status === "creating"
+                  ? "Video appointment booked. Google is preparing the Meet link; it will appear on this day pass shortly."
+                  : result.virtual_visit?.status === "scheduled"
+                    ? "Video appointment booked. Google Calendar invitations have been sent to the selected participants."
+                    : "Video appointment booked. The hospital team needs to configure Google Calendar or add its Meet link before the visit.")
+                : "Appointment booked.");
+              setInvitationConsent(false);
+              setDay(bookingDay);
+              setSelectedSlot("");
               resource.refresh();
+              slotResource.refresh();
             } catch (e) {
               setError(e.message);
             }
           }}
         >
           <label className="field">
-            Department
-            <select
-              className="select"
-              value={dept}
-              onChange={(e) => setDept(e.target.value)}
-            >
-              {taxonomy.data?.departments.map((d) => (
-                <option key={d.name}>{d.name}</option>
-              ))}
+            Appointment format
+            <select className="select" value={visitMode} onChange={(e) => setVisitMode(e.target.value)}>
+              <option value="in_person">In-person hospital visit</option>
+              <option value="google_meet">Online consultation · Google Meet</option>
             </select>
           </label>
+          {visitMode === "in_person" ? <label className="field">
+            Department
+            <select className="select" value={dept} onChange={(e) => setDept(e.target.value)}>
+              {taxonomy.data?.departments.filter((d) => d.name !== "Front desk / Records").map((d) => <option key={d.name}>{d.name}</option>)}
+            </select>
+          </label> : <>
+            <label className="field">Specialist
+              <select className="select" value={clinicianType} onChange={(e) => setClinicianType(e.target.value)}>
+                <option value="oncologist">Oncologist · Medical Oncology OPD</option>
+                <option value="psychiatrist">Psychiatrist · Psycho-oncology</option>
+              </select>
+            </label>
+            <p className="small muted">The calendar invitation uses a private title and does not include diagnosis or treatment details.</p>
+            <label className="field">Patient email for the invitation<input className="input" type="email" autoComplete="email" required value={patientEmail} onChange={(e) => setPatientEmail(e.target.value)} /></label>
+            <label className="field">Oncologist / psychiatrist email<input className="input" type="email" autoComplete="email" required value={clinicianEmail} onChange={(e) => setClinicianEmail(e.target.value)} /></label>
+            <label className="ob-meet-check"><input type="checkbox" checked={includeCaregiver} onChange={(e) => setIncludeCaregiver(e.target.checked)} /> Include my caregiver in this consultation</label>
+            {includeCaregiver && <label className="field">Caregiver email for the invitation<input className="input" type="email" autoComplete="email" required value={caregiverEmail} onChange={(e) => setCaregiverEmail(e.target.value)} /></label>}
+            <label className="ob-meet-check"><input type="checkbox" checked={invitationConsent} onChange={(e) => setInvitationConsent(e.target.checked)} required /> I agree to send a calendar invitation to these people. Invitees may see one another's email addresses.</label>
+          </>}
           <label className="field">
-            Date and time
+            Appointment date
             <input
-              type="datetime-local"
+              type="date"
               className="input"
               required
-              value={start}
-              onChange={(e) => setStart(e.target.value)}
+              min={new Date().toLocaleDateString("en-CA")}
+              value={bookingDay}
+              onChange={(e) => setBookingDay(e.target.value)}
             />
           </label>
-          <button className="btn primary">Book appointment</button>
+          <div className="field">
+            Available appointment times · {bookingDepartment}
+            <Load resource={slotResource}>
+              {(availableSlots) => availableSlots.length ? (
+                <select className="select" required value={selectedSlot} onChange={(e) => setSelectedSlot(e.target.value)}>
+                  <option value="">Choose an available time</option>
+                  {availableSlots.map((time) => <option key={time} value={time}>{time}</option>)}
+                </select>
+              ) : <p className="small muted">No free times are available on this date. Choose another date.</p>}
+            </Load>
+          </div>
+          <button className="btn primary" disabled={!selectedSlot}>Book appointment</button>
           <Error message={error} />
+          {bookingNote && <p className="care-notice" role="status">{bookingNote}</p>}
         </form>
-        <p className="small muted">
-          For a video visit, use a configured telemedicine service in Connected
-          services.
-        </p>
       </Panel>
     </div>
   );
 }
 
 export function ScheduleDesk({ user }) {
-  const [day, setDay] = useState(new Date().toLocaleDateString("en-CA")),
-    resource = useResource(`/schedule?day=${day}`, 15000);
+  const [day, setDay] = useState(new Date().toLocaleDateString("en-CA"));
+  const [department, setDepartment] = useState(user.department || "");
+  const taxonomy = useResource("/taxonomy");
+  const scopedDepartment = user.role === "admin" ? department : (user.department || department);
+  const scheduleUrl = `/schedule?day=${day}${scopedDepartment ? `&department=${encodeURIComponent(scopedDepartment)}` : ""}`;
+  const resource = useResource(scheduleUrl, 15000);
+  const integrations = useResource("/v2/integrations", 60000);
   const [suggestions, setSuggestions] = useState({});
+  const canSeeHospitalWide = user.role === "admin" || (user.role === "frontdesk" && !user.department);
+  const departments = (taxonomy.data?.departments || []).map((d) => d.name).filter((name) => name !== "Front desk / Records");
   return (
     <div className="stack">
-      <PackedSchedule day={day} user={user} onDone={resource.refresh} />
+      {canSeeHospitalWide && <PackedSchedule day={day} user={user} onDone={resource.refresh} />}
       <Panel
-        title="Hospital command & smart slot packing"
-        hint="Review proposed changes before applying. Patient and room overlap are checked again when saving."
+        title={scopedDepartment ? `${scopedDepartment} timetable` : "Hospital department timetables"}
+        hint="Department staff can see all bookings in their assigned department. Patients see only their own appointment itinerary."
       >
-        <input
-          className="input"
-          aria-label="Schedule date"
-          type="date"
-          value={day}
-          onChange={(e) => setDay(e.target.value)}
-        />
+        <div className="grid2">
+          <label className="field">
+            Schedule date
+            <input className="input" type="date" value={day} onChange={(e) => setDay(e.target.value)} />
+          </label>
+          {user.role === "admin" || (user.role === "frontdesk" && !user.department) ? (
+            <label className="field">
+              Department
+              <select className="select" value={department} onChange={(e) => setDepartment(e.target.value)}>
+                <option value="">All departments</option>
+                {departments.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </label>
+          ) : (
+            <div className="field">Assigned department<p className="care-notice">{user.department || "Department assignment required"}</p></div>
+          )}
+        </div>
         <Load resource={resource}>
           {(d) => (
             <>
               <div className="care-metrics">
-                <div>
-                  <b>{d.appointments.length}</b>
-                  <span>bookings</span>
-                </div>
-                <div>
-                  <b>{d.clashes.length}</b>
-                  <span>clashes to review</span>
-                </div>
-                <div>
-                  <b>
-                    {
-                      d.appointments.filter((a) => a.status === "arrived")
-                        .length
-                    }
-                  </b>
-                  <span>arrived</span>
-                </div>
+                <div><b>{d.appointments.length}</b><span>bookings</span></div>
+                <div><b>{d.clashes.length}</b><span>clashes to review</span></div>
+                <div><b>{d.appointments.filter((a) => a.status === "arrived").length}</b><span>arrived</span></div>
               </div>
-              {d.clashes.map((c, i) => (
-                <p className="care-notice" key={i}>
-                  {c.text}
-                </p>
-              ))}
+              {d.clashes.map((c, i) => <p className="care-notice" key={i}>{c.text}</p>)}
+              <ScheduleTimeline appointments={d.appointments} departments={d.departments} clashes={d.clashes} department={d.department} />
+              <DepartmentSlotBoard appointments={d.appointments} departments={d.departments} day={day} />
               <div className="care-scroll">
                 <table className="list">
                   <thead>
-                    <tr>
-                      <th>Patient</th>
-                      <th>Department / room</th>
-                      <th>Time</th>
-                      <th>Queue</th>
-                      <th>Clash fix / packing</th>
-                    </tr>
+                    <tr><th>Patient</th><th>Department / room</th><th>Faculty</th><th>Time</th><th>Queue</th><th>Clash fix / packing</th></tr>
                   </thead>
                   <tbody>
                     {d.appointments.map((a) => (
                       <tr key={a.id}>
+                        <td>{a.patient_name}<br /><small>{a.patient_id}</small></td>
                         <td>
-                          {a.patient_name}
-                          <br />
-                          <small>{a.patient_id}</small>
+                          {a.department}<br />
+                          {a.virtual_visit ? <span className="small"><Video size={14} /> Video · {a.virtual_visit.clinician_type}</span> : a.room}
+                          {a.virtual_visit && <MeetVisitControls appointment={a} user={user} onDone={resource.refresh} googleConfigured={integrations.data?.services?.find((x) => x.service === "google_meet")?.configured} />}
                         </td>
+                        <td>{a.clinician || "Assignment pending"}</td>
+                        <td className="small">{String(a.start).slice(11, 16)}–{String(a.end).slice(11, 16)}</td>
+                        <td><Status value={a.status} /></td>
                         <td>
-                          {a.department}
-                          <br />
-                          {a.room}
-                        </td>
-                        <td className="small">{dateTime(a.start)}</td>
-                        <td>
-                          <Status value={a.status} />
-                        </td>
-                        <td>
-                          <Action
-                            run={() =>
-                              request(`/v2/appointments/${a.id}/suggest-slot`)
-                            }
-                            onDone={(s) =>
-                              setSuggestions((v) => ({ ...v, [a.id]: s }))
-                            }
-                          >
-                            Suggest nearest free slot
-                          </Action>
+                          <Action run={() => request(`/v2/appointments/${a.id}/suggest-slot`)} onDone={(slot) => setSuggestions((v) => ({ ...v, [a.id]: slot }))}>Suggest nearest free slot</Action>
                           {suggestions[a.id] && (
                             <div className="stack">
-                              <span className="small">
-                                {dateTime(suggestions[a.id].start)}
-                              </span>
-                              <Action
-                                run={() =>
-                                  request(
-                                    `/v2/appointments/${a.id}/reschedule`,
-                                    "POST",
-                                    { start: suggestions[a.id].start },
-                                  )
-                                }
-                                onDone={() => {
-                                  resource.refresh();
-                                  setSuggestions((v) => ({
-                                    ...v,
-                                    [a.id]: null,
-                                  }));
-                                }}
-                              >
-                                Approve move
-                              </Action>
+                              <span className="small">{dateTime(suggestions[a.id].start)}</span>
+                              <Action run={() => request(`/v2/appointments/${a.id}/reschedule`, "POST", { start: suggestions[a.id].start })} onDone={() => { resource.refresh(); setSuggestions((v) => ({ ...v, [a.id]: null })); }}>Approve move</Action>
                             </div>
                           )}
                         </td>
@@ -553,6 +584,127 @@ export function ScheduleDesk({ user }) {
   );
 }
 
+function DepartmentSlotBoard({ appointments, departments, day }) {
+  const times = Array.from({ length: 23 }, (_, index) => {
+    const minutes = 9 * 60 + index * 20;
+    return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+  });
+  const today = new Date().toLocaleDateString("en-CA");
+  const now = new Date();
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  return (
+    <Panel title="Department slots" hint="Booked times are unavailable to patients. Staff can see who holds each booking and the assigned faculty.">
+      {departments.map((department) => (
+        <section key={department} className="stack">
+          <h3>{department}</h3>
+          <div className="care-scroll">
+            <table className="list">
+              <thead><tr><th>Time</th><th>Status</th><th>Patient</th><th>Faculty</th><th>Room</th></tr></thead>
+              <tbody>
+                {times.map((time) => {
+                  const [hour, minute] = time.split(":").map(Number);
+                  const slotStart = hour * 60 + minute;
+                  const slotEnd = slotStart + 20;
+                  const wallMinutes = (value) => {
+                    const [h, m] = String(value).slice(11, 16).split(":").map(Number);
+                    return h * 60 + m;
+                  };
+                  const booking = appointments.find((a) => a.department === department && a.status !== "cancelled" && wallMinutes(a.start) < slotEnd && wallMinutes(a.end) > slotStart);
+                  const past = day < today || (day === today && slotStart <= currentMinutes);
+                  return <tr key={time}>
+                    <td>{time}</td>
+                    <td><Status value={booking ? "booked" : past ? "past" : "available"} /></td>
+                    <td>{booking ? <>{booking.patient_name}<br /><small>{booking.patient_id}</small></> : "—"}</td>
+                    <td>{booking?.clinician || "—"}</td>
+                    <td>{booking?.virtual_visit ? "Google Meet" : booking?.room || "—"}</td>
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ))}
+    </Panel>
+  );
+}
+
+function MeetVisitControls({ appointment, user, onDone, googleConfigured }) {
+  const visit = appointment.virtual_visit;
+  const [meetingUrl, setMeetingUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const canManage = ["doctor", "nurse", "frontdesk", "admin"].includes(user.role);
+  if (!visit) return null;
+  return <div className="ob-meet-controls">
+    <div className="row wrap"><Status value={visit.status} />{visit.meeting_url && <a className="small" href={visit.meeting_url} target="_blank" rel="noopener noreferrer">Open Meet</a>}</div>
+    {canManage && visit.status !== "cancelled" && <>
+              {visit.status !== "scheduled" && visit.status !== "creating" && (googleConfigured
+        ? <Action run={() => request(`/v2/appointments/${appointment.id}/virtual-visit/create`, "POST")} onDone={onDone}>Create Google Meet and email invitees</Action>
+        : <p className="small muted">Google Calendar setup is needed to create and email a Meet invitation.</p>)}
+      <form className="stack ob-meet-link-form" onSubmit={async (event) => {
+        event.preventDefault();
+        setBusy(true);
+        setError("");
+        try {
+          await request(`/v2/appointments/${appointment.id}/virtual-visit/link`, "PATCH", { meeting_url: meetingUrl, clinician_type: visit.clinician_type });
+          setMeetingUrl("");
+          onDone();
+        } catch (e) {
+          setError(e.message);
+        } finally {
+          setBusy(false);
+        }
+      }}>
+        <label className="field">Hospital-created Google Meet link<input className="input" type="url" required placeholder="https://meet.google.com/..." value={meetingUrl} onChange={(e) => setMeetingUrl(e.target.value)} /></label>
+        <button className="btn" disabled={busy}>{busy ? "Saving…" : visit.status === "scheduled" ? "Replace Meet link" : "Attach Meet link"}</button>
+        <Error message={error} />
+      </form>
+      <Action run={() => {
+        if (!window.confirm("Cancel this video appointment and its Google Calendar invitation?")) throw new Error("Cancellation stopped.");
+        return request(`/v2/appointments/${appointment.id}/status`, "POST", { action: "cancelled" });
+      }} onDone={onDone} className="btn danger">Cancel video appointment</Action>
+      {visit.source === "staff_manual" && <p className="small muted">This link was added manually. If it came from a separate Calendar event, cancel that event there too.</p>}
+    </>}
+  </div>;
+}
+
+function ScheduleTimeline({ appointments, departments, clashes, department }) {
+  const conflicted = new Set(clashes.flatMap((c) => c.ids));
+  const hours = Array.from({ length: 10 }, (_, i) => 8 + i);
+  const timeLabel = (value) => String(value).slice(11, 16);
+  const point = (value) => {
+    const [hour, minute] = timeLabel(value).split(":").map(Number);
+    return ((hour + minute / 60 - 8) / 9) * 100;
+  };
+  return (
+    <Panel title={department ? `${department} · one-day view` : "All departments · one-day view"} hint="Bookings are plotted by department and time; the table includes the patient, faculty and room.">
+      <div className="care-schedule-scroll">
+        <div className="care-schedule-board">
+          <div className="care-schedule-hours"><span>Department</span><div>{hours.map((hour) => <span key={hour}>{String(hour).padStart(2, "0")}:00</span>)}</div></div>
+          {departments.map((name) => {
+            const rows = appointments.filter((appointment) => appointment.department === name && appointment.status !== "cancelled");
+            return <div className="care-schedule-row" key={name}>
+              <div className="care-schedule-dept">{name}<small>{rows.length} booked</small></div>
+              <div className="care-schedule-lane">
+                {hours.slice(0, -1).map((hour) => <i key={hour} />)}
+                {rows.map((appointment) => {
+                  const rawLeft = point(appointment.start);
+                  const left = Math.max(0, rawLeft);
+                  const width = Math.min(Math.max(point(appointment.end) - rawLeft, 2.4), 100 - left);
+                  const room = appointment.virtual_visit ? "Google Meet" : appointment.room;
+                  return <div key={appointment.id} className={`care-schedule-slot ${conflicted.has(appointment.id) ? "clash" : ""}`} style={{ left: `${left}%`, width: `${width}%` }} title={`${timeLabel(appointment.start)}–${timeLabel(appointment.end)} · ${appointment.patient_name} (${appointment.patient_id}) · ${appointment.clinician || "Faculty assignment pending"} · ${room}`}>
+                    <b>{appointment.patient_name.split(" ")[0]}</b><small>{timeLabel(appointment.start)} · {room}</small>
+                  </div>;
+                })}
+              </div>
+            </div>;
+          })}
+        </div>
+      </div>
+      <p className="small muted" style={{ marginTop: 12 }}>Overlapping visits and room conflicts are highlighted for the department team to review.</p>
+    </Panel>
+  );
+}
 export function ShareTools({ pid }) {
   const resource = useResource(`/v2/patients/${pid}/shares`);
   const [kind, setKind] = useState("emergency"),
@@ -805,6 +957,7 @@ function PatientRegistration() {
       preferred_language: "en",
       cancer_type: "",
       abha_id: "",
+      referred_from: "",
     }),
     [result, setResult] = useState(null),
     [error, setError] = useState(""),
@@ -841,6 +994,7 @@ function PatientRegistration() {
             ["phone", "Phone"],
             ["cancer_type", "Reason for referral"],
             ["abha_id", "ABHA (optional)"],
+            ["referred_from", "Referred by (optional)"],
           ].map(([key, label]) => (
             <label className="field" key={key}>
               {label}

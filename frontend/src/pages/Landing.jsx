@@ -22,7 +22,7 @@ export default function Landing() {
             waits for the treating doctor’s signature.
           </p>
           <div className="doors">
-            <Link to="/doctor" className="door doctor">
+            <article className="door doctor">
               <Stethoscope size={26} color="#f3b44a" />
               <h3>Doctor app</h3>
               <p>
@@ -30,11 +30,9 @@ export default function Landing() {
                 and follow the patient’s response over time. Every source stays
                 one click away.
               </p>
-              <span className="go">
-                Open doctor app <ArrowRight size={16} />
-              </span>
-            </Link>
-            <Link to="/staff" className="door">
+              <Link to="/doctor?portal=doctor" className="go">Open doctor workspace <ArrowRight size={16} /></Link>
+            </article>
+            <article className="door">
               <ScanLine size={26} color="#f3b44a" />
               <h3>Staff app</h3>
               <p>
@@ -42,11 +40,9 @@ export default function Landing() {
                 reports, organise entire bundles and keep the hospital day
                 moving.
               </p>
-              <span className="go">
-                Open staff app <ArrowRight size={16} />
-              </span>
-            </Link>
-            <Link to="/patient" className="door">
+              <Link to="/staff?portal=staff" className="go">Open staff workspace <ArrowRight size={16} /></Link>
+            </article>
+            <article className="door">
               <Smartphone size={26} color="#f3b44a" />
               <h3>Patient app</h3>
               <p>
@@ -54,10 +50,8 @@ export default function Landing() {
                 medicine requests, invite a caregiver and plan your next
                 hospital day.
               </p>
-              <span className="go">
-                Open patient app <ArrowRight size={16} />
-              </span>
-            </Link>
+              <Link to="/patient?portal=patient" className="go">Open patient workspace <ArrowRight size={16} /></Link>
+            </article>
           </div>
         </div>
       </section>

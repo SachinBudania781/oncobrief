@@ -182,6 +182,8 @@ export function SourceLinks({ sources = [], onOpen }) {
           <a key={i} target="_blank" rel="noreferrer" href={s.url}>
             {s.title}
           </a>
+        ) : s.tag ? (
+          <span className="src" key={s.tag || i}>{s.tag} · {s.title}</span>
         ) : null,
       )}
     </div>

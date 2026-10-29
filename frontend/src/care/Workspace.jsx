@@ -4,9 +4,11 @@ import {
   Bell,
   BookHeart,
   CalendarDays,
+  Car,
   CircleHelp,
   ClipboardList,
   FileStack,
+  History,
   Flower2,
   HeartHandshake,
   HeartPulse,
@@ -19,6 +21,7 @@ import {
   ShieldCheck,
   Stethoscope,
   Users,
+  Watch,
   QrCode,
   ArrowUpRight,
   ArrowRight,
@@ -30,6 +33,7 @@ import Modal from "./Modal";
 import { useAuth } from "./Auth";
 import Login from "./Login";
 import { request, useResource, dateTime, nice } from "./client";
+import { ClinicDesk, StaffActivity } from "./DoctorStaffTools";
 import {
   Action,
   Empty,
@@ -39,7 +43,7 @@ import {
   SourceLinks,
   Voice,
 } from "./UI";
-import { CheckIn, Companion, Medicines, Wellness } from "./PatientTools";
+import { CheckIn, DoseReminder, Medicines, Wellness } from "./PatientTools";
 import {
   AlertConsole,
   ApprovalQueue,
@@ -65,24 +69,31 @@ import DocViewer from "../components/DocViewer";
 import QrScanner from "../components/QrScanner";
 import Brief from "../apps/doctor/Brief";
 import "./care.css";
+import AIAssistantWidget from "./AIAssistantWidget";
+import Wearables from "./Wearables";
+import Transport from "./Transport";
 import "./interface.css";
 
 const NAV = [
   ["home", "Overview", Home, "profile"],
   ["checkin", "Daily check-in", HeartPulse, "checkin"],
-  ["companion", "Ask my records", MessageCircle, "documents"],
+  ["companion", "AI Chat", MessageCircle, "documents"],
   ["medicines", "Medicines & requests", Pill, "medicines"],
   ["clinical", "Care journey", Stethoscope, "documents"],
   ["journal", "Plans & journal", BookHeart, "notes"],
   ["chat", "Care circle chat", HeartHandshake, "chat"],
   ["day", "Hospital day pass", CalendarDays, "appointments"],
+  ["transport", "Transport", Car, "appointments"],
   ["wellness", "Wellbeing", Flower2, "nutrition"],
+  ["wearables", "Wearables", Watch, "activity"],
   ["records", "Reports & uploads", FileStack, "documents"],
   ["money", "Money & schemes", CircleHelp, "finance"],
   ["circle", "Caregiver consent", Users, "patient"],
   ["share", "Emergency card", ShieldCheck, "patient"],
   ["triage", "Nurse triage", HeartPulse, "clinician"],
   ["approvals", "Doctor approvals", ClipboardList, "doctor"],
+  ["clinic", "Clinic & visit briefs", ClipboardList, "doctor"],
+  ["staffActivity", "Uploads & access log", History, "staffActivity"],
   ["schedule", "Schedule & chairs", LayoutDashboard, "staff"],
   ["privacy", "Privacy & devices", ShieldCheck, "profile"],
   ["settings", "Connected services", Settings2, "profile"],
@@ -105,10 +116,12 @@ function CareSpace() {
     [language, setLanguage] = useState("en"),
     [menu, setMenu] = useState(false),
     [showNotifications, setShowNotifications] = useState(false),
-    [revision, setRevision] = useState(0);
+    [revision, setRevision] = useState(0),
+    [wearableFocus, setWearableFocus] = useState({ metric: "steps", revision: 0 });
   const [qr, setQr] = useState(false),
     [qrError, setQrError] = useState("");
   const [focusedRecordId, setFocusedRecordId] = useState(null);
+  const [transportOpened, setTransportOpened] = useState(false);
   const [about, setAbout] = useState(false), [searchOpen, setSearchOpen] = useState(false), [query, setQuery] = useState("");
   const [phoneCheckin, setPhoneCheckin] = useState(false);
   const portal = ["patient", "caregiver"].includes(user.role) ? "patient" : user.role === "doctor" ? "doctor" : "staff";
@@ -130,13 +143,15 @@ function CareSpace() {
     if (scope === "clinician") return ["doctor", "nurse"].includes(user.role);
     if (scope === "staff")
       return ["doctor", "nurse", "frontdesk", "admin"].includes(user.role);
+    if (scope === "staffActivity")
+      return ["nurse", "lab", "admin"].includes(user.role);
     const scopes = user.permissions?.[pid] || [];
     return (
       scopes.includes("all") || scopes.includes(scope) || scope === "profile"
     );
   };
   const roleTabs = {
-    lab: ["home", "records", "privacy", "settings"],
+    lab: ["home", "records", "staffActivity", "privacy", "settings"],
     dietitian: [
       "home",
       "journal",
@@ -145,22 +160,25 @@ function CareSpace() {
       "privacy",
       "settings",
     ],
-    frontdesk: ["home", "day", "schedule", "privacy", "settings"],
+    frontdesk: ["home", "day", "transport", "schedule", "wearables", "privacy", "settings"],
     navigator: [
       "home",
       "journal",
       "chat",
       "day",
+      "transport",
       "money",
+      "wearables",
       "privacy",
       "settings",
     ],
     privacy: ["home", "privacy", "settings"],
-    admin: ["home", "schedule", "privacy", "settings"],
+    admin: ["home", "records", "staffActivity", "transport", "schedule", "wearables", "privacy", "settings"],
   };
   const nav = NAV.filter(
     (n) =>
-      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])),
+      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])) && (n[0] !== "wearables" || ["patient", "caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(user.role)) &&
+      (n[0] !== "transport" || ["patient", "caregiver", "frontdesk", "navigator", "nurse", "admin"].includes(user.role)),
   );
   useEffect(() => {
     if (!nav.some((n) => n[0] === tab)) setTab("home");
@@ -169,6 +187,7 @@ function CareSpace() {
     if (patient?.preferred_language) setLanguage(patient.preferred_language);
   }, [patient?.id]);
   const change = (value) => {
+    if (value === "transport") setTransportOpened(true);
     setTab(value);
     setMenu(false);
     setSearchOpen(false);
@@ -176,10 +195,11 @@ function CareSpace() {
   };
   const unread = notes.data?.filter((n) => n.status === "unread").length || 0;
   const title = tab === "home" ? (portal === "patient" ? "Your care, connected." : portal === "doctor" ? "Your clinical workspace." : "Your hospital workspace.") : nav.find((n) => n[0] === tab)?.[1] || "Overview";
-  const dockKeys = portal === "patient" ? ["home", "checkin", "records", "chat"] : portal === "doctor" ? ["home", "clinical", "approvals", "records"] : ["home", "day", "schedule", "records", "triage", "journal", "privacy"];
+  const dockKeys = portal === "patient" ? ["home", "checkin", "records", "chat"] : portal === "doctor" ? ["home", "clinic", "approvals", "records"] : ["home", "day", "schedule", "staffActivity", "records", "triage", "journal", "privacy"];
   const dock = dockKeys.map(k => nav.find(n => n[0] === k)).filter(Boolean).slice(0, 4);
   return (
     <div className={`care-app portal-${portal}`}>
+      {user.role === "patient" && pid && <DoseReminder pid={pid} />}
       <aside className={`care-sidebar ${menu ? "open" : ""}`}>
         <Link to="/" className="care-logo">
           <span className="care-brand-mark"><HeartPulse size={23} /></span>
@@ -305,6 +325,25 @@ function CareSpace() {
                     <b>{n.title}</b>
                     <p>{n.body}</p>
                     <small className="muted">{dateTime(n.created_at)}</small>
+                    {["activity", "vitals"].includes(n.channel) && n.patient_id && (
+                      <button className="btn" onClick={() => {
+                        setPid(n.patient_id);
+                        const metric = n.channel === "activity"
+                          ? "steps"
+                          : n.title.toLowerCase().includes("oxygen")
+                            ? "spo2"
+                            : n.title.toLowerCase().includes("blood pressure")
+                              ? (n.title.toLowerCase().includes("diastolic") ? "diastolic" : "systolic")
+                              : n.title.toLowerCase().includes("temperature")
+                                ? "temperature_c"
+                                : "heart_rate";
+                        setWearableFocus((current) => ({ metric, revision: current.revision + 1 }));
+                        change("wearables");
+                        setShowNotifications(false);
+                      }}>
+                        {n.channel === "activity" ? "View activity trend" : "View vital trend"}
+                      </button>
+                    )}
                     {n.status === "unread" && (
                       <Action
                         run={() =>
@@ -325,7 +364,9 @@ function CareSpace() {
           {!pid &&
           tab !== "settings" &&
           tab !== "privacy" &&
-          tab !== "schedule" ? (
+          tab !== "schedule" &&
+          tab !== "clinic" &&
+          tab !== "staffActivity" ? (
             <Panel title="No patient folders assigned">
               <p>
                 A hospital administrator can create accounts and assign the
@@ -375,11 +416,12 @@ function CareSpace() {
                 </div>
               )}
               {tab === "companion" && (
-                <Companion
+                <AIAssistantWidget
                   pid={pid}
                   language={language}
-                  clinician={user.role === "doctor"}
                   onOpen={setDocId}
+                  embedded
+                  userRole={user.role}
                 />
               )}
               {tab === "medicines" && (
@@ -391,6 +433,15 @@ function CareSpace() {
               )}
               {tab === "clinical" && (
                 <ClinicalChart pid={pid} user={user} onOpen={setDocId} />
+              )}
+              {tab === "clinic" && (
+                <ClinicDesk
+                  patients={patients.data || []}
+                  pid={pid}
+                  onSelect={setPid}
+                  onOpen={setDocId}
+                  onRecords={() => change("records")}
+                />
               )}
               {tab === "journal" && (
                 <Journal
@@ -408,8 +459,11 @@ function CareSpace() {
                   pid={pid}
                   language={language}
                   canTeachBack={can("notes")}
+                  viewerRole={user.role}
                 />
               )}
+              {(tab === "transport" || transportOpened) && <Transport pid={pid} user={user} active={tab === "transport"} />}
+              {tab === "wearables" && <Wearables pid={pid} demo={Boolean(user.demo)} viewerRole={user.role} focusMetric={wearableFocus.metric} focusRevision={wearableFocus.revision} />}
               {tab === "records" && (
                 <RecordsDesk pid={pid} user={user} onOpen={setDocId} />
               )}
@@ -428,6 +482,7 @@ function CareSpace() {
               )}
               {tab === "approvals" && <ApprovalQueue pid={pid} />}
               {tab === "schedule" && <ScheduleDesk user={user} />}
+              {tab === "staffActivity" && <StaffActivity user={user} onOpen={(id) => setDocId(Number(id))} />}
               {tab === "privacy" && <Privacy pid={pid} user={user} />}
               {tab === "settings" && (
                 <Integrations pid={pid} user={user} language={language} />
@@ -439,7 +494,7 @@ function CareSpace() {
           </footer>
         </main>
       </div>
-      <nav className="care-mobile-dock" aria-label="Mobile navigation">{dock.map(([key, label, Icon]) => <button key={key} className={tab === key ? "active" : ""} aria-current={tab === key ? "page" : undefined} onClick={() => change(key)}><Icon size={21} /><span>{({ home: "Home", checkin: "Check-in", records: "Records", chat: "Circle", clinical: "Journey", approvals: "Approvals", schedule: "Schedule", day: "Day pass", privacy: "Privacy", journal: "Plans", triage: "Triage" })[key] || label}</span></button>)}<button className={menu || !dock.some(n => n[0] === tab) ? "active" : ""} onClick={() => setMenu(true)}><Ellipsis size={23} /><span>More</span></button></nav>
+      <nav className="care-mobile-dock" aria-label="Mobile navigation">{dock.map(([key, label, Icon]) => <button key={key} className={tab === key ? "active" : ""} aria-current={tab === key ? "page" : undefined} onClick={() => change(key)}><Icon size={21} /><span>{({ home: "Home", checkin: "Check-in", records: "Records", chat: "Circle", clinical: "Journey", clinic: "Clinic", staffActivity: "Activity", approvals: "Approvals", schedule: "Schedule", day: "Day pass", privacy: "Privacy", journal: "Plans", triage: "Triage" })[key] || label}</span></button>)}<button className={menu || !dock.some(n => n[0] === tab) ? "active" : ""} onClick={() => setMenu(true)}><Ellipsis size={23} /><span>More</span></button></nav>
       {menu && <Modal title="Your workspace" className="care-more-sheet" onClose={() => setMenu(false)}><div className="care-sheet-profile"><span className="care-avatar">{user.name.slice(0, 1)}</span><div><b>{user.name}</b><small>{user.sign_in_id || nice(user.role)}</small></div></div><div className="care-feature-grid">{nav.map(([key, label, Icon]) => <button className={tab === key ? "active" : ""} key={key} onClick={() => change(key)}><Icon size={22} /><span>{label}</span></button>)}</div><div className="care-sheet-footer"><button className="btn" onClick={() => { setMenu(false); setAbout(true); }}><Info size={17} />Information</button><button className="btn" onClick={logout}><LogOut size={17} />Sign out</button></div></Modal>}
       {searchOpen && <Modal title="Find a feature" onClose={() => setSearchOpen(false)}><input className="input care-command-input" type="search" data-autofocus placeholder="Search your workspace…" value={query} onChange={e => setQuery(e.target.value)} aria-label="Search features" /><div className="care-command-results">{nav.filter(n => n[1].toLowerCase().includes(query.toLowerCase())).map(([key, label, Icon]) => <button key={key} onClick={() => change(key)}><Icon size={19} />{label}<ArrowUpRight size={16} /></button>)}{!nav.some(n => n[1].toLowerCase().includes(query.toLowerCase())) && <Empty>No features found.</Empty>}</div></Modal>}
       {about && <Modal title="About your workspace" onClose={() => setAbout(false)}><div className="care-information"><div className="care-modal-brand"><HeartPulse size={28} /><b>OncoBrief</b><span>Connected cancer care</span></div>{user.demo && <div className="care-notice"><b>Hackathon environment</b><p>All patients, reports and relationships here are fabricated. Please keep real patient information out of this workspace.</p></div>}<h3>Your information, shared with care</h3><p>Each account sees only its assigned patients and consented information. Caregivers have their own access. Record access is logged; you can review it in Privacy & devices.</p><h3>Your team makes clinical decisions</h3><p>AI-assisted explanations and drafts support the care team. Treatment changes require the treating doctor’s review and signature. Urgent symptoms need prompt medical attention.</p><p className="small muted">Connected services show their current availability in Settings. Browser voice may use your browser’s speech provider. Patient documents are not stored for offline use.</p></div></Modal>}
@@ -452,6 +507,7 @@ function CareSpace() {
             if (user.patient_ids.includes(id)) {
               setPid(id);
               setQrError("");
+              if (user.role === "doctor") change("clinic");
             } else
               setQrError(
                 "This QR does not belong to a patient assigned to your account.",
@@ -460,6 +516,7 @@ function CareSpace() {
         />
       )}
       {docId && <DocViewer docId={docId} onClose={() => setDocId(null)} />}
+      {["patient", "doctor"].includes(portal) && can("documents") && pid && tab !== "companion" && <AIAssistantWidget pid={pid} language={language} onOpen={setDocId} userRole={user.role} />}
     </div>
   );
 }
@@ -493,6 +550,8 @@ function HomeSpace({
   const documents = useResource(visibleTabs.includes("records") && careTeam && !clinician ? `/patients/${pid}/documents` : null);
   const stats = (clinician ? [
     ["home", Users, command.data?.patients.length ?? "—", "assigned patients", "Care overview"],
+    ...(user.role === "doctor" ? [["clinic", ClipboardList, "Today", "clinic queue & visit briefs", "Open clinic"]] : []),
+    ...(visibleTabs.includes("staffActivity") ? [["staffActivity", History, "Recent", "uploads & access log", "Review activity"]] : []),
     ["approvals", ClipboardList, command.data?.awaiting_approval ?? "—", "decisions awaiting review", "Open approvals"],
     ["triage", HeartPulse, command.data?.open_alerts ?? "—", "open care alerts", "Review triage"],
     ["day", CalendarDays, day.data?.stops.length ?? "—", "patient stops today", "View day pass"],
@@ -512,8 +571,8 @@ function HomeSpace({
     ["wellness", Flower2, week.data?.checkin_days ?? "—", "check-in days this week", "Your wellbeing"],
     ["chat", HeartHandshake, "Together", "your care circle", "Stay connected"],
   ]).filter(s => visibleTabs.includes(s[0])).slice(0, 4);
-  const primaryTab = careTeam ? ({doctor:"approvals",nurse:"triage",frontdesk:"schedule",admin:"schedule",lab:"records",navigator:"journal",dietitian:"wellness",privacy:"privacy"}[user.role]) : visibleTabs.includes("checkin") ? "checkin" : "day";
-  const primaryLabel = {approvals:"Review approvals",triage:"Open triage",schedule:"Open schedule",records:"Open reports",journal:"Open care plans",wellness:"Open wellbeing",privacy:"Review access",checkin:"Daily check-in",day:"Today’s appointments"}[primaryTab];
+  const primaryTab = careTeam ? ({doctor:"clinic",nurse:"triage",frontdesk:"schedule",admin:"schedule",lab:"records",navigator:"journal",dietitian:"wellness",privacy:"privacy"}[user.role]) : visibleTabs.includes("checkin") ? "checkin" : "day";
+  const primaryLabel = {clinic:"Open clinic",approvals:"Review approvals",triage:"Open triage",schedule:"Open schedule",records:"Open reports",journal:"Open care plans",wellness:"Open wellbeing",privacy:"Review access",checkin:"Daily check-in",day:"Today’s appointments"}[primaryTab];
   const [brief, setBrief] = useState(null);
   const [commandAnswer, setCommandAnswer] = useState(null);
   const voiceCommand = async (text) => {

@@ -1,17 +1,63 @@
-from ..timeutil import utcnow
+from ..timeutil import hospital_now, utcnow
 """Idempotent in-app reminders and opt-in outbound jobs, using the hospital timezone."""
 import re
 from datetime import datetime, timedelta
 from sqlalchemy import select
 from ..db import SessionLocal
-from ..models import Appointment, Medication, Patient
-from ..round2_models import AccessGrant, CareRecord, JobReceipt, Notification, User
+from ..models import Appointment, Medication, Patient, WearableReading
+from ..round2_models import AccessGrant, CareRecord, JobReceipt, Notification, User, VirtualAppointment
+from .activity import low_activity_steps_threshold
 from .companion import records
 
 
 def tick(now=None):
-    now = now or datetime.now()
+    now = now or hospital_now()
     with SessionLocal() as db:
+        from .google_meet import (GoogleMeetError, configured, create_event, invitee_list,
+                                  notify_appointment_participants, refresh_event, set_meeting_result)
+        for visit in db.scalars(select(VirtualAppointment).where(VirtualAppointment.status == "creating")).all():
+            if visit.updated_at and visit.updated_at > utcnow() - timedelta(minutes=1):
+                continue
+            try:
+                if not visit.google_event_id:
+                    if not configured():
+                        visit.status = "needs_setup"
+                        visit.updated_at = utcnow()
+                        db.commit()
+                        continue
+                    appointment = db.get(Appointment, visit.appointment_id)
+                    if not appointment or appointment.status == "cancelled":
+                        visit.status = "cancelled"
+                        visit.updated_at = utcnow()
+                        db.commit()
+                        continue
+                    invitees = invitee_list(visit)
+                    if not invitees:
+                        visit.status = "failed"
+                        visit.updated_at = utcnow()
+                        db.commit()
+                        continue
+                    event_id, meeting_url = create_event(appointment, invitees)
+                    set_meeting_result(visit, event_id, meeting_url)
+                    db.commit()
+                    if visit.status == "scheduled":
+                        notify_appointment_participants(db, visit.patient_id, "Google Meet is ready", "Your private video consultation link is available on the OncoBrief appointment day pass.")
+                    continue
+                meeting_url = refresh_event(visit.google_event_id)
+            except GoogleMeetError:
+                visit.status = "failed"
+                visit.updated_at = utcnow()
+                db.commit()
+                continue
+            if meeting_url:
+                visit.meeting_url = meeting_url
+                visit.status = "scheduled"
+                visit.updated_at = utcnow()
+                db.commit()
+                notify_appointment_participants(db, visit.patient_id, "Google Meet is ready", "Your private video consultation link is available on the OncoBrief appointment day pass.")
+            else:
+                visit.updated_at = utcnow()
+                db.commit()
         import os
         if os.getenv("AUDIT_ANCHOR_ADAPTER_URL") and os.getenv("AUDIT_ANCHOR_ADAPTER_KEY"):
             from ..security import verify_chain
@@ -28,6 +74,57 @@ def tick(now=None):
                         # Leave the job unreceipted so the next tick can retry anchoring.
                         pass
         for p in db.scalars(select(Patient)):
+            # Evaluate the latest saved daily total after the day has closed.
+            # Missing wearable data is never treated as zero activity.
+            activity_day = now.date() - timedelta(days=1)
+            activity_start = datetime.combine(activity_day, datetime.min.time())
+            activity_end = activity_start + timedelta(days=1)
+            latest_steps = db.scalar(
+                select(WearableReading)
+                .where(
+                    WearableReading.patient_id == p.id,
+                    WearableReading.metric == "steps",
+                    WearableReading.observed_at >= activity_start,
+                    WearableReading.observed_at < activity_end,
+                )
+                .order_by(WearableReading.observed_at.desc())
+                .limit(1)
+            )
+            threshold = low_activity_steps_threshold()
+            if latest_steps and latest_steps.value < threshold:
+                key = f"low-activity:{p.id}:{activity_day.isoformat()}"
+                if not db.get(JobReceipt, key):
+                    body = (
+                        f"The latest recorded daily total for {activity_day.isoformat()} was "
+                        f"{latest_steps.value:,.0f} steps, below the configured review line of "
+                        f"{threshold:,.0f}. Please review the patient's longitudinal activity graph. "
+                        "This is a coordination prompt, not a clinical assessment."
+                    )
+                    staff_roles = {"caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"}
+                    notified = False
+                    for grant in db.scalars(
+                        select(AccessGrant).where(
+                            AccessGrant.patient_id == p.id,
+                            AccessGrant.active.is_(True),
+                        )
+                    ):
+                        if grant.expires_at and grant.expires_at <= utcnow():
+                            continue
+                        if not ({"all", "activity"} & set(grant.scopes or [])):
+                            continue
+                        recipient = db.get(User, grant.user_id)
+                        if recipient and recipient.active and recipient.role in staff_roles:
+                            db.add(Notification(
+                                user_id=recipient.id,
+                                patient_id=p.id,
+                                channel="activity",
+                                title="Low activity review",
+                                body=body,
+                            ))
+                            notified = True
+                    if notified:
+                        db.add(JobReceipt(key=key, status="in_app"))
+                        db.commit()
             events = []
             for m in db.scalars(select(Medication).where(Medication.patient_id == p.id, Medication.active.is_(True))):
                 for t in m.times:
@@ -37,7 +134,13 @@ def tick(now=None):
                             events.append((f"med:{m.id}:{due.isoformat()}", "Medicine reminder", f"A signed medicine reminder is due at {t}. Open your care space.", "medicines"))
             for a in db.scalars(select(Appointment).where(Appointment.patient_id == p.id, Appointment.status == "booked")):
                 if a.start - timedelta(hours=2) <= now < a.start - timedelta(hours=2) + timedelta(minutes=5):
-                    events.append((f"appt:{a.id}:{a.start.isoformat()}", "Appointment reminder", f"Your appointment starts at {a.start:%H:%M}. Check your day pass.", "appointments"))
+                    visit = db.scalar(select(VirtualAppointment).where(VirtualAppointment.appointment_id == a.id))
+                    if visit:
+                        body = (f"Your Google Meet consultation starts at {a.start:%H:%M}. Open OncoBrief to join." if visit.status == "scheduled"
+                                else f"Your video consultation starts at {a.start:%H:%M}. Check the OncoBrief day pass for its link or setup status.")
+                        events.append((f"appt:{a.id}:{a.start.isoformat()}", "Video consultation reminder", body, "appointments"))
+                    else:
+                        events.append((f"appt:{a.id}:{a.start.isoformat()}", "Appointment reminder", f"Your appointment starts at {a.start:%H:%M}. Check your day pass.", "appointments"))
             for r in records(db, p.id, "reminder"):
                 at = r.data.get("due_at", "")
                 try:
@@ -60,7 +163,9 @@ def tick(now=None):
                 db.add(receipt)
                 for g in db.scalars(select(AccessGrant).where(AccessGrant.patient_id == p.id, AccessGrant.active.is_(True))):
                     if (not g.expires_at or g.expires_at > utcnow()) and ("all" in g.scopes or scope in g.scopes):
-                        db.add(Notification(user_id=g.user_id, patient_id=p.id, title=title, body=body))
+                        db.add(Notification(user_id=g.user_id, patient_id=p.id,
+                                           channel="appointment" if scope == "appointments" else "in_app",
+                                           title=title, body=body))
                 db.commit()
                 channel = comm.get("channel")
                 if comm.get("consent") and channel in {"sms", "whatsapp", "phone"} and (channel != "phone" or key.startswith("checkin:")):

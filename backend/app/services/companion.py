@@ -70,6 +70,67 @@ def records(db, pid, kind=None):
     return db.scalars(stmt.order_by(CareRecord.created_at.desc(), CareRecord.id.desc())).all()
 
 
+def companion_sharing_state(db, pid):
+    row = db.scalar(select(CareRecord).where(
+        CareRecord.patient_id == pid,
+        CareRecord.kind == "companion_sharing",
+        CareRecord.author_role == "patient",
+    ).order_by(CareRecord.created_at.desc(), CareRecord.id.desc()).limit(1))
+    return {"enabled": bool(row and row.data.get("enabled")), "since": row.created_at if row and row.data.get("enabled") else None}
+
+
+def patient_chat_insight(db, pid, question, language="en"):
+    sharing = companion_sharing_state(db, pid)
+    if not sharing["enabled"]:
+        return {"level": 0, "answer": {
+            "en": "The patient has not enabled sharing of AI chat excerpts with the care team. No conversation content is available here.",
+            "hi": "मरीज़ ने AI चैट के अंश देखभाल टीम के साथ साझा करने की अनुमति नहीं दी है। यहाँ बातचीत उपलब्ध नहीं है।",
+            "mr": "रुग्णाने AI चॅटचे उतारे काळजी पथकाशी शेअर करण्याची परवानगी दिलेली नाही. येथे संभाषण उपलब्ध नाही.",
+        }.get(language, "The patient has not enabled sharing of AI chat excerpts."), "sources": [], "generation": "privacy"}
+    since, now = sharing["since"], utcnow()
+    if since.tzinfo and not now.tzinfo:
+        since = since.replace(tzinfo=None)
+    elif now.tzinfo and not since.tzinfo:
+        now = now.replace(tzinfo=None)
+    cutoff = max(since, now - timedelta(days=30))
+    rows = db.scalars(select(CareRecord).where(
+        CareRecord.patient_id == pid,
+        CareRecord.kind == "companion",
+        CareRecord.author_role == "patient",
+        CareRecord.created_at >= cutoff,
+    ).order_by(CareRecord.created_at.desc(), CareRecord.id.desc()).limit(40)).all()
+    entries = [(row.created_at, safe_text(str(row.data.get("question", ""))).strip())
+               for row in rows if str(row.data.get("question", "")).strip()]
+    asked_for_score = bool(re.search(r"\b(score|rate|stability|stable|mental state|mental health|tone|mood)\b", question, re.I))
+    if not entries:
+        message = "No patient AI chat messages have been shared since consent was enabled."
+        if asked_for_score:
+            message += " A mental-stability score cannot be inferred from chat tone; no score is generated."
+        return {"level": 0, "answer": message, "sources": [], "generation": "patient-shared messages"}
+    excerpts = [f"{created:%d %b %Y}: “{text[:420]}”" for created, text in entries[:8]]
+    prefix = f"Patient-shared AI chat excerpts from the last 30 days ({len(entries)} messages):\n"
+    if asked_for_score:
+        prefix = ("I can’t assign a mental-stability or mood score, or infer a mental-health condition from text tone. "
+                  "This is a factual summary of messages the patient chose to share; it is not a clinical assessment.\n\n" + prefix)
+    else:
+        prefix = "These are the patient's own words, shared with their care team. I do not infer tone or diagnose from chat text.\n\n" + prefix
+    return {"level": 0, "answer": prefix + "\n".join("• " + line for line in excerpts),
+            "sources": [], "generation": "patient-shared messages", "message_count": len(entries),
+            "window_days": 30}
+
+
+def patient_profile_context(patient):
+    facts = []
+    if patient.cancer_type:
+        facts.append("Recorded diagnosis: " + safe_text(patient.cancer_type))
+    if patient.stage:
+        facts.append("Recorded stage: " + safe_text(patient.stage))
+    if patient.current_regimen:
+        facts.append("Recorded treatment plan: " + safe_text(patient.current_regimen))
+    return ([{"tag": "P1", "title": "Care profile", "text": "\n".join(facts)}]
+            if facts else [])
+
+
 def living_summary(db, pid, include_notes=True, include_checkins=True, include_medicines=True):
     p = db.get(Patient, pid)
     docs = db.scalars(select(Document).where(Document.patient_id == pid).order_by(Document.record_date.desc())).all()
@@ -106,8 +167,17 @@ def living_summary(db, pid, include_notes=True, include_checkins=True, include_m
     return {"text": text, "sources": sources, "latest_labs": list(latest.values()), "updated_at": row.updated_at}
 
 
-def answer(db, pid, question, language="en", clinical_user=False, allow_notes=True):
+def answer(db, pid, question, language="en", clinical_user=False, allow_notes=True,
+           conversation_id="", user_id=None, user_role="patient"):
     p = db.get(Patient, pid)
+    history = []
+    if conversation_id and user_id is not None:
+        previous = [r for r in records(db, pid, "companion")
+                    if r.author_id == user_id and r.author_role == user_role
+                    and r.data.get("conversation_id") == conversation_id]
+        for row in reversed(previous[:5]):
+            history.append({"patient": str(row.data.get("question", ""))[:800],
+                            "assistant": str(row.data.get("answer", ""))[:1000]})
     flag = red_flags(question, on_treatment=bool(p.current_regimen))
     if flag["level"] == 3:
         a = alert(db, pid, flag["reason"], "companion", "emergency")
@@ -120,6 +190,8 @@ def answer(db, pid, question, language="en", clinical_user=False, allow_notes=Tr
     low = question.lower()
     if ATTACK.search(question):
         return {"level": 0, "answer": "I can find and explain this patient's records. Instructions in documents or requests to bypass approval cannot change the care rules.", "sources": []}
+    if clinical_user and re.search(r"\b(patient|they|he|she).{0,50}\b(talk|chat|discuss|share|say|tell|feel|tone|mental|mood|stability)\b|\b(conversation|chat history|stability score|mental stability)\b", question, re.I):
+        return patient_chat_insight(db, pid, question, language)
     clinical = bool(re.search(r"\b(prescribe|dosage|change dose|increase.*dose|reduce.*dose|double.*dose|should i take|can i take|can i use|stop taking|start taking|medicine for|treatment change|prognosis|how long.*live)\b|दवा चाहिए|औषध|दवाई", low))
     if clinical and not clinical_user:
         req = Approval(patient_id=pid, kind="clinical_question", request=question, draft={"text": "Treating doctor review required."}, requested_by="Companion")
@@ -155,6 +227,20 @@ def answer(db, pid, question, language="en", clinical_user=False, allow_notes=Tr
                 note_hits.append((score,r,text))
         note_hits.sort(key=lambda x:(x[0],x[1].id),reverse=True)
     if not hits and not note_hits:
+        asks_records = bool(re.search(r"\b(record|report|result|scan|test|cbc|lab|prescription|diagnosis|stage|history)\b|रिपोर्ट|अहवाल|सीबीसी", low, re.I))
+        if not asks_records and not clinical_user:
+            from .record_ai import companion_reply
+            profile = patient_profile_context(p)
+            generated = companion_reply(p, question, profile, history, language)
+            if generated:
+                cited = set(generated["sources"])
+                return {"level": 0, **generated,
+                        "sources": [s for s in profile if s["tag"] in cited]}
+            return {"level": 0, "answer": {
+                "en": "I’m here with you. I can help with everyday planning and questions. I don’t have a verified care instruction for that specific topic, so tell me a little more and I can help you prepare a question for your team.",
+                "hi": "मैं आपके साथ हूँ। मैं रोज़मर्रा की योजना और सवालों में मदद कर सकता हूँ। इस विषय पर मेरे पास आपकी देखभाल टीम का सत्यापित निर्देश नहीं है; थोड़ा और बताइए, मैं टीम से पूछने के लिए सवाल तैयार करने में मदद करूँगा।",
+                "mr": "मी तुमच्यासोबत आहे. दैनंदिन नियोजन आणि प्रश्नांमध्ये मदत करू शकतो. या विषयासाठी तुमच्या उपचार पथकाची पडताळलेली सूचना माझ्याकडे नाही; थोडे अधिक सांगा, पथकाला विचारण्यासाठी प्रश्न तयार करू.",
+            }.get(language, "I’m here with you. I can help with everyday planning, but I don’t have a verified care instruction for this topic."), "sources": [], "generation": "supportive fallback"}
         return {"level": 0, "answer": {"en": "I could not find that in your records. Please ask your care team or upload the relevant report.", "hi": "यह जानकारी आपके रिकॉर्ड में नहीं मिली। अपनी देखभाल टीम से पूछें या संबंधित रिपोर्ट जोड़ें।", "mr": "ही माहिती तुमच्या नोंदीत सापडली नाही. उपचार पथकाला विचारा किंवा संबंधित अहवाल जोडा."}.get(language, "Not found in your records."), "sources": []}
     lines, sources, context = [], [], []
     for _,r,text in note_hits[:2]:
@@ -173,10 +259,20 @@ def answer(db, pid, question, language="en", clinical_user=False, allow_notes=Tr
         sources.append({"tag": f"D{d.id}", "title": d.title, "id": d.id})
         context.append({"tag": f"D{d.id}", "title": d.title,
                         "text": f"Report date: {d.record_date:%Y-%m-%d}\n{clean}"})
+    if not clinical_user:
+        for item in patient_profile_context(p):
+            context.append(item)
+            sources.append({"tag": item["tag"], "title": item["title"]})
     prefix = {"en": "These are excerpts from your reports, not a new clinical recommendation:", "hi": "ये आपकी रिपोर्ट के अंश हैं, नई चिकित्सीय सलाह नहीं। मूल रिपोर्ट का पाठ:", "mr": "हे तुमच्या अहवालातील उतारे आहेत, नवीन वैद्यकीय सल्ला नाही. मूळ अहवालाचा मजकूर:"}.get(language, "From your records:")
     if not lines:
         return {"level": 2, "answer": "This passage needs your doctor's explanation. Please open your original record and ask your treating team.", "sources": []}
-    from .record_ai import explain_sources
+    from .record_ai import companion_reply, explain_sources
+    if not clinical_user:
+        generated_chat = companion_reply(p, question, context, history, language)
+        if generated_chat:
+            cited = set(generated_chat["sources"])
+            return {"level": 0, **generated_chat,
+                    "sources": [s for s in sources if s["tag"] in cited]}
     generated = explain_sources(p, context, question, language)
     if generated:
         cited = {tag for item in generated["items"] for tag in item["sources"]}

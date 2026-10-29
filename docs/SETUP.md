@@ -1,6 +1,6 @@
 # Setup and review checklist
 
-The expanded app is published on `deploy/round2-independent`. See [the independent deployment guide](DEPLOYMENT.md) for the three hosted apps, backend, database, and phone installation. The original prototype remains on `main`.
+The live Round 2 app remains on `deploy/round2-independent`. See [the independent deployment guide](DEPLOYMENT.md) for its three hosted role apps, backend, database and phone installation. The feature branch adds an optional all-role hub and links back to the original Round 1 screens; the deployment branch remains unchanged. The original prototype also remains on `main`.
 
 ## Run the expanded app
 

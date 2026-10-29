@@ -1,4 +1,4 @@
-from ..timeutil import utcnow
+from ..timeutil import hospital_now, hospital_wall_to_utc, to_hospital_wall_time, utcnow
 """Round 2 patient, caregiver, clinician and hospital workflows."""
 import io
 import json
@@ -6,19 +6,22 @@ import math
 import os
 import re
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from ..db import get_db
-from ..models import Activity, Appointment, Document, LabValue, Medication, MedLog, Patient, SymptomReport
-from ..round2_models import AccessGrant, Alert, Approval, CareRecord, LibraryItem, Notification, ShareLink, User, TreatingClinician
+from ..models import Activity, Appointment, Document, LabValue, Medication, MedLog, Patient, SymptomReport, WearableReading
+from ..round2_models import WearableDeviceCredential
+from ..round2_models import AccessGrant, Alert, Approval, CareRecord, LibraryItem, Notification, ShareLink, User, TreatingClinician, VirtualAppointment
 from ..security import DEMO_MODE, append_audit, digest, identity, password_hash, require_patient, roles, verify_chain, visible_ids
 from ..services.companion import EMERGENCY, alert, answer, command_centre, living_summary, notify_team, records, red_flags, safe_text
 from ..services.integrations import deliver, status as integration_status
+from ..services.activity import low_activity_steps_threshold
+from ..services.vitals import current_vital_alert_protocol, evaluate_vital_readings
 from ..workflows import WORKFLOWS
 from ..services.scheduling import serial_schedule
 from .auth import sign_in_id
@@ -32,6 +35,21 @@ def patient_access(db, request, pid, scope="profile"):
     require_patient(db, user, pid, scope)
     if not db.get(Patient, pid):
         raise HTTPException(404, "Patient not found")
+    return user
+
+
+def require_department_schedule(db, request, department):
+    user = identity(request)
+    roles(user, "doctor", "nurse", "lab", "frontdesk", "admin")
+    from ..taxonomy import DEPARTMENTS
+    names = {d["name"] for d in DEPARTMENTS if d["name"] != "Front desk / Records"}
+    assigned = (user.department or "").strip()
+    if user.role in {"doctor", "nurse", "lab"} and assigned not in names:
+        raise HTTPException(403, "Ask an administrator to assign your department before managing this schedule")
+    if assigned and user.role != "admin" and assigned != department:
+        raise HTTPException(403, "You can only manage appointments in your assigned department")
+    if department not in names:
+        raise HTTPException(422, "Unknown department")
     return user
 
 
@@ -49,7 +67,11 @@ def workflows(request: Request):
 @router.get("/v2/integrations")
 def integrations(request: Request):
     identity(request)
-    return {"services": integration_status(), "demo": DEMO_MODE,
+    from ..services.google_meet import configured as google_meet_configured
+    services = integration_status()
+    services.append({"service": "google_meet", "configured": google_meet_configured(),
+                     "settings": ["GOOGLE_CALENDAR_CLIENT_ID", "GOOGLE_CALENDAR_CLIENT_SECRET", "GOOGLE_CALENDAR_REFRESH_TOKEN"]})
+    return {"services": services, "demo": DEMO_MODE,
             "llm": bool(os.getenv("LLM_API_KEY")), "india_hosting_confirmed": os.getenv("INDIA_HOSTING_CONFIRMED") == "true",
             "hospital_emergency": os.getenv("HOSPITAL_EMERGENCY_PHONE", "Set HOSPITAL_EMERGENCY_PHONE"),
             "hospital_address": os.getenv("HOSPITAL_ADDRESS", "Set HOSPITAL_ADDRESS")}
@@ -58,9 +80,15 @@ def integrations(request: Request):
 @router.get("/v2/notifications")
 def notifications(request: Request, db=Depends(get_db)):
     user = identity(request)
-    ids = visible_ids(db, user, "alerts")
+    alert_ids = set(visible_ids(db, user, "alerts"))
+    appointment_ids = set(visible_ids(db, user, "appointments"))
+    activity_ids = set(visible_ids(db, user, "activity"))
     return [serial(n) for n in db.scalars(select(Notification).where(Notification.user_id == user.id).order_by(Notification.id.desc()).limit(100))
-            if not n.patient_id or n.patient_id in ids]
+            if not n.patient_id or n.patient_id in (
+                appointment_ids if n.channel in {"transport", "appointment"}
+                else activity_ids if n.channel in {"activity", "vitals"}
+                else alert_ids
+            )]
 
 
 @router.post("/v2/notifications/{nid}/read")
@@ -94,6 +122,10 @@ def readable_record(row, user):
     if row.kind == "nurse_handover" and user.role not in CLINICIANS:
         return False
     if row.kind == "companion" and row.author_role in CLINICIANS and user.role not in CLINICIANS:
+        return False
+    # Patient AI conversations are private unless surfaced through the separate,
+    # patient-consented clinician insight path.
+    if row.kind == "companion" and row.author_role == "patient" and user.role != "patient":
         return False
     if row.kind == "integration_result" and row.status != "approved" and user.role not in CLINICIANS:
         return False
@@ -316,17 +348,46 @@ def checkin(patient_id: str, body: CheckIn, request: Request, db=Depends(get_db)
 class Question(BaseModel):
     text: str = Field(min_length=1, max_length=3000)
     language: Literal["en", "hi", "mr"] = "en"
+    conversation_id: str = Field(default="", max_length=80)
+
+
+class CompanionSharingIn(BaseModel):
+    enabled: bool
 
 
 @router.post("/v2/patients/{patient_id}/companion")
 def companion(patient_id: str, body: Question, request: Request, db=Depends(get_db)):
     user = patient_access(db, request, patient_id, "documents")
     roles(user, "patient", "caregiver", "doctor", "nurse", "admin")
-    result = answer(db, patient_id, body.text, body.language, user.role in CLINICIANS, patient_id in visible_ids(db,user,"notes"))
+    result = answer(db, patient_id, body.text, body.language, user.role in CLINICIANS,
+                    patient_id in visible_ids(db,user,"notes"), body.conversation_id, user.id, user.role)
     db.add(CareRecord(patient_id=patient_id, kind="companion", author_id=user.id, author_name=user.name,
-                      author_role=user.role, data={"question": body.text, **result}, status="recorded"))
+                      author_role=user.role, data={"question": body.text, "conversation_id": body.conversation_id, **result}, status="recorded"))
     db.commit()
     return result
+
+
+@router.get("/v2/patients/{patient_id}/companion-sharing")
+def get_companion_sharing(patient_id: str, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "documents")
+    roles(user, "patient")
+    from ..services.companion import companion_sharing_state
+    state = companion_sharing_state(db, patient_id)
+    return {"enabled": state["enabled"], "since": state["since"].isoformat() if state["since"] else None}
+
+
+@router.put("/v2/patients/{patient_id}/companion-sharing")
+def set_companion_sharing(patient_id: str, body: CompanionSharingIn, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "documents")
+    roles(user, "patient")
+    row = CareRecord(patient_id=patient_id, kind="companion_sharing", author_id=user.id,
+                     author_name=user.name, author_role=user.role,
+                     data={"enabled": body.enabled}, status="recorded")
+    db.add(row)
+    append_audit(db, user, "companion_sharing_updated", patient_id,
+                 "enabled" if body.enabled else "disabled")
+    db.commit()
+    return {"enabled": body.enabled, "since": row.created_at.isoformat() if body.enabled else None}
 
 
 @router.get("/v2/patients/{patient_id}/summary")
@@ -695,16 +756,19 @@ def visit_prep(patient_id: str, request: Request, db=Depends(get_db)):
 
 @router.get("/v2/patients/{patient_id}/week")
 def week(patient_id: str, request: Request, db=Depends(get_db)):
-    patient_access(db, request, patient_id, "activity")
+    user = patient_access(db, request, patient_id, "activity")
     since = utcnow() - timedelta(days=7)
     checkins = [r for r in records(db, patient_id, "checkin") if r.created_at > since]
     days = sorted({r.created_at.date().isoformat() for r in checkins})
     logs = db.scalars(select(MedLog).where(MedLog.patient_id == patient_id, MedLog.logged_at > since)).all()
-    acts = db.scalars(select(Activity).where(Activity.patient_id == patient_id, Activity.date > since)).all()
-    return {"checkin_days": len(days), "days": days, "doses_taken": sum(l.status == "taken" for l in logs),
-            "doses_missed": sum(l.status == "missed" for l in logs), "steps": sum(a.steps for a in acts),
-            "garden_stage": min(5, len(days)), "mood": [10 - r.data.get("distress", 0) for r in reversed(checkins)],
-            "best_day": max(acts, key=lambda a: a.steps).date.date().isoformat() if acts else None}
+    summary = {"checkin_days": len(days), "days": days, "doses_taken": sum(l.status == "taken" for l in logs),
+               "doses_missed": sum(l.status == "missed" for l in logs),
+               "garden_stage": min(5, len(days)), "mood": [10 - r.data.get("distress", 0) for r in reversed(checkins)]}
+    if user.role != "patient":
+        acts = db.scalars(select(Activity).where(Activity.patient_id == patient_id, Activity.date > since)).all()
+        summary["steps"] = sum(a.steps for a in acts)
+        summary["best_day"] = max(acts, key=lambda a: a.steps).date.date().isoformat() if acts else None
+    return summary
 
 
 class ActivityIn(BaseModel):
@@ -716,7 +780,7 @@ class ActivityIn(BaseModel):
 @router.post("/v2/patients/{patient_id}/activity")
 def add_activity(patient_id: str, body: ActivityIn, request: Request, db=Depends(get_db)):
     patient_access(db, request, patient_id, "activity")
-    day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    day = hospital_now().replace(hour=0, minute=0, second=0, microsecond=0)
     row = db.scalar(select(Activity).where(Activity.patient_id == patient_id, Activity.date == day))
     if not row:
         row = Activity(patient_id=patient_id, date=day)
@@ -726,6 +790,191 @@ def add_activity(patient_id: str, body: ActivityIn, request: Request, db=Depends
     db.commit()
     return {"ok": True, "source": "manual entry"}
 
+
+class WearablePointIn(BaseModel):
+    observed_at: datetime
+    metric: Literal["heart_rate", "spo2", "systolic", "diastolic", "steps", "distance_km", "active_minutes", "sleep_hours", "temperature_c"]
+    value: float = Field(allow_inf_nan=False)
+    unit: str = Field(max_length=12)
+
+
+class WearableBatchIn(BaseModel):
+    consent: bool
+    source: Literal["bluetooth", "android_ble", "health_connect", "healthkit", "vendor", "manual"] = "bluetooth"
+    device_name: str = Field(default="", max_length=100)
+    readings: list[WearablePointIn] = Field(min_length=1, max_length=100)
+
+
+class WearableDeviceIn(BaseModel):
+    consent: bool
+    device_name: str = Field(default="OncoBrief Android companion", max_length=100)
+
+
+class VitalAlertProtocolIn(BaseModel):
+    thresholds: dict[str, float] = Field(max_length=5)
+    source_url: str = Field(pattern=r"^https://", max_length=1000)
+    rationale: str = Field(min_length=10, max_length=3000)
+
+
+WEARABLE_UNITS = {
+    "heart_rate": "bpm", "spo2": "%", "systolic": "mmHg", "diastolic": "mmHg",
+    "steps": "steps", "distance_km": "km", "active_minutes": "min",
+    "sleep_hours": "h", "temperature_c": "°C",
+}
+ACTIVITY_METRICS = {"steps", "distance_km", "active_minutes", "sleep_hours"}
+WEARABLE_RANGES = {
+    "heart_rate": (20, 260), "spo2": (50, 100), "systolic": (50, 280), "diastolic": (25, 180),
+    "steps": (0, 200000), "distance_km": (0, 150), "active_minutes": (0, 1440),
+    "sleep_hours": (0, 24), "temperature_c": (25, 45),
+}
+
+
+@router.post("/v2/patients/{patient_id}/wearable-devices")
+def create_wearable_device(patient_id: str, body: WearableDeviceIn, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "activity")
+    roles(user, "patient", "caregiver")
+    if not body.consent:
+        raise HTTPException(422, "Explicit consent is required before linking a background wearable")
+    active_credentials = db.scalar(select(func.count(WearableDeviceCredential.id)).where(
+        WearableDeviceCredential.patient_id == patient_id,
+        WearableDeviceCredential.user_id == user.id,
+        WearableDeviceCredential.revoked.is_(False),
+        WearableDeviceCredential.expires_at > utcnow(),
+    )) or 0
+    if active_credentials >= 5:
+        raise HTTPException(409, "Revoke an existing Android companion before linking another one")
+    token = secrets.token_urlsafe(32)
+    row = WearableDeviceCredential(
+        patient_id=patient_id,
+        user_id=user.id,
+        token_hash=digest(token),
+        device_name=body.device_name.strip() or "Android wearable companion",
+        expires_at=utcnow() + timedelta(days=90),
+    )
+    db.add(row)
+    db.commit()
+    append_audit(db, user, "wearable_device_linked", patient_id, f"Credential {row.id}; expires in 90 days")
+    return {"id": row.id, "token": token, "patient_id": patient_id,
+            "device_name": row.device_name, "expires_at": row.expires_at.isoformat() + "Z"}
+
+
+@router.get("/v2/patients/{patient_id}/wearable-devices")
+def wearable_devices(patient_id: str, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "activity")
+    roles(user, "patient", "caregiver")
+    rows = db.scalars(select(WearableDeviceCredential).where(
+        WearableDeviceCredential.patient_id == patient_id
+    ).order_by(WearableDeviceCredential.id.desc()).limit(50)).all()
+    return [{
+        "id": row.id,
+        "device_name": row.device_name,
+        "created_at": row.created_at.isoformat() + "Z",
+        "last_seen": row.last_seen.isoformat() + "Z" if row.last_seen else None,
+        "expires_at": row.expires_at.isoformat() + "Z",
+        "revoked": row.revoked,
+        "can_revoke": user.role == "patient" or row.user_id == user.id,
+    } for row in rows if user.role == "patient" or row.user_id == user.id]
+
+
+@router.delete("/v2/patients/{patient_id}/wearable-devices/{device_id}")
+def revoke_wearable_device(patient_id: str, device_id: int, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "activity")
+    roles(user, "patient", "caregiver")
+    row = db.get(WearableDeviceCredential, device_id)
+    if not row or row.patient_id != patient_id or (user.role != "patient" and row.user_id != user.id):
+        raise HTTPException(404, "Wearable device not found")
+    row.revoked = True
+    db.commit()
+    append_audit(db, user, "wearable_device_revoked", patient_id, f"Credential {row.id}")
+    return {"ok": True}
+
+
+@router.post("/v2/patients/{patient_id}/vital-alert-protocol")
+def sign_vital_alert_protocol(patient_id: str, body: VitalAlertProtocolIn, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "activity")
+    roles(user, "doctor")
+    allowed = {"heart_rate", "spo2", "systolic", "diastolic", "temperature_c"}
+    if not body.thresholds or set(body.thresholds) - allowed:
+        raise HTTPException(422, "Provide at least one supported vital with a minimum review threshold")
+    for metric, value in body.thresholds.items():
+        low, high = WEARABLE_RANGES[metric]
+        if not math.isfinite(value) or value < low or value > high:
+            raise HTTPException(422, f"Invalid minimum review threshold for {metric}")
+    for previous in db.scalars(select(CareRecord).where(
+        CareRecord.patient_id == patient_id, CareRecord.kind == "vital_alert_protocol",
+        CareRecord.status == "approved",
+    )):
+        previous.status = "superseded"
+    row = CareRecord(
+        patient_id=patient_id, kind="vital_alert_protocol", author_id=user.id,
+        author_name=user.name, author_role=user.role, status="approved",
+        approved_by=user.name, approved_at=utcnow(),
+        data={"thresholds": body.thresholds, "source_url": body.source_url, "rationale": body.rationale},
+    )
+    db.add(row)
+    db.commit()
+    append_audit(db, user, "sign_vital_alert_protocol", patient_id)
+    return serial(row)
+
+
+@router.get("/v2/patients/{patient_id}/wearables")
+def wearable_history(patient_id: str, request: Request, days: int = 30, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "activity")
+    days = min(365, max(1, days))
+    since = utcnow() - timedelta(days=days)
+    statement = select(WearableReading).where(
+        WearableReading.patient_id == patient_id, WearableReading.observed_at >= since
+    )
+    if user.role == "patient":
+        statement = statement.where(WearableReading.metric.notin_(ACTIVITY_METRICS))
+    rows = db.scalars(statement.order_by(WearableReading.observed_at.desc()).limit(5000)).all()
+    rows.reverse()
+    payload = {"days": days, "items": [serial(row) for row in rows]}
+    if user.role != "patient":
+        payload["activity_threshold_steps"] = low_activity_steps_threshold()
+        protocol = current_vital_alert_protocol(db, patient_id)
+        payload["vital_thresholds"] = protocol.data.get("thresholds", {}) if protocol else {}
+        payload["vital_protocol"] = {
+            "source_url": protocol.data.get("source_url", ""),
+            "rationale": protocol.data.get("rationale", ""),
+            "approved_by": protocol.approved_by,
+            "approved_at": protocol.approved_at.isoformat() + "Z" if protocol.approved_at else None,
+        } if protocol else None
+    return payload
+
+
+@router.post("/v2/patients/{patient_id}/wearables")
+def save_wearable_readings(patient_id: str, body: WearableBatchIn, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "activity")
+    roles(user, "patient", "caregiver")
+    if not body.consent:
+        raise HTTPException(422, "Explicit consent is required before saving wearable readings")
+    if getattr(request.state, "wearable_device_id", None) and body.source != "android_ble":
+        raise HTTPException(422, "A background device credential can only upload Android Bluetooth readings")
+    saved = []
+    for point in body.readings:
+        if point.unit != WEARABLE_UNITS[point.metric]:
+            raise HTTPException(422, f"Use {WEARABLE_UNITS[point.metric]} for {point.metric}")
+        low, high = WEARABLE_RANGES[point.metric]
+        if point.value < low or point.value > high:
+            raise HTTPException(422, f"{point.metric} reading is outside the accepted storage range")
+        observed_at = point.observed_at
+        if observed_at.tzinfo is not None:
+            observed_at = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
+        if observed_at > utcnow() + timedelta(minutes=5):
+            raise HTTPException(422, "A wearable reading cannot be more than five minutes in the future")
+        row = WearableReading(
+            patient_id=patient_id, metric=point.metric, value=point.value, unit=point.unit,
+            observed_at=observed_at, source=body.source, device_name=body.device_name.strip()[:100],
+        )
+        db.add(row)
+        saved.append(row)
+    append_audit(db, user, "wearable_readings_saved", patient_id,
+                 f"{len(saved)} {body.source} readings; device name only")
+    db.commit()
+    if body.source != "manual":
+        evaluate_vital_readings(db, patient_id, saved)
+    return {"saved": len(saved), "source": body.source}
 
 @router.get("/v2/patients/{patient_id}/clinical")
 def clinical_dashboard(patient_id: str, request: Request, db=Depends(get_db)):
@@ -744,7 +993,7 @@ def clinical_dashboard(patient_id: str, request: Request, db=Depends(get_db)):
         result = "Check: local protocol required"
         if not lab:
             result = "Check: result missing"
-        elif (datetime.now() - datetime.fromisoformat(lab["date"])).days > protocol.get("max_age_days", 3):
+        elif (hospital_now() - datetime.fromisoformat(lab["date"])).days > protocol.get("max_age_days", 3):
             result = "Check: result needs refreshing"
         elif cutoff:
             result = "Within signed threshold" if cutoff.get("min", -1e9) <= lab["value"] <= cutoff.get("max", 1e9) else "Check: outside signed threshold"
@@ -845,16 +1094,19 @@ def protocol(patient_id: str, body: ProtocolIn, request: Request, db=Depends(get
 def day_pass(patient_id: str, request: Request, day: str = "", db=Depends(get_db)):
     patient_access(db, request, patient_id, "appointments")
     try:
-        start = datetime.fromisoformat(day) if day else datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        start = datetime.fromisoformat(day) if day else hospital_now().replace(hour=0, minute=0, second=0, microsecond=0)
     except ValueError:
         raise HTTPException(422, "Use YYYY-MM-DD")
     end = start + timedelta(days=1)
     appts = db.scalars(select(Appointment).where(Appointment.patient_id == patient_id, Appointment.start >= start, Appointment.start < end).order_by(Appointment.start)).all()
     out = []
+    from ..services.google_meet import public_visit
     for a in appts:
         ahead = db.scalars(select(Appointment).where(Appointment.department == a.department, Appointment.start >= start,
                                                       Appointment.start < a.start, Appointment.status.in_(["arrived", "in_progress", "booked"]))).all()
+        visit = db.scalar(select(VirtualAppointment).where(VirtualAppointment.appointment_id == a.id))
         out.append(serial(a) | {"ahead": len(ahead), "wait_minutes": len(ahead) * 20,
+                                "virtual_visit": public_visit(visit),
                                 "directions": f"Ask reception for {a.department}, {a.room}. Indoor walking routes require your hospital map."})
     prefs = records(db, patient_id, "preferences")
     address = os.getenv("HOSPITAL_ADDRESS", "")
@@ -862,6 +1114,459 @@ def day_pass(patient_id: str, request: Request, day: str = "", db=Depends(get_db
             "trip_count": len({a.start.date() for a in appts}),
             "stays_url": "https://www.google.com/maps/search/" + quote("patient accommodation near " + address) if address else None,
             "gate_url": f"/app?gate={patient_id}", "map_configured": bool(address)}
+
+
+TRANSPORT_ROLES = {"frontdesk", "navigator", "nurse", "admin"}
+
+
+class TransportRequestIn(BaseModel):
+    appointment_id: int = Field(gt=0)
+    pickup_at: datetime
+    pickup_address: str = Field(min_length=5, max_length=300)
+    landmark: str = Field(default="", max_length=150)
+    ride_type: Literal["uber", "rapido", "hospital", "caregiver"] = "uber"
+    support: list[Literal["mobility_assistance", "caregiver_accompanying", "wheelchair_accessible"]] = Field(default_factory=list, max_length=3)
+    companion_count: int = Field(default=0, ge=0, le=4)
+    fare_support: bool = False
+    notes: str = Field(default="", max_length=500)
+    consent: bool
+    location_consent: bool = False
+
+
+class TransportLocationIn(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_m: float | None = Field(default=None, ge=0, le=100000)
+
+
+class TransportUpdateIn(BaseModel):
+    status: Literal["coordinating", "arranged", "unable", "completed"]
+    arranged_via: str = Field(default="", max_length=120)
+    confirmed_pickup_at: datetime | None = None
+    coordination_note: str = Field(default="", max_length=500)
+
+
+def transport_payload(db, row):
+    data = dict(row.data or {})
+    # Precise coordinates are available only through the consented live-share endpoint.
+    data.pop("location", None)
+    data.pop("location_share_id", None)
+    appointment = db.get(Appointment, data.get("appointment_id")) if data.get("appointment_id") else None
+    patient = db.get(Patient, row.patient_id)
+    out = serial(row) | {"data": data, "patient_name": patient.name if patient else ""}
+    out["appointment"] = ({"id": appointment.id, "department": appointment.department,
+                           "room": appointment.room, "start": appointment.start.isoformat(),
+                           "status": appointment.status} if appointment else None)
+    out["delivery_summary"] = (row.data or {}).get("delivery_summary", {})
+    return out
+
+
+def notify_transport_coordinators(db, patient_id, title, body):
+    now = utcnow()
+    grants = db.scalars(select(AccessGrant).where(AccessGrant.patient_id == patient_id, AccessGrant.active.is_(True))).all()
+    count = 0
+    for grant in grants:
+        coordinator = db.get(User, grant.user_id)
+        if (coordinator and coordinator.active and coordinator.role in TRANSPORT_ROLES
+                and (not grant.expires_at or grant.expires_at > now)
+                and ("all" in grant.scopes or "appointments" in grant.scopes)):
+            db.add(Notification(user_id=coordinator.id, patient_id=patient_id, channel="transport", title=title, body=body))
+            count += 1
+    db.commit()
+    return count
+
+
+def transport_caregivers(db, patient_id):
+    now = utcnow()
+    grants = db.scalars(select(AccessGrant).where(
+        AccessGrant.patient_id == patient_id, AccessGrant.active.is_(True)
+    )).all()
+    people = []
+    for grant in grants:
+        caregiver = db.get(User, grant.user_id)
+        if (caregiver and caregiver.active and caregiver.role == "caregiver"
+                and (not grant.expires_at or grant.expires_at > now)
+                and ("all" in grant.scopes or "appointments" in grant.scopes)):
+            people.append(caregiver)
+    return people
+
+
+def transport_external_recipients(db, patient_id, target):
+    recipients = []
+    sms_ready = bool(os.getenv("SMS_ADAPTER_URL") and os.getenv("SMS_ADAPTER_KEY"))
+    email_ready = bool(os.getenv("EMAIL_ADAPTER_URL") and os.getenv("EMAIL_ADAPTER_KEY"))
+
+    def add_contact(phone, email, name):
+        if phone and sms_ready:
+            recipients.append(("sms", phone, name))
+        elif email and email_ready:
+            recipients.append(("email", email, name))
+        elif phone:
+            recipients.append(("sms", phone, name))
+        elif email:
+            recipients.append(("email", email, name))
+
+    if target in {"hospital", "both"}:
+        phone = os.getenv("HOSPITAL_TRANSPORT_PHONE", "").strip()
+        email = os.getenv("HOSPITAL_TRANSPORT_EMAIL", "").strip()
+        if phone or email:
+            add_contact(phone, email, "Hospital transport desk")
+        else:
+            recipients.append(("pending", "", "Hospital transport desk"))
+    if target in {"caregiver", "both"}:
+        caregivers = transport_caregivers(db, patient_id)
+        if not caregivers:
+            recipients.append(("pending", "", "Linked caregiver"))
+        for caregiver in caregivers:
+            phone = (caregiver.phone or "").strip()
+            email = caregiver.username.strip() if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", caregiver.username.strip()) else ""
+            if phone or email:
+                add_contact(phone, email, caregiver.name)
+            else:
+                recipients.append(("pending", "", caregiver.name))
+    return list({(channel, address): (channel, address, name)
+                 for channel, address, name in recipients}.values())
+
+
+def notify_transport_caregivers(db, patient_id, title, body):
+    for caregiver in transport_caregivers(db, patient_id):
+        db.add(Notification(user_id=caregiver.id, patient_id=patient_id, channel="transport",
+                            title=title, body=body))
+    db.commit()
+
+
+def revoke_transport_location(db, row, status="stopped"):
+    data = dict(row.data or {})
+    data["location_sharing"] = status
+    data.pop("location", None)
+    share_id = data.get("location_share_id")
+    if share_id:
+        share = db.get(ShareLink, share_id)
+        if share:
+            share.revoked = True
+    row.data = data
+
+
+def send_transport_messages(db, patient_id, appointment, pickup_at, target, location_url, request_data):
+    results = []
+    recipients = transport_external_recipients(db, patient_id, target)
+    for channel, address, name in recipients:
+        if channel == "pending":
+            results.append({"recipient": name, "channel": "sms/email", "status": "not_configured"})
+            continue
+        text = (f"OncoBrief transport request for patient {patient_id}. "
+                f"Pickup requested {pickup_at:%d %b %Y at %H:%M}. "
+                f"Pickup address: {request_data.get('pickup_address', '')}. "
+                f"Appointment: {appointment.department} on {appointment.start:%d %b %Y at %H:%M}.")
+        if request_data.get("landmark"):
+            text += f" Landmark: {request_data['landmark']}."
+        support = request_data.get("support", [])
+        support_labels = {"mobility_assistance": "mobility assistance",
+                          "wheelchair_accessible": "wheelchair-accessible vehicle",
+                          "caregiver_accompanying": "caregiver travelling"}
+        if support:
+            text += " Accessibility/support: " + ", ".join(support_labels.get(value, value) for value in support) + "."
+        if request_data.get("fare_support"):
+            text += " Travel-cost support requested."
+        if location_url:
+            text += f" Live trip location (available only while sharing): {location_url}"
+        try:
+            if channel == "sms":
+                deliver("sms", {"to": address, "body": text})
+            else:
+                deliver("email", {"to": address, "subject": "OncoBrief transport request", "body": text})
+            results.append({"recipient": name, "channel": channel, "status": "accepted"})
+        except HTTPException as exc:
+            results.append({"recipient": name, "channel": channel,
+                            "status": "not_configured" if exc.status_code == 503 else "failed"})
+        except Exception:
+            results.append({"recipient": name, "channel": channel, "status": "failed"})
+    return results
+
+
+@router.post("/v2/transport-requests/{request_id}/location/start")
+def start_transport_location(request_id: int, request: Request, db=Depends(get_db)):
+    row = db.get(CareRecord, request_id)
+    if not row or row.kind != "transport_request":
+        raise HTTPException(404, "Transport request not found")
+    user = patient_access(db, request, row.patient_id, "appointments")
+    roles(user, "patient", "caregiver")
+    data = dict(row.data or {})
+    if not data.get("location_consent"):
+        raise HTTPException(403, "The patient has not consented to live-location sharing")
+    if row.status in {"completed", "cancelled", "unable"}:
+        raise HTTPException(409, "This transport request is closed")
+    share = db.get(ShareLink, data.get("location_share_id")) if data.get("location_share_id") else None
+    if not share or share.revoked or share.expires_at < utcnow():
+        raise HTTPException(410, "The trip location link has expired")
+    data["location_sharing"] = "active"
+    data["location_started_at"] = utcnow().isoformat()
+    data.pop("location", None)
+    row.data, row.updated_at = data, utcnow()
+    db.commit()
+    append_audit(db, user, "transport_location_started", row.patient_id, f"Request {row.id}")
+    return {"status": "active"}
+
+
+@router.post("/v2/transport-requests/{request_id}/location")
+def update_transport_location(request_id: int, body: TransportLocationIn, request: Request, db=Depends(get_db)):
+    row = db.get(CareRecord, request_id)
+    if not row or row.kind != "transport_request":
+        raise HTTPException(404, "Transport request not found")
+    user = patient_access(db, request, row.patient_id, "appointments")
+    roles(user, "patient", "caregiver")
+    data = dict(row.data or {})
+    if not data.get("location_consent") or data.get("location_sharing") != "active":
+        raise HTTPException(409, "Start consented trip sharing before sending a location")
+    share = db.get(ShareLink, data.get("location_share_id")) if data.get("location_share_id") else None
+    if not share or share.revoked or share.expires_at < utcnow():
+        raise HTTPException(410, "The trip location link has expired")
+    observed_at = utcnow()
+    data["location"] = {"latitude": body.latitude, "longitude": body.longitude,
+                        "accuracy_m": body.accuracy_m, "observed_at": observed_at.isoformat()}
+    row.data, row.updated_at = data, observed_at
+    db.commit()
+    return {"status": "active", "updated_at": observed_at.isoformat()}
+
+
+@router.post("/v2/transport-requests/{request_id}/location/stop")
+def stop_transport_location(request_id: int, request: Request, db=Depends(get_db)):
+    row = db.get(CareRecord, request_id)
+    if not row or row.kind != "transport_request":
+        raise HTTPException(404, "Transport request not found")
+    user = patient_access(db, request, row.patient_id, "appointments")
+    roles(user, "patient", "caregiver")
+    data = dict(row.data or {})
+    if data.get("location_consent"):
+        revoke_transport_location(db, row)
+        row.updated_at = utcnow()
+        db.commit()
+        append_audit(db, user, "transport_location_stopped", row.patient_id, f"Request {row.id}")
+    return {"status": "stopped"}
+
+
+@router.get("/shared/transport/{token}")
+def shared_transport_location(token: str, db=Depends(get_db)):
+    share = db.scalar(select(ShareLink).where(ShareLink.token_hash == digest(token),
+                                             ShareLink.kind == "transport_location"))
+    if not share or share.revoked or share.expires_at < utcnow():
+        raise HTTPException(404, "This trip location link has expired or was withdrawn")
+    try:
+        request_id = int((share.fields or ["request:0"])[0].split(":", 1)[1])
+    except (IndexError, ValueError):
+        raise HTTPException(404, "This trip location link is invalid")
+    row = db.get(CareRecord, request_id)
+    if not row or row.patient_id != share.patient_id or row.kind != "transport_request":
+        raise HTTPException(404, "This trip location is unavailable")
+    data = row.data or {}
+    status = data.get("location_sharing", "available")
+    location = data.get("location") if status == "active" else None
+    stale = False
+    if location and location.get("observed_at"):
+        try:
+            observed_at = datetime.fromisoformat(str(location["observed_at"]).replace("Z", "+00:00"))
+            if observed_at.tzinfo is not None:
+                observed_at = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
+            stale = (utcnow() - observed_at).total_seconds() > 90
+        except (TypeError, ValueError):
+            stale = True
+    return {"status": status, "location": location,
+            "location_stale": stale,
+            "updated_at": (location or {}).get("observed_at"),
+            "expires_at": share.expires_at.isoformat() + "Z"}
+
+
+@router.get("/v2/patients/{patient_id}/transport-requests")
+def patient_transport_requests(patient_id: str, request: Request, db=Depends(get_db)):
+    patient_access(db, request, patient_id, "appointments")
+    rows = db.scalars(select(CareRecord).where(
+        CareRecord.patient_id == patient_id, CareRecord.kind == "transport_request"
+    ).order_by(CareRecord.created_at.desc(), CareRecord.id.desc()).limit(100)).all()
+    return [transport_payload(db, row) for row in rows]
+
+
+@router.post("/v2/patients/{patient_id}/transport-requests")
+def create_transport_request(patient_id: str, body: TransportRequestIn, request: Request, db=Depends(get_db)):
+    user = patient_access(db, request, patient_id, "appointments")
+    roles(user, "patient", "caregiver")
+    if not body.consent:
+        raise HTTPException(422, "Consent is required to share pickup details with your care team")
+    appointment = db.get(Appointment, body.appointment_id)
+    if not appointment or appointment.patient_id != patient_id:
+        raise HTTPException(404, "Choose an appointment in this patient record")
+    if appointment.status != "booked" or appointment.start <= hospital_now():
+        raise HTTPException(422, "Transport requests are for upcoming booked appointments")
+    pickup_at = to_hospital_wall_time(body.pickup_at)
+    if pickup_at <= hospital_now() or pickup_at >= appointment.start:
+        raise HTTPException(422, "Choose a future pickup time before the appointment")
+    active = db.scalars(select(CareRecord).where(
+        CareRecord.patient_id == patient_id, CareRecord.kind == "transport_request",
+        CareRecord.status.in_(["requested", "coordinating", "arranged"])
+    )).all()
+    if any((row.data or {}).get("appointment_id") == appointment.id for row in active):
+        raise HTTPException(409, "A transport request already exists for this appointment")
+    data = {
+        "appointment_id": appointment.id,
+        "pickup_at": pickup_at.isoformat(),
+        "pickup_address": body.pickup_address.strip(),
+        "landmark": body.landmark.strip(),
+        "ride_type": body.ride_type,
+        "support": sorted(set(body.support)),
+        "companion_count": body.companion_count,
+        "fare_support": body.fare_support,
+        "notes": body.notes.strip(),
+        "location_consent": body.location_consent,
+        "location_sharing": "available" if body.location_consent else "not_requested",
+        "arranged_via": "",
+        "confirmed_pickup_at": "",
+        "coordination_note": "",
+        "status_history": [{"status": "requested", "by": user.name, "at": utcnow().isoformat()}],
+    }
+    row = CareRecord(patient_id=patient_id, kind="transport_request", author_id=user.id,
+                     author_name=user.name, author_role=user.role, status="requested", data=data)
+    db.add(row)
+    db.commit()
+
+    location_url = ""
+    if body.location_consent:
+        token = secrets.token_urlsafe(32)
+        share = ShareLink(patient_id=patient_id, token_hash=digest(token), kind="transport_location",
+                          fields=[f"request:{row.id}"], expires_at=hospital_wall_to_utc(appointment.end + timedelta(hours=2)),
+                          created_by=user.id, recipient="Hospital transport team and linked caregiver")
+        db.add(share)
+        db.flush()
+        data = dict(row.data or {})
+        data["location_share_id"] = share.id
+        row.data = data
+        db.commit()
+        base = os.getenv("PUBLIC_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or str(request.base_url).rstrip("/")
+        location_url = base.rstrip("/") + "/transport-track/" + token
+
+    target = body.ride_type if body.ride_type in {"hospital", "caregiver"} else ""
+    if body.location_consent:
+        target = "both"
+    external_results = send_transport_messages(db, patient_id, appointment, pickup_at, target, location_url, row.data or {})
+    data = dict(row.data or {})
+    data["delivery_summary"] = {
+        "external_accepted": sum(result["status"] == "accepted" for result in external_results),
+        "external_pending": sum(result["status"] == "not_configured" for result in external_results),
+        "external_failed": sum(result["status"] == "failed" for result in external_results),
+        "location_consent": body.location_consent,
+    }
+    row.data = data
+    db.commit()
+
+    append_audit(db, user, "transport_request_created", patient_id,
+                 f"Appointment {appointment.id}; {body.ride_type}; location consent={body.location_consent}")
+    share_note = f" Live trip link: {location_url}" if location_url else ""
+    coordinator_count = notify_transport_coordinators(
+        db, patient_id, "Transport help requested",
+        f"A {body.ride_type} request was submitted for {appointment.department} on {appointment.start:%d %b at %H:%M}.{share_note}"
+    )
+    caregiver_count = 0
+    if body.ride_type == "caregiver" or body.location_consent:
+        notify_transport_caregivers(
+            db, patient_id, "Transport help requested",
+            f"A transport request was submitted for {appointment.department} on {appointment.start:%d %b at %H:%M}.{share_note}"
+        )
+        caregiver_count = len(transport_caregivers(db, patient_id))
+    data = dict(row.data or {})
+    data["delivery_summary"] = data.get("delivery_summary", {}) | {
+        "in_app_hospital": coordinator_count, "in_app_caregiver": caregiver_count
+    }
+    row.data = data
+    db.commit()
+    return transport_payload(db, row)
+
+
+@router.get("/v2/transport-requests")
+def transport_request_queue(request: Request, status: Literal["requested", "coordinating", "arranged", "unable", "completed", "cancelled"] | None = None,
+                            db=Depends(get_db)):
+    user = identity(request)
+    roles(user, *TRANSPORT_ROLES)
+    patient_ids = visible_ids(db, user, "appointments")
+    if not patient_ids:
+        return []
+    stmt = select(CareRecord).where(CareRecord.kind == "transport_request", CareRecord.patient_id.in_(patient_ids))
+    if status:
+        stmt = stmt.where(CareRecord.status == status)
+    rows = db.scalars(stmt.order_by(CareRecord.created_at.desc(), CareRecord.id.desc()).limit(500)).all()
+    return [transport_payload(db, row) for row in rows]
+
+
+@router.patch("/v2/transport-requests/{request_id}")
+def update_transport_request(request_id: int, body: TransportUpdateIn, request: Request, db=Depends(get_db)):
+    user = identity(request)
+    roles(user, *TRANSPORT_ROLES)
+    row = db.get(CareRecord, request_id)
+    if not row or row.kind != "transport_request":
+        raise HTTPException(404, "Transport request not found")
+    patient_access(db, request, row.patient_id, "appointments")
+    transitions = {
+        "requested": {"coordinating", "arranged", "unable"},
+        "coordinating": {"arranged", "unable"},
+        "arranged": {"coordinating", "unable", "completed"},
+        "unable": {"coordinating", "arranged"},
+    }
+    if body.status != row.status and body.status not in transitions.get(row.status, set()):
+        raise HTTPException(409, f"A {row.status} request cannot move to {body.status}")
+    data = dict(row.data or {})
+    appointment = db.get(Appointment, data.get("appointment_id"))
+    confirmed_pickup_at = to_hospital_wall_time(body.confirmed_pickup_at) if body.confirmed_pickup_at else None
+    if body.status == "arranged":
+        if not body.arranged_via.strip() or not confirmed_pickup_at:
+            raise HTTPException(422, "Enter who arranged the ride and its confirmed pickup time")
+        if confirmed_pickup_at <= hospital_now():
+            raise HTTPException(422, "Confirmed pickup time must be in the future")
+        if appointment and confirmed_pickup_at >= appointment.start:
+            raise HTTPException(422, "Confirmed pickup time must be before the appointment")
+        data["arranged_via"] = body.arranged_via.strip()
+        data["confirmed_pickup_at"] = confirmed_pickup_at.isoformat()
+    elif body.arranged_via.strip():
+        data["arranged_via"] = body.arranged_via.strip()
+    elif confirmed_pickup_at:
+        data["confirmed_pickup_at"] = confirmed_pickup_at.isoformat()
+    if body.status in {"coordinating", "unable"}:
+        data["arranged_via"] = ""
+        data["confirmed_pickup_at"] = ""
+    if body.coordination_note.strip():
+        data["coordination_note"] = body.coordination_note.strip()
+    history = list(data.get("status_history", []))
+    if body.status != row.status:
+        history.append({"status": body.status, "by": user.name, "at": utcnow().isoformat()})
+    data["status_history"] = history[-20:]
+    row.data, row.status, row.updated_at = data, body.status, utcnow()
+    if body.status in {"completed", "unable"} and data.get("location_sharing") == "active":
+        revoke_transport_location(db, row)
+    db.commit()
+    db.add(Notification(user_id=row.author_id, patient_id=row.patient_id,
+                        channel="transport", title="Transport request update", body=f"Your ride request is {body.status.replace('_', ' ')}."))
+    db.commit()
+    append_audit(db, user, "transport_request_updated", row.patient_id,
+                 f"Request {row.id}: {body.status}")
+    return transport_payload(db, row)
+
+
+@router.post("/v2/transport-requests/{request_id}/cancel")
+def cancel_transport_request(request_id: int, request: Request, db=Depends(get_db)):
+    row = db.get(CareRecord, request_id)
+    if not row or row.kind != "transport_request":
+        raise HTTPException(404, "Transport request not found")
+    user = patient_access(db, request, row.patient_id, "appointments")
+    roles(user, "patient", "caregiver")
+    if row.status in {"completed", "cancelled"}:
+        raise HTTPException(409, "This transport request is already closed")
+    data = dict(row.data or {})
+    history = list(data.get("status_history", []))
+    history.append({"status": "cancelled", "by": user.name, "at": utcnow().isoformat()})
+    data["status_history"] = history[-20:]
+    row.data, row.status, row.updated_at = data, "cancelled", utcnow()
+    if data.get("location_sharing") == "active":
+        revoke_transport_location(db, row)
+    db.commit()
+    append_audit(db, user, "transport_request_cancelled", row.patient_id, f"Request {row.id}")
+    notify_transport_coordinators(db, row.patient_id, "Transport request cancelled", f"A ride request for {row.patient_id} was cancelled.")
+    return transport_payload(db, row)
 
 
 @router.get("/v2/patients/{patient_id}/gate-qr")
@@ -877,7 +1582,7 @@ def gate_qr(patient_id: str, request: Request, db=Depends(get_db)):
 @router.post("/v2/patients/{patient_id}/gate")
 def gate_arrival(patient_id: str, request: Request, db=Depends(get_db)):
     user=patient_access(db,request,patient_id,"appointments")
-    start=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
+    start=hospital_now().replace(hour=0,minute=0,second=0,microsecond=0)
     rows=db.scalars(select(Appointment).where(Appointment.patient_id==patient_id,Appointment.start>=start,Appointment.start<start+timedelta(days=1),Appointment.status=="booked")).all()
     for row in rows:
         row.status="arrived"
@@ -891,6 +1596,10 @@ class AppointmentAction(BaseModel):
     action: Literal["arrived", "in_progress", "completed", "missed", "cancelled"]
 
 
+def appointment_virtual_visit(db, appointment_id):
+    return db.scalar(select(VirtualAppointment).where(VirtualAppointment.appointment_id == appointment_id))
+
+
 @router.post("/v2/appointments/{appointment_id}/status")
 def appointment_status(appointment_id: int, body: AppointmentAction, request: Request, db=Depends(get_db)):
     row = db.get(Appointment, appointment_id)
@@ -899,10 +1608,105 @@ def appointment_status(appointment_id: int, body: AppointmentAction, request: Re
     user = patient_access(db, request, row.patient_id, "appointments")
     if body.action != "arrived":
         roles(user, "frontdesk", "nurse", "doctor", "admin")
+    visit = appointment_virtual_visit(db, row.id)
+    if body.action == "cancelled" and visit and visit.status != "cancelled":
+        if visit.google_event_id:
+            from ..services.google_meet import GoogleMeetError, cancel_event
+            try:
+                cancel_event(visit.google_event_id)
+            except GoogleMeetError:
+                raise HTTPException(502, "Google Calendar could not cancel the video invitation. Retry before cancelling this appointment.") from None
+        visit.status = "cancelled"
+        visit.meeting_url = ""
+        visit.updated_at = utcnow()
     row.status = body.action
     db.commit()
     notify_team(db, row.patient_id, "Appointment update", f"{row.department}: {body.action}")
+    if visit:
+        from ..services.google_meet import notify_appointment_participants
+        notify_appointment_participants(db, row.patient_id, "Video appointment update", f"Your video appointment was {body.action.replace('_', ' ')}. Check its status in OncoBrief.")
     return serial(row)
+
+
+class MeetLinkIn(BaseModel):
+    meeting_url: str = Field(min_length=12, max_length=500)
+    clinician_type: Literal["oncologist", "psychiatrist"] = "oncologist"
+
+
+@router.post("/v2/appointments/{appointment_id}/virtual-visit/create")
+def create_appointment_meet(appointment_id: int, request: Request, db=Depends(get_db)):
+    appointment = db.get(Appointment, appointment_id)
+    if not appointment:
+        raise HTTPException(404, "Appointment not found")
+    user = patient_access(db, request, appointment.patient_id, "appointments")
+    roles(user, "doctor", "nurse", "frontdesk", "admin")
+    if appointment.status == "cancelled":
+        raise HTTPException(409, "A cancelled appointment cannot have a video meeting")
+    visit = appointment_virtual_visit(db, appointment.id)
+    if not visit:
+        raise HTTPException(404, "This appointment has no online consultation request")
+    from ..services.google_meet import (GoogleMeetError, configured, create_event,
+                                         invitee_list, refresh_event, set_meeting_result,
+                                         notify_appointment_participants, public_visit)
+    if not configured():
+        raise HTTPException(503, "Google Meet is not configured. Add its Calendar credentials or attach a hospital-created Meet link.")
+    try:
+        if visit.google_event_id:
+            meeting_url = refresh_event(visit.google_event_id)
+            if meeting_url:
+                set_meeting_result(visit, visit.google_event_id, meeting_url)
+            else:
+                visit.status = "creating"
+                visit.updated_at = utcnow()
+        else:
+            invitees = invitee_list(visit)
+            if not invitees:
+                raise HTTPException(422, "No participant emails were saved for this video appointment")
+            event_id, meeting_url = create_event(appointment, invitees)
+            set_meeting_result(visit, event_id, meeting_url)
+    except GoogleMeetError:
+        visit.status = "failed"
+        visit.updated_at = utcnow()
+        db.commit()
+        raise HTTPException(502, "Google Calendar could not create the meeting. Retry or add a hospital-created Meet link.") from None
+    db.commit()
+    append_audit(db, user, "create_google_meet", appointment.patient_id, f"Appointment {appointment.id}")
+    if visit.status == "scheduled":
+        notify_appointment_participants(db, appointment.patient_id, "Google Meet is ready", "Your private video consultation link is available on the OncoBrief appointment day pass.")
+    return {"appointment_id": appointment.id, "virtual_visit": public_visit(visit)}
+
+
+@router.patch("/v2/appointments/{appointment_id}/virtual-visit/link")
+def attach_appointment_meet(appointment_id: int, body: MeetLinkIn, request: Request, db=Depends(get_db)):
+    appointment = db.get(Appointment, appointment_id)
+    if not appointment:
+        raise HTTPException(404, "Appointment not found")
+    user = patient_access(db, request, appointment.patient_id, "appointments")
+    roles(user, "doctor", "nurse", "frontdesk", "admin")
+    if appointment.status == "cancelled":
+        raise HTTPException(409, "A cancelled appointment cannot have a video meeting")
+    from ..services.google_meet import (GoogleMeetError, cancel_event,
+                                         notify_appointment_participants, public_visit,
+                                         save_manual_link)
+    visit = appointment_virtual_visit(db, appointment.id)
+    if not visit:
+        visit = VirtualAppointment(appointment_id=appointment.id, patient_id=appointment.patient_id,
+                                   clinician_type=body.clinician_type, created_by=user.id)
+        db.add(visit)
+        db.flush()
+    if visit.google_event_id:
+        try:
+            cancel_event(visit.google_event_id)
+        except GoogleMeetError:
+            raise HTTPException(502, "The pending Google Calendar event could not be cancelled; its invite may remain active. Retry before replacing its link.") from None
+    try:
+        save_manual_link(visit, body.meeting_url)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+    db.commit()
+    append_audit(db, user, "attach_google_meet", appointment.patient_id, f"Appointment {appointment.id}")
+    notify_appointment_participants(db, appointment.patient_id, "Video appointment link added", "A Google Meet link is ready on the OncoBrief appointment day pass.")
+    return {"appointment_id": appointment.id, "virtual_visit": public_visit(visit)}
 
 
 @router.get("/v2/appointments/{appointment_id}/suggest-slot")
@@ -910,17 +1714,24 @@ def suggest_slot(appointment_id: int, request: Request, db=Depends(get_db)):
     row = db.get(Appointment, appointment_id)
     if not row:
         raise HTTPException(404, "Appointment not found")
-    patient_access(db, request, row.patient_id, "appointments")
-    others = db.scalars(select(Appointment).where(Appointment.id != row.id, Appointment.status != "cancelled")).all()
+    require_department_schedule(db, request, row.department)
+    others = db.scalars(select(Appointment).where(
+        Appointment.id != row.id, Appointment.status != "cancelled"
+    )).all()
     duration = row.end - row.start
-    start = row.start.replace(hour=8, minute=0, second=0, microsecond=0)
-    candidates = [start + timedelta(minutes=10 * i) for i in range(54)]
+    day_start = row.start.replace(hour=9, minute=0, second=0, microsecond=0)
+    day_end = row.start.replace(hour=17, minute=0, second=0, microsecond=0)
+    candidates = [day_start + timedelta(minutes=20 * i) for i in range(24)
+                  if day_start + timedelta(minutes=20 * i) >= hospital_now()]
     candidates.sort(key=lambda t: abs((t - row.start).total_seconds()))
     for t in candidates:
-        if t + duration > start.replace(hour=17):
+        end = t + duration
+        if end > day_end:
             continue
-        if not any(t < a.end and a.start < t + duration and (a.patient_id == row.patient_id or a.room == row.room) for a in others):
-            return {"start": t.isoformat(), "end": (t + duration).isoformat(), "room": row.room, "approval_required": True}
+        if not any(t < a.end and a.start < end and
+                   (a.department == row.department or a.patient_id == row.patient_id or a.room == row.room)
+                   for a in others):
+            return {"start": t.isoformat(), "end": end.isoformat(), "room": row.room, "approval_required": True}
     raise HTTPException(409, "No free slot that fits on this day")
 
 
@@ -934,18 +1745,34 @@ def reschedule(appointment_id: int, body: RescheduleIn, request: Request, db=Dep
     row = db.get(Appointment, appointment_id)
     if not row:
         raise HTTPException(404, "Appointment not found")
-    user = patient_access(db, request, row.patient_id, "appointments")
-    roles(user, "frontdesk", "nurse", "admin")
-    start = body.start.replace(tzinfo=None)
+    user = require_department_schedule(db, request, row.department)
+    start = to_hospital_wall_time(body.start)
     end = start + (row.end - row.start)
+    if start < hospital_now() or start.hour < 9 or end > start.replace(hour=17, minute=0, second=0, microsecond=0):
+        raise HTTPException(422, "Choose a future slot between 09:00 and 17:00 hospital time")
     from sqlalchemy import or_
-    clash = db.scalar(select(Appointment).where(Appointment.id != row.id, Appointment.status != "cancelled", Appointment.start < end,
-                                                Appointment.end > start, or_(Appointment.patient_id == row.patient_id, Appointment.room == row.room)))
+    clash = db.scalar(select(Appointment).where(
+        Appointment.id != row.id, Appointment.status != "cancelled",
+        Appointment.start < end, Appointment.end > start,
+        or_(Appointment.department == row.department,
+            Appointment.patient_id == row.patient_id,
+            Appointment.room == row.room)
+    ))
     if clash:
         raise HTTPException(409, "Slot was taken. Request a new suggestion.")
+    visit = appointment_virtual_visit(db, row.id)
+    if visit and visit.google_event_id and visit.status != "cancelled":
+        from ..services.google_meet import GoogleMeetError, reschedule_event
+        try:
+            reschedule_event(visit.google_event_id, row, start=start, end=end)
+        except GoogleMeetError:
+            raise HTTPException(502, "Google Calendar could not update the video invitation. The appointment time was not changed.") from None
     row.start, row.end = start, end
     db.commit()
     append_audit(db, user, "fix_schedule_clash", row.patient_id, str(row.id))
+    if visit and visit.status != "cancelled":
+        from ..services.google_meet import notify_appointment_participants
+        notify_appointment_participants(db, row.patient_id, "Appointment time updated", "Your video consultation time changed. Check the updated time on the OncoBrief appointment day pass.")
     return serial(row)
 
 
