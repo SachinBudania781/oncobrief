@@ -14,7 +14,8 @@ export default function TransportTracker() {
             <div className="stack">
               {trip.status === "active" && trip.location ? (
                 <>
-                  <div className="ob-tracker-pin"><MapPin size={25} /><div><b>Latest shared location</b><span>Updated {dateTime(trip.updated_at)}</span></div></div>
+                  <div className="ob-tracker-pin"><MapPin size={25} /><div><b>Last received location</b><span>Updated {dateTime(trip.updated_at)}</span></div></div>
+                  {trip.location_stale && <p className="care-error" role="alert">This location is more than 90 seconds old and may no longer show where the patient is. The phone may have paused location updates.</p>}
                   <a className="btn primary" href={`https://maps.google.com/?q=${trip.location.latitude},${trip.location.longitude}`} target="_blank" rel="noopener noreferrer">
                     View on map <ExternalLink size={16} />
                   </a>

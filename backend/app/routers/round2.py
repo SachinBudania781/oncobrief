@@ -766,6 +766,7 @@ WEARABLE_UNITS = {
     "steps": "steps", "distance_km": "km", "active_minutes": "min",
     "sleep_hours": "h", "temperature_c": "°C",
 }
+ACTIVITY_METRICS = {"steps", "distance_km", "active_minutes", "sleep_hours"}
 WEARABLE_RANGES = {
     "heart_rate": (20, 260), "spo2": (50, 100), "systolic": (50, 280), "diastolic": (25, 180),
     "steps": (0, 200000), "distance_km": (0, 150), "active_minutes": (0, 1440),
@@ -866,9 +867,12 @@ def wearable_history(patient_id: str, request: Request, days: int = 30, db=Depen
     user = patient_access(db, request, patient_id, "activity")
     days = min(365, max(1, days))
     since = utcnow() - timedelta(days=days)
-    rows = db.scalars(select(WearableReading).where(
+    statement = select(WearableReading).where(
         WearableReading.patient_id == patient_id, WearableReading.observed_at >= since
-    ).order_by(WearableReading.observed_at.desc()).limit(5000)).all()
+    )
+    if user.role == "patient":
+        statement = statement.where(WearableReading.metric.notin_(ACTIVITY_METRICS))
+    rows = db.scalars(statement.order_by(WearableReading.observed_at.desc()).limit(5000)).all()
     rows.reverse()
     payload = {"days": days, "items": [serial(row) for row in rows]}
     if user.role != "patient":
@@ -1298,8 +1302,19 @@ def shared_transport_location(token: str, db=Depends(get_db)):
         raise HTTPException(404, "This trip location is unavailable")
     data = row.data or {}
     status = data.get("location_sharing", "available")
-    return {"status": status, "location": data.get("location") if status == "active" else None,
-            "updated_at": (data.get("location") or {}).get("observed_at"),
+    location = data.get("location") if status == "active" else None
+    stale = False
+    if location and location.get("observed_at"):
+        try:
+            observed_at = datetime.fromisoformat(str(location["observed_at"]).replace("Z", "+00:00"))
+            if observed_at.tzinfo is not None:
+                observed_at = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
+            stale = (utcnow() - observed_at).total_seconds() > 90
+        except (TypeError, ValueError):
+            stale = True
+    return {"status": status, "location": location,
+            "location_stale": stale,
+            "updated_at": (location or {}).get("observed_at"),
             "expires_at": share.expires_at.isoformat()}
 
 
