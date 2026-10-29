@@ -342,7 +342,7 @@ export function DayPass({ pid, user }) {
                       <span className="care-step">{i + 1}</span>
                       <div>
                         <b>{s.department}</b>
-                        <p>{s.virtual_visit ? "Video consultation" : s.room} · {new Date(s.start).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}–{new Date(s.end).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</p>
+                        <p>{s.virtual_visit ? "Video consultation" : s.room} · {String(s.start).slice(11, 16)}–{String(s.end).slice(11, 16)}</p>
                         <p className="small muted">Faculty · {s.clinician || "Assignment pending"}</p>
                         <Status value={s.status} />
                         {s.virtual_visit && <div className="ob-meet-card">
@@ -451,7 +451,7 @@ export function DayPass({ pid, user }) {
           {visitMode === "in_person" ? <label className="field">
             Department
             <select className="select" value={dept} onChange={(e) => setDept(e.target.value)}>
-              {taxonomy.data?.departments.map((d) => <option key={d.name}>{d.name}</option>)}
+              {taxonomy.data?.departments.filter((d) => d.name !== "Front desk / Records").map((d) => <option key={d.name}>{d.name}</option>)}
             </select>
           </label> : <>
             <label className="field">Specialist
@@ -559,7 +559,7 @@ export function ScheduleDesk({ user }) {
                           {a.virtual_visit && <MeetVisitControls appointment={a} user={user} onDone={resource.refresh} googleConfigured={integrations.data?.services?.find((x) => x.service === "google_meet")?.configured} />}
                         </td>
                         <td>{a.clinician || "Assignment pending"}</td>
-                        <td className="small">{new Date(a.start).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}–{new Date(a.end).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</td>
+                        <td className="small">{String(a.start).slice(11, 16)}–{String(a.end).slice(11, 16)}</td>
                         <td><Status value={a.status} /></td>
                         <td>
                           <Action run={() => request(`/v2/appointments/${a.id}/suggest-slot`)} onDone={(slot) => setSuggestions((v) => ({ ...v, [a.id]: slot }))}>Suggest nearest free slot</Action>
@@ -589,6 +589,9 @@ function DepartmentSlotBoard({ appointments, departments, day }) {
     const minutes = 9 * 60 + index * 20;
     return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
   });
+  const today = new Date().toLocaleDateString("en-CA");
+  const now = new Date();
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
   return (
     <Panel title="Department slots" hint="Booked times are unavailable to patients. Staff can see who holds each booking and the assigned faculty.">
       {departments.map((department) => (
@@ -599,12 +602,18 @@ function DepartmentSlotBoard({ appointments, departments, day }) {
               <thead><tr><th>Time</th><th>Status</th><th>Patient</th><th>Faculty</th><th>Room</th></tr></thead>
               <tbody>
                 {times.map((time) => {
-                  const start = new Date(`${day}T${time}:00`);
-                  const end = new Date(start.getTime() + 20 * 60000);
-                  const booking = appointments.find((a) => a.department === department && a.status !== "cancelled" && start < new Date(a.end) && new Date(a.start) < end);
+                  const [hour, minute] = time.split(":").map(Number);
+                  const slotStart = hour * 60 + minute;
+                  const slotEnd = slotStart + 20;
+                  const wallMinutes = (value) => {
+                    const [h, m] = String(value).slice(11, 16).split(":").map(Number);
+                    return h * 60 + m;
+                  };
+                  const booking = appointments.find((a) => a.department === department && a.status !== "cancelled" && wallMinutes(a.start) < slotEnd && wallMinutes(a.end) > slotStart);
+                  const past = day < today || (day === today && slotStart <= currentMinutes);
                   return <tr key={time}>
                     <td>{time}</td>
-                    <td><Status value={booking ? "booked" : start < new Date() ? "past" : "available"} /></td>
+                    <td><Status value={booking ? "booked" : past ? "past" : "available"} /></td>
                     <td>{booking ? <>{booking.patient_name}<br /><small>{booking.patient_id}</small></> : "—"}</td>
                     <td>{booking?.clinician || "—"}</td>
                     <td>{booking?.virtual_visit ? "Google Meet" : booking?.room || "—"}</td>
@@ -662,9 +671,10 @@ function MeetVisitControls({ appointment, user, onDone, googleConfigured }) {
 function ScheduleTimeline({ appointments, departments, clashes, department }) {
   const conflicted = new Set(clashes.flatMap((c) => c.ids));
   const hours = Array.from({ length: 10 }, (_, i) => 8 + i);
+  const timeLabel = (value) => String(value).slice(11, 16);
   const point = (value) => {
-    const date = new Date(value);
-    return ((date.getHours() + date.getMinutes() / 60 - 8) / 9) * 100;
+    const [hour, minute] = timeLabel(value).split(":").map(Number);
+    return ((hour + minute / 60 - 8) / 9) * 100;
   };
   return (
     <Panel title={department ? `${department} · one-day view` : "All departments · one-day view"} hint="Bookings are plotted by department and time; the table includes the patient, faculty and room.">
@@ -682,8 +692,8 @@ function ScheduleTimeline({ appointments, departments, clashes, department }) {
                   const left = Math.max(0, rawLeft);
                   const width = Math.min(Math.max(point(appointment.end) - rawLeft, 2.4), 100 - left);
                   const room = appointment.virtual_visit ? "Google Meet" : appointment.room;
-                  return <div key={appointment.id} className={`care-schedule-slot ${conflicted.has(appointment.id) ? "clash" : ""}`} style={{ left: `${left}%`, width: `${width}%` }} title={`${new Date(appointment.start).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}–${new Date(appointment.end).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })} · ${appointment.patient_name} (${appointment.patient_id}) · ${appointment.clinician || "Faculty assignment pending"} · ${room}`}>
-                    <b>{appointment.patient_name.split(" ")[0]}</b><small>{new Date(appointment.start).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })} · {room}</small>
+                  return <div key={appointment.id} className={`care-schedule-slot ${conflicted.has(appointment.id) ? "clash" : ""}`} style={{ left: `${left}%`, width: `${width}%` }} title={`${timeLabel(appointment.start)}–${timeLabel(appointment.end)} · ${appointment.patient_name} (${appointment.patient_id}) · ${appointment.clinician || "Faculty assignment pending"} · ${room}`}>
+                    <b>{appointment.patient_name.split(" ")[0]}</b><small>{timeLabel(appointment.start)} · {room}</small>
                   </div>;
                 })}
               </div>
