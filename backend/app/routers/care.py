@@ -128,7 +128,12 @@ def symptom_history(patient: Patient = Depends(load_patient), db: Session = Depe
 
 
 @router.get("/patients/{patient_id}/activity")
-def activity(patient: Patient = Depends(load_patient), db: Session = Depends(get_db)):
+def activity(request: Request, patient: Patient = Depends(load_patient), db: Session = Depends(get_db)):
+    from ..security import identity, require_patient
+    user = identity(request)
+    require_patient(db, user, patient.id, "activity")
+    if user.role == "patient":
+        return []
     rows = db.scalars(select(Activity).where(Activity.patient_id == patient.id).order_by(Activity.date)).all()
     return [{"date": a.date.date().isoformat(), "steps": a.steps, "sleep_hours": a.sleep_hours,
              "resting_hr": a.resting_hr} for a in rows[-14:]]

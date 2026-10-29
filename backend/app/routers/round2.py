@@ -741,16 +741,19 @@ def visit_prep(patient_id: str, request: Request, db=Depends(get_db)):
 
 @router.get("/v2/patients/{patient_id}/week")
 def week(patient_id: str, request: Request, db=Depends(get_db)):
-    patient_access(db, request, patient_id, "activity")
+    user = patient_access(db, request, patient_id, "activity")
     since = utcnow() - timedelta(days=7)
     checkins = [r for r in records(db, patient_id, "checkin") if r.created_at > since]
     days = sorted({r.created_at.date().isoformat() for r in checkins})
     logs = db.scalars(select(MedLog).where(MedLog.patient_id == patient_id, MedLog.logged_at > since)).all()
-    acts = db.scalars(select(Activity).where(Activity.patient_id == patient_id, Activity.date > since)).all()
-    return {"checkin_days": len(days), "days": days, "doses_taken": sum(l.status == "taken" for l in logs),
-            "doses_missed": sum(l.status == "missed" for l in logs), "steps": sum(a.steps for a in acts),
-            "garden_stage": min(5, len(days)), "mood": [10 - r.data.get("distress", 0) for r in reversed(checkins)],
-            "best_day": max(acts, key=lambda a: a.steps).date.date().isoformat() if acts else None}
+    summary = {"checkin_days": len(days), "days": days, "doses_taken": sum(l.status == "taken" for l in logs),
+               "doses_missed": sum(l.status == "missed" for l in logs),
+               "garden_stage": min(5, len(days)), "mood": [10 - r.data.get("distress", 0) for r in reversed(checkins)]}
+    if user.role != "patient":
+        acts = db.scalars(select(Activity).where(Activity.patient_id == patient_id, Activity.date > since)).all()
+        summary["steps"] = sum(a.steps for a in acts)
+        summary["best_day"] = max(acts, key=lambda a: a.steps).date.date().isoformat() if acts else None
+    return summary
 
 
 class ActivityIn(BaseModel):

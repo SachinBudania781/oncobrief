@@ -458,6 +458,7 @@ function CareSpace() {
                   pid={pid}
                   language={language}
                   canTeachBack={can("notes")}
+                  viewerRole={user.role}
                 />
               )}
               {(tab === "transport" || transportOpened) && <Transport pid={pid} user={user} active={tab === "transport"} />}

@@ -554,7 +554,8 @@ export function Medicines({ pid, user, onUpdate }) {
   );
 }
 
-export function Wellness({ pid, language, canTeachBack = true }) {
+export function Wellness({ pid, language, canTeachBack = true, viewerRole = "patient" }) {
+  const patientView = viewerRole === "patient";
   const resource = useResource(`/v2/patients/${pid}/wellness`),
     week = useResource(`/v2/patients/${pid}/week`);
   const [played, setPlayed] = useState(false),
@@ -621,18 +622,18 @@ export function Wellness({ pid, language, canTeachBack = true }) {
                     <b>{w.doses_taken}</b>
                     <span>doses taken</span>
                   </div>
-                  <div>
+                  {!patientView && <div>
                     <b>{w.steps.toLocaleString()}</b>
                     <span>steps recorded</span>
-                  </div>
+                  </div>}
                   <div>
                     <b>{w.garden_stage}/5</b>
                     <span>garden stage</span>
                   </div>
                 </div>
                 <p className="small">
-                  Missed a day? You can begin again today. Best step day:{" "}
-                  {w.best_day || "not recorded yet"}.
+                  Missed a day? You can begin again today.
+                  {!patientView && <> Best step day: {w.best_day || "not recorded yet"}.</>}
                 </p>
                 <button className="btn" onClick={() => window.print()}>
                   Print my Week Wrapped
@@ -647,9 +648,9 @@ export function Wellness({ pid, language, canTeachBack = true }) {
         >
           <MemoryGame key={pid} />
         </Panel>
-        <Panel title="Activity & wearable log">
+        {!patientView && <Panel title="Activity & wearable log">
           <SimpleActivity pid={pid} onDone={() => week.refresh()} />
-        </Panel>
+        </Panel>}
       </div>
     </div>
   );
