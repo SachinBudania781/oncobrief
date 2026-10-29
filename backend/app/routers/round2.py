@@ -1,4 +1,4 @@
-from ..timeutil import utcnow
+from ..timeutil import hospital_now, utcnow
 """Round 2 patient, caregiver, clinician and hospital workflows."""
 import io
 import json
@@ -16,7 +16,7 @@ from sqlalchemy import func, select, update
 from ..db import get_db
 from ..models import Activity, Appointment, Document, LabValue, Medication, MedLog, Patient, SymptomReport, WearableReading
 from ..round2_models import WearableDeviceCredential
-from ..round2_models import AccessGrant, Alert, Approval, CareRecord, LibraryItem, Notification, ShareLink, User, TreatingClinician
+from ..round2_models import AccessGrant, Alert, Approval, CareRecord, LibraryItem, Notification, ShareLink, User, TreatingClinician, VirtualAppointment
 from ..security import DEMO_MODE, append_audit, digest, identity, password_hash, require_patient, roles, verify_chain, visible_ids
 from ..services.companion import EMERGENCY, alert, answer, command_centre, living_summary, notify_team, records, red_flags, safe_text
 from ..services.integrations import deliver, status as integration_status
@@ -52,7 +52,11 @@ def workflows(request: Request):
 @router.get("/v2/integrations")
 def integrations(request: Request):
     identity(request)
-    return {"services": integration_status(), "demo": DEMO_MODE,
+    from ..services.google_meet import configured as google_meet_configured
+    services = integration_status()
+    services.append({"service": "google_meet", "configured": google_meet_configured(),
+                     "settings": ["GOOGLE_CALENDAR_CLIENT_ID", "GOOGLE_CALENDAR_CLIENT_SECRET", "GOOGLE_CALENDAR_REFRESH_TOKEN"]})
+    return {"services": services, "demo": DEMO_MODE,
             "llm": bool(os.getenv("LLM_API_KEY")), "india_hosting_confirmed": os.getenv("INDIA_HOSTING_CONFIRMED") == "true",
             "hospital_emergency": os.getenv("HOSPITAL_EMERGENCY_PHONE", "Set HOSPITAL_EMERGENCY_PHONE"),
             "hospital_address": os.getenv("HOSPITAL_ADDRESS", "Set HOSPITAL_ADDRESS")}
@@ -66,7 +70,7 @@ def notifications(request: Request, db=Depends(get_db)):
     activity_ids = set(visible_ids(db, user, "activity"))
     return [serial(n) for n in db.scalars(select(Notification).where(Notification.user_id == user.id).order_by(Notification.id.desc()).limit(100))
             if not n.patient_id or n.patient_id in (
-                appointment_ids if n.channel == "transport"
+                appointment_ids if n.channel in {"transport", "appointment"}
                 else activity_ids if n.channel in {"activity", "vitals"}
                 else alert_ids
             )]
@@ -1068,16 +1072,19 @@ def protocol(patient_id: str, body: ProtocolIn, request: Request, db=Depends(get
 def day_pass(patient_id: str, request: Request, day: str = "", db=Depends(get_db)):
     patient_access(db, request, patient_id, "appointments")
     try:
-        start = datetime.fromisoformat(day) if day else datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        start = datetime.fromisoformat(day) if day else hospital_now().replace(hour=0, minute=0, second=0, microsecond=0)
     except ValueError:
         raise HTTPException(422, "Use YYYY-MM-DD")
     end = start + timedelta(days=1)
     appts = db.scalars(select(Appointment).where(Appointment.patient_id == patient_id, Appointment.start >= start, Appointment.start < end).order_by(Appointment.start)).all()
     out = []
+    from ..services.google_meet import public_visit
     for a in appts:
         ahead = db.scalars(select(Appointment).where(Appointment.department == a.department, Appointment.start >= start,
                                                       Appointment.start < a.start, Appointment.status.in_(["arrived", "in_progress", "booked"]))).all()
+        visit = db.scalar(select(VirtualAppointment).where(VirtualAppointment.appointment_id == a.id))
         out.append(serial(a) | {"ahead": len(ahead), "wait_minutes": len(ahead) * 20,
+                                "virtual_visit": public_visit(visit),
                                 "directions": f"Ask reception for {a.department}, {a.room}. Indoor walking routes require your hospital map."})
     prefs = records(db, patient_id, "preferences")
     address = os.getenv("HOSPITAL_ADDRESS", "")
@@ -1544,7 +1551,7 @@ def gate_qr(patient_id: str, request: Request, db=Depends(get_db)):
 @router.post("/v2/patients/{patient_id}/gate")
 def gate_arrival(patient_id: str, request: Request, db=Depends(get_db)):
     user=patient_access(db,request,patient_id,"appointments")
-    start=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
+    start=hospital_now().replace(hour=0,minute=0,second=0,microsecond=0)
     rows=db.scalars(select(Appointment).where(Appointment.patient_id==patient_id,Appointment.start>=start,Appointment.start<start+timedelta(days=1),Appointment.status=="booked")).all()
     for row in rows:
         row.status="arrived"
@@ -1558,6 +1565,10 @@ class AppointmentAction(BaseModel):
     action: Literal["arrived", "in_progress", "completed", "missed", "cancelled"]
 
 
+def appointment_virtual_visit(db, appointment_id):
+    return db.scalar(select(VirtualAppointment).where(VirtualAppointment.appointment_id == appointment_id))
+
+
 @router.post("/v2/appointments/{appointment_id}/status")
 def appointment_status(appointment_id: int, body: AppointmentAction, request: Request, db=Depends(get_db)):
     row = db.get(Appointment, appointment_id)
@@ -1566,10 +1577,105 @@ def appointment_status(appointment_id: int, body: AppointmentAction, request: Re
     user = patient_access(db, request, row.patient_id, "appointments")
     if body.action != "arrived":
         roles(user, "frontdesk", "nurse", "doctor", "admin")
+    visit = appointment_virtual_visit(db, row.id)
+    if body.action == "cancelled" and visit and visit.status != "cancelled":
+        if visit.google_event_id:
+            from ..services.google_meet import GoogleMeetError, cancel_event
+            try:
+                cancel_event(visit.google_event_id)
+            except GoogleMeetError:
+                raise HTTPException(502, "Google Calendar could not cancel the video invitation. Retry before cancelling this appointment.") from None
+        visit.status = "cancelled"
+        visit.meeting_url = ""
+        visit.updated_at = utcnow()
     row.status = body.action
     db.commit()
     notify_team(db, row.patient_id, "Appointment update", f"{row.department}: {body.action}")
+    if visit:
+        from ..services.google_meet import notify_appointment_participants
+        notify_appointment_participants(db, row.patient_id, "Video appointment update", f"Your video appointment was {body.action.replace('_', ' ')}. Check its status in OncoBrief.")
     return serial(row)
+
+
+class MeetLinkIn(BaseModel):
+    meeting_url: str = Field(min_length=12, max_length=500)
+    clinician_type: Literal["oncologist", "psychiatrist"] = "oncologist"
+
+
+@router.post("/v2/appointments/{appointment_id}/virtual-visit/create")
+def create_appointment_meet(appointment_id: int, request: Request, db=Depends(get_db)):
+    appointment = db.get(Appointment, appointment_id)
+    if not appointment:
+        raise HTTPException(404, "Appointment not found")
+    user = patient_access(db, request, appointment.patient_id, "appointments")
+    roles(user, "doctor", "nurse", "frontdesk", "admin")
+    if appointment.status == "cancelled":
+        raise HTTPException(409, "A cancelled appointment cannot have a video meeting")
+    visit = appointment_virtual_visit(db, appointment.id)
+    if not visit:
+        raise HTTPException(404, "This appointment has no online consultation request")
+    from ..services.google_meet import (GoogleMeetError, configured, create_event,
+                                         invitee_list, refresh_event, set_meeting_result,
+                                         notify_appointment_participants, public_visit)
+    if not configured():
+        raise HTTPException(503, "Google Meet is not configured. Add its Calendar credentials or attach a hospital-created Meet link.")
+    try:
+        if visit.google_event_id:
+            meeting_url = refresh_event(visit.google_event_id)
+            if meeting_url:
+                set_meeting_result(visit, visit.google_event_id, meeting_url)
+            else:
+                visit.status = "creating"
+                visit.updated_at = utcnow()
+        else:
+            invitees = invitee_list(visit)
+            if not invitees:
+                raise HTTPException(422, "No participant emails were saved for this video appointment")
+            event_id, meeting_url = create_event(appointment, invitees)
+            set_meeting_result(visit, event_id, meeting_url)
+    except GoogleMeetError:
+        visit.status = "failed"
+        visit.updated_at = utcnow()
+        db.commit()
+        raise HTTPException(502, "Google Calendar could not create the meeting. Retry or add a hospital-created Meet link.") from None
+    db.commit()
+    append_audit(db, user, "create_google_meet", appointment.patient_id, f"Appointment {appointment.id}")
+    if visit.status == "scheduled":
+        notify_appointment_participants(db, appointment.patient_id, "Google Meet is ready", "Your private video consultation link is available on the OncoBrief appointment day pass.")
+    return {"appointment_id": appointment.id, "virtual_visit": public_visit(visit)}
+
+
+@router.patch("/v2/appointments/{appointment_id}/virtual-visit/link")
+def attach_appointment_meet(appointment_id: int, body: MeetLinkIn, request: Request, db=Depends(get_db)):
+    appointment = db.get(Appointment, appointment_id)
+    if not appointment:
+        raise HTTPException(404, "Appointment not found")
+    user = patient_access(db, request, appointment.patient_id, "appointments")
+    roles(user, "doctor", "nurse", "frontdesk", "admin")
+    if appointment.status == "cancelled":
+        raise HTTPException(409, "A cancelled appointment cannot have a video meeting")
+    from ..services.google_meet import (GoogleMeetError, cancel_event,
+                                         notify_appointment_participants, public_visit,
+                                         save_manual_link)
+    visit = appointment_virtual_visit(db, appointment.id)
+    if not visit:
+        visit = VirtualAppointment(appointment_id=appointment.id, patient_id=appointment.patient_id,
+                                   clinician_type=body.clinician_type, created_by=user.id)
+        db.add(visit)
+        db.flush()
+    if visit.google_event_id:
+        try:
+            cancel_event(visit.google_event_id)
+        except GoogleMeetError:
+            raise HTTPException(502, "The pending Google Calendar event could not be cancelled; its invite may remain active. Retry before replacing its link.") from None
+    try:
+        save_manual_link(visit, body.meeting_url)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+    db.commit()
+    append_audit(db, user, "attach_google_meet", appointment.patient_id, f"Appointment {appointment.id}")
+    notify_appointment_participants(db, appointment.patient_id, "Video appointment link added", "A Google Meet link is ready on the OncoBrief appointment day pass.")
+    return {"appointment_id": appointment.id, "virtual_visit": public_visit(visit)}
 
 
 @router.get("/v2/appointments/{appointment_id}/suggest-slot")
@@ -1581,7 +1687,7 @@ def suggest_slot(appointment_id: int, request: Request, db=Depends(get_db)):
     others = db.scalars(select(Appointment).where(Appointment.id != row.id, Appointment.status != "cancelled")).all()
     duration = row.end - row.start
     start = row.start.replace(hour=8, minute=0, second=0, microsecond=0)
-    candidates = [start + timedelta(minutes=10 * i) for i in range(54)]
+    candidates = [start + timedelta(minutes=10 * i) for i in range(54) if start + timedelta(minutes=10 * i) >= hospital_now()]
     candidates.sort(key=lambda t: abs((t - row.start).total_seconds()))
     for t in candidates:
         if t + duration > start.replace(hour=17):
@@ -1605,14 +1711,26 @@ def reschedule(appointment_id: int, body: RescheduleIn, request: Request, db=Dep
     roles(user, "frontdesk", "nurse", "admin")
     start = body.start.replace(tzinfo=None)
     end = start + (row.end - row.start)
+    if start < hospital_now() or start.hour < 8 or end > start.replace(hour=17, minute=0, second=0, microsecond=0):
+        raise HTTPException(422, "Choose a future slot between 08:00 and 17:00 hospital time")
     from sqlalchemy import or_
     clash = db.scalar(select(Appointment).where(Appointment.id != row.id, Appointment.status != "cancelled", Appointment.start < end,
                                                 Appointment.end > start, or_(Appointment.patient_id == row.patient_id, Appointment.room == row.room)))
     if clash:
         raise HTTPException(409, "Slot was taken. Request a new suggestion.")
+    visit = appointment_virtual_visit(db, row.id)
+    if visit and visit.google_event_id and visit.status != "cancelled":
+        from ..services.google_meet import GoogleMeetError, reschedule_event
+        try:
+            reschedule_event(visit.google_event_id, row, start=start, end=end)
+        except GoogleMeetError:
+            raise HTTPException(502, "Google Calendar could not update the video invitation. The appointment time was not changed.") from None
     row.start, row.end = start, end
     db.commit()
     append_audit(db, user, "fix_schedule_clash", row.patient_id, str(row.id))
+    if visit and visit.status != "cancelled":
+        from ..services.google_meet import notify_appointment_participants
+        notify_appointment_participants(db, row.patient_id, "Appointment time updated", "Your video consultation time changed. Check the updated time on the OncoBrief appointment day pass.")
     return serial(row)
 
 

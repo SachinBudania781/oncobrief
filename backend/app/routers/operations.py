@@ -4,8 +4,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from ..db import get_db
 from ..models import Appointment
+from ..round2_models import VirtualAppointment
 from ..security import append_audit, identity, roles, visible_ids
 from ..services.scheduling import serial_schedule
+from ..timeutil import hospital_now
 
 router=APIRouter(prefix="/api/v2/schedule",tags=["schedule optimisation"])
 
@@ -42,7 +44,7 @@ def packing(request:Request,day:date,db=Depends(get_db)):
     planned=[]
     window=start.replace(hour=8)
     if day==date.today():
-        now=datetime.now()
+        now=hospital_now()
         window=max(window,now.replace(minute=(now.minute//10)*10,second=0,microsecond=0)+timedelta(minutes=10))
     for row in sorted(selected,key=lambda r:(r.patient_id,r.start)):
         duration=row.end-row.start
@@ -90,7 +92,7 @@ def apply_packing(body:ApplyPlan,request:Request,db=Depends(get_db)):
         expected,start,end=(d.replace(tzinfo=None) for d in (move.expected_start,move.start,move.end))
         if row.start!=expected:
             raise HTTPException(409,"A booking changed; generate a new preview")
-        if start.date()!=row.start.date() or end-start!=row.end-row.start or start<datetime.now() or start.hour<8 or end>start.replace(hour=17,minute=0,second=0,microsecond=0):
+        if start.date()!=row.start.date() or end-start!=row.end-row.start or start<hospital_now() or start.hour<8 or end>start.replace(hour=17,minute=0,second=0,microsecond=0):
             raise HTTPException(422,"Preserve the booking date, duration and operating window")
         proposed.append({**item(row),"start":start,"end":end})
         loaded.append(row)
@@ -98,8 +100,29 @@ def apply_packing(body:ApplyPlan,request:Request,db=Depends(get_db)):
     other=[item(r) for r in db.scalars(select(Appointment).where(Appointment.id.not_in(selected),Appointment.status!="cancelled"))]
     if any(overlaps(a,b) for i,a in enumerate(proposed) for b in proposed[i+1:]+other):
         raise HTTPException(409,"A slot is no longer free. Generate another preview.")
+    from ..services.google_meet import GoogleMeetError, notify_appointment_participants, reschedule_event
+    updated_events=[]
+    visits_by_appointment={}
+    try:
+        for row,move in zip(loaded,proposed):
+            visit=db.scalar(select(VirtualAppointment).where(VirtualAppointment.appointment_id==row.id))
+            if visit and visit.status!="cancelled":
+                visits_by_appointment[row.id]=visit
+                if visit.google_event_id:
+                    reschedule_event(visit.google_event_id,row,start=move["start"],end=move["end"])
+                    updated_events.append((visit.google_event_id,row,row.start,row.end))
+    except GoogleMeetError:
+        for event_id,appointment,old_start,old_end in reversed(updated_events):
+            try:
+                reschedule_event(event_id,appointment,start=old_start,end=old_end)
+            except GoogleMeetError:
+                pass
+        raise HTTPException(502,"Google Calendar could not update a video invitation. No appointment times were changed.") from None
     for row,move in zip(loaded,proposed):
         row.start,row.end=move["start"],move["end"]
     db.commit()
     append_audit(db,user,"approve_packed_schedule",detail=f"{len(loaded)} bookings moved")
+    for row in loaded:
+        if row.id in visits_by_appointment:
+            notify_appointment_participants(db,row.patient_id,"Appointment time updated","Your video consultation time changed. Check the updated time on the OncoBrief appointment day pass.")
     return {"moved":len(loaded)}

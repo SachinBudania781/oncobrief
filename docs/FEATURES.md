@@ -21,6 +21,7 @@ This maps the supplied Parts A, B and C to the implementation. Part A's repeated
 | Energy-based activity, hobbies and games | Wellness guidance, manual activity and consented Bluetooth wearable trends, memory game | Recorded fatigue/count flags constrain suggestions; signed guidance library |
 | Scheme and money navigator | Money & schemes + finance workflow | Official PM-JAY verification link and entered quote/confirmed-cover calculation; no eligibility or reimbursement guarantee |
 | One-trip planner, ride coordination and nearby stays | Day pass, appointment-linked transport requests and staff coordination queue | Pickup, access and fare-support requests go to the assigned team; this does not book a third-party vehicle. Nearby search needs hospital address |
+| Video appointments with a caregiver and specialist | Day pass → Google Meet appointment; doctor/staff schedule | Patient chooses an oncologist or psychiatrist and may include a caregiver; consented Calendar invitations and unique Meet links require hospital OAuth setup. Staff can attach a hospital-created link. Reschedules and cancellations sync when Calendar is configured. |
 | Trial matching and information | Connected services → trials; clinical trial review workflow | CTRI gateway or verified manual registry entry; doctor sees and signs first |
 | Who opened my records | Privacy & devices | Patient-specific audit chain with actor/time; independent anchor available through gateway |
 | WhatsApp / SMS mode | Communication-consent workflow, reminder scheduler, adapters | Requires opted-in channel, sender setup and gateway; ordinary phone callbacks are patient-bound |
@@ -68,6 +69,7 @@ This maps the supplied Parts A, B and C to the implementation. Part A's repeated
 | Queue / wait-time messages | Day pass and arrival/status updates | Estimate based on queue and 20-minute slots, not a guaranteed time |
 | Patient transport coordination | Transport tab for patients/caregivers; Uber, Rapido, hospital-arranged, caregiver-arranged; assigned staff queue; optional consented live trip location | Ride-app launch only; booking/payment are outside OncoBrief. External hospital/caregiver messages need verified contacts and an SMS/email adapter. Location sharing is opt-in, starts on a patient action, and can be stopped/revoked. |
 | Clash fix | Schedule desk | Preview nearest free slot; rechecks patient and room overlap on approval |
+| Google Meet coordination | Schedule desk | Create and email Calendar invitations when configured, add a hospital-created Meet URL, and keep link access with the assigned care team |
 | Day-care chair / preparation board | Chair workflow and hospital overview | Requires signed approved order; rejects recorded chair overlaps |
 | Approved multilingual leaflets | Wellness → Patient leaflets | English/Hindi/Marathi where approved; missing translations explicitly fall back to the original |
 | AI ordinary-phone check-in | Consent workflow and minute scheduler | Telephony gateway required; browser demonstration is labelled |

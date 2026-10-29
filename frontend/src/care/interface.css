@@ -804,5 +804,15 @@ button:not(:disabled):active { transform: scale(.975); }
 .care-schedule-slot.clash { border-color: #dc9c8c; background: #fff0e9; color: #9d503e; }
 .care-schedule-slot b { overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
 .care-schedule-slot small { font-size: 8px; opacity: .8; }
+.ob-meet-card { display: grid; gap: 9px; margin: 12px 0; padding: 12px; border: 1px solid #d8e9ea; border-radius: 12px; background: #f4fafa; }
+.ob-meet-card .row { align-items: center; }
+.ob-meet-card > .btn { justify-self: start; }
+.ob-meet-check { display: flex; align-items: flex-start; gap: 9px; color: #526d74; font-size: 11px; line-height: 1.5; }
+.ob-meet-check input { margin-top: 2px; accent-color: var(--accent); }
+.ob-meet-controls { display: grid; gap: 8px; min-width: 220px; margin-top: 8px; }
+.ob-meet-controls > .row { align-items: center; }
+.ob-meet-link-form { gap: 6px; }
+.ob-meet-link-form .field { font-size: 10px; }
+.ob-meet-link-form .input { min-height: 32px !important; font-size: 10px !important; }
 @media (max-width: 1120px) { .care-clinic-grid { grid-template-columns: 1fr; } .care-clinic-queue { max-height: 420px; } }
 @media (max-width: 600px) { .care-clinic-queue-item { grid-template-columns: 66px minmax(0, 1fr); } .care-clinic-room { display: none; } .care-clinic-visits { grid-template-columns: 1fr; } .care-clinic-visits button { min-height: 0; } .care-activity-department { min-width: 140px; } .care-activity-log article { align-items: flex-start; flex-wrap: wrap; } .care-activity-action { margin-left: 40px; } }

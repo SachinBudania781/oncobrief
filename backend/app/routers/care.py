@@ -1,4 +1,8 @@
 from datetime import date, datetime, timedelta
+import json
+import re
+import secrets
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -7,16 +11,18 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import Activity, Appointment, Medication, MedLog, Patient, SymptomReport
+from ..round2_models import User, VirtualAppointment
 from ..taxonomy import DEPARTMENTS, SYMPTOMS
 from .common import Actor, audit, get_actor, load_patient
 from ..services.scheduling import serial_schedule
+from ..timeutil import hospital_now
 
 router = APIRouter(prefix="/api", tags=["care"])
 
 
 def day_bounds(d: str | None):
     try:
-        day = date.fromisoformat(d) if d else date.today()
+        day = date.fromisoformat(d) if d else hospital_now().date()
     except ValueError:
         raise HTTPException(422, "Use YYYY-MM-DD")
     start = datetime.combine(day, datetime.min.time())
@@ -131,9 +137,12 @@ def activity(patient: Patient = Depends(load_patient), db: Session = Depends(get
 # ---------------- appointments & schedule ----------------
 def appt_dict(a: Appointment, db: Session) -> dict:
     p = db.get(Patient, a.patient_id)
+    visit = db.scalar(select(VirtualAppointment).where(VirtualAppointment.appointment_id == a.id))
+    from ..services.google_meet import public_visit
     return {"id": a.id, "patient_id": a.patient_id, "patient_name": p.name if p else "", "department": a.department,
             "clinician": a.clinician, "room": a.room, "start": a.start.isoformat(), "end": a.end.isoformat(),
-            "visit_type": a.visit_type, "status": a.status, "notes": a.notes}
+            "visit_type": a.visit_type, "status": a.status, "notes": a.notes,
+            "virtual_visit": public_visit(visit)}
 
 
 @router.get("/appointments")
@@ -142,7 +151,7 @@ def appointments(request: Request, day: str | None = None, department: str = "",
     from ..security import identity, visible_ids
     stmt = select(Appointment).where(Appointment.patient_id.in_(visible_ids(db, identity(request), "appointments"))).order_by(Appointment.start)
     if upcoming:
-        stmt = stmt.where(Appointment.start >= datetime.now() - timedelta(hours=2))
+        stmt = stmt.where(Appointment.start >= hospital_now() - timedelta(hours=2))
     else:
         start, end = day_bounds(day)
         stmt = stmt.where(Appointment.start >= start, Appointment.start < end)
@@ -187,7 +196,7 @@ def slots(department: str, day: str, db: Session = Depends(get_db)):
     t = start.replace(hour=9)
     while t < start.replace(hour=16, minute=30):
         busy = sum(1 for a in taken if a.start <= t < a.end)
-        if t > datetime.now() and busy < 2:
+        if t > hospital_now() and busy < 2:
             out.append(t.strftime("%H:%M"))
         t += timedelta(minutes=20)
     return out
@@ -199,6 +208,13 @@ class AppointmentIn(BaseModel):
     start: str           # ISO
     visit_type: str = "follow_up"
     notes: str | None = None
+    visit_mode: Literal["in_person", "google_meet"] = "in_person"
+    clinician_type: Literal["oncologist", "psychiatrist"] | None = None
+    patient_email: str = ""
+    caregiver_email: str = ""
+    clinician_email: str = ""
+    include_caregiver: bool = False
+    invitation_consent: bool = False
 
 
 @router.post("/appointments")
@@ -207,30 +223,72 @@ def book(body: AppointmentIn, db: Session = Depends(get_db), actor: Actor = Depe
     p = db.get(Patient, body.patient_id)
     if not p:
         raise HTTPException(404, "Patient not found")
-    dept = next((d for d in DEPARTMENTS if d["name"] == body.department), None)
+    user = db.get(User, actor.id)
+    if not user:
+        raise HTTPException(401, "Please sign in")
+    from ..security import roles
+    roles(user, "patient", "caregiver", "doctor", "nurse", "frontdesk", "admin")
+    from ..security import require_patient
+    require_patient(db, user, p.id, "appointments")
+    if body.visit_mode == "google_meet":
+        if not body.clinician_type:
+            raise HTTPException(422, "Choose an oncologist or psychiatrist for the video consultation")
+        if not body.invitation_consent:
+            raise HTTPException(422, "Consent is required before sending calendar invitations")
+        if body.include_caregiver and not body.caregiver_email.strip():
+            raise HTTPException(422, "Enter the caregiver email or unselect caregiver participation")
+        emails = [body.patient_email.strip(), body.clinician_email.strip()]
+        if body.include_caregiver:
+            emails.append(body.caregiver_email.strip())
+        email_pattern = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+        if any(len(email) > 254 or not email_pattern.fullmatch(email) for email in emails):
+            raise HTTPException(422, "Enter a valid email for the patient and selected clinician/caregiver")
+        required_department = "Psycho-oncology" if body.clinician_type == "psychiatrist" else "Medical Oncology OPD"
+        department_name = required_department
+    else:
+        department_name = body.department
+    dept = next((d for d in DEPARTMENTS if d["name"] == department_name), None)
     if not dept:
         raise HTTPException(422, "Unknown department")
-    from ..round2_models import User
-    from ..security import require_patient
-    require_patient(db, db.get(User, actor.id), p.id, "appointments")
     try:
         start = datetime.fromisoformat(body.start).replace(tzinfo=None)
     except ValueError:
         raise HTTPException(422, "Invalid start date")
-    if start < datetime.now() or not 8 <= start.hour < 17:
+    if start < hospital_now() or not 8 <= start.hour < 17:
         raise HTTPException(422, "Book a future appointment between 08:00 and 17:00")
     end = start + timedelta(minutes=20)
     overlapping = db.scalars(select(Appointment).where(Appointment.status != "cancelled", Appointment.start < end, Appointment.end > start)).all()
     if any(a.patient_id == p.id for a in overlapping):
         raise HTTPException(409, "The patient already has an appointment at this time. Choose another slot.")
-    room = next((r for r in dept["rooms"] if not any(a.room == r and a.department == dept["name"] for a in overlapping)), None)
-    if room is None:
-        raise HTTPException(409, "No room is free at this time. Choose another slot.")
-    a = Appointment(patient_id=p.id, department=dept["name"], clinician=p.treating_oncologist or "Duty doctor",
+    if body.visit_mode == "google_meet":
+        room = f"Online-{secrets.token_hex(3)}"
+    else:
+        room = next((r for r in dept["rooms"] if not any(a.room == r and a.department == dept["name"] for a in overlapping)), None)
+        if room is None:
+            raise HTTPException(409, "No room is free at this time. Choose another slot.")
+    clinician = ("Psychiatrist" if body.visit_mode == "google_meet" and body.clinician_type == "psychiatrist"
+                 else p.treating_oncologist or "Duty doctor")
+    a = Appointment(patient_id=p.id, department=dept["name"], clinician=clinician,
                     room=room, start=start, end=end,
                     visit_type=body.visit_type, notes=body.notes)
     db.add(a)
+    db.flush()
+    if body.visit_mode == "google_meet":
+        from ..services.google_meet import configured
+        invitees = [body.patient_email.strip().lower(), body.clinician_email.strip().lower()]
+        if body.include_caregiver:
+            invitees.append(body.caregiver_email.strip().lower())
+        visit = VirtualAppointment(
+            appointment_id=a.id, patient_id=p.id, clinician_type=body.clinician_type,
+            status="creating" if configured() else "needs_setup",
+            invitees=json.dumps(list(dict.fromkeys(invitees))),
+            caregiver_included=body.include_caregiver, created_by=user.id,
+        )
+        db.add(visit)
     db.commit()
+    if body.visit_mode == "google_meet":
+        from ..services.google_meet import notify_appointment_participants
+        notify_appointment_participants(db, p.id, "Video appointment booked", "Your Google Meet consultation is on the appointment day pass. Open OncoBrief for the link or setup status.")
     same_day = db.scalars(select(Appointment).where(Appointment.start >= start.replace(hour=0, minute=0),
                                                     Appointment.start < start.replace(hour=23, minute=59))).all()
     warn = [c for c in find_clashes(same_day) if a.id in c["ids"]]

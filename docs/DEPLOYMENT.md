@@ -85,4 +85,6 @@ The smoke check verifies branding, phone manifests and icons, API GET/POST forwa
 
 Use backend `/docs` for API integration. Configure provider keys and adapter endpoints on the backend only; `docs/INTEGRATIONS.md` lists their contracts. Never put API secrets in frontend build variables.
 
+Google Meet scheduling is optional and uses a hospital-owned Google Calendar OAuth account. Set the backend-only Calendar secrets described in `docs/GOOGLE_MEET.md` on the new feature deployment; without them, staff can attach a Meet link created in the hospital calendar. Never add OAuth secrets to the frontend or GitHub.
+
 For the existing live setup, keep using its current branch and service configuration. To preview the hub integration, create the new services from the feature branch and leave `deploy/round2-independent` unchanged. Render's current GitHub connection does not include this repository; public-repository deployments do not receive automatic push triggers. Check each service's deployed commit before handing out its URL.

@@ -6,6 +6,7 @@ import {
   ScanLine,
   Upload,
   ArrowRight,
+  Video,
 } from "lucide-react";
 import { request, useResource, dateTime } from "./client";
 import { Action, Empty, Error, Load, Panel, Status } from "./UI";
@@ -283,6 +284,14 @@ export function DayPass({ pid, user }) {
     [dept, setDept] = useState("Medical Oncology OPD"),
     [start, setStart] = useState(""),
     [error, setError] = useState("");
+  const [visitMode, setVisitMode] = useState("in_person"),
+    [clinicianType, setClinicianType] = useState("oncologist"),
+    [patientEmail, setPatientEmail] = useState(""),
+    [caregiverEmail, setCaregiverEmail] = useState(""),
+    [clinicianEmail, setClinicianEmail] = useState(""),
+    [includeCaregiver, setIncludeCaregiver] = useState(true),
+    [invitationConsent, setInvitationConsent] = useState(false),
+    [bookingNote, setBookingNote] = useState("");
   return (
     <div className="care-columns">
       <Panel
@@ -312,27 +321,27 @@ export function DayPass({ pid, user }) {
                   alt="Hospital gate check-in QR"
                   style={{ width: 120, height: 120 }}
                 />
-                <Action
+                {d.stops.some((stop) => !stop.virtual_visit) && <Action
                   run={() => request(`/v2/patients/${pid}/gate`, "POST")}
                   onDone={resource.refresh}
                 >
                   Check in at hospital gate
-                </Action>
+                </Action>}
                 <div className="care-stops">
                   {d.stops.map((s, i) => (
                     <article key={s.id}>
                       <span className="care-step">{i + 1}</span>
                       <div>
                         <b>{s.department}</b>
-                        <p>
-                          {s.room} · {dateTime(s.start)}
-                        </p>
+                        <p>{s.virtual_visit ? `Video consultation · ${dateTime(s.start)}` : `${s.room} · ${dateTime(s.start)}`}</p>
                         <Status value={s.status} />
-                        <p>
-                          {s.ahead} ahead · about {s.wait_minutes} min
-                        </p>
-                        <p className="small muted">{s.directions}</p>
-                        <div className="row wrap">
+                        {s.virtual_visit && <div className="ob-meet-card">
+                          <div className="row wrap"><Video size={17} /><b>Google Meet · {s.virtual_visit.clinician_type}</b><Status value={s.virtual_visit.status} /></div>
+                          {s.virtual_visit.status === "scheduled" && s.virtual_visit.meeting_url ? <a className="btn primary" href={s.virtual_visit.meeting_url} target="_blank" rel="noopener noreferrer">Join video consultation</a> : <p className="small muted">The hospital team will add the meeting link. Check this appointment again before your visit.</p>}
+                          {s.virtual_visit.caregiver_included && <p className="small muted">Your caregiver is included in the calendar invitation.</p>}
+                        </div>}
+                        {!s.virtual_visit && <><p>{s.ahead} ahead · about {s.wait_minutes} min</p><p className="small muted">{s.directions}</p></>}
+                        {!s.virtual_visit && <div className="row wrap">
                           {(user.role === "patient" || user.role === "caregiver"
                             ? ["arrived"]
                             : ["arrived", "in_progress", "completed", "missed"]
@@ -351,7 +360,7 @@ export function DayPass({ pid, user }) {
                               {action.replaceAll("_", " ")}
                             </Action>
                           ))}
-                        </div>
+                        </div>}
                       </div>
                     </article>
                   ))}
@@ -382,7 +391,7 @@ export function DayPass({ pid, user }) {
       </Panel>
       <Panel
         title="Plan one trip"
-        hint="Choose the same date for tests and review. The scheduler checks room and patient clashes."
+        hint="Book an in-person visit or schedule a private Google Meet consultation with your oncologist or psychiatrist."
       >
         <form
           className="stack"
@@ -390,12 +399,30 @@ export function DayPass({ pid, user }) {
             e.preventDefault();
             setError("");
             try {
-              await request("/appointments", "POST", {
+              const result = await request("/appointments", "POST", {
                 patient_id: pid,
                 department: dept,
                 start,
                 visit_type: "follow_up",
+                visit_mode: visitMode,
+                ...(visitMode === "google_meet" ? {
+                  clinician_type: clinicianType,
+                  patient_email: patientEmail,
+                  clinician_email: clinicianEmail,
+                  caregiver_email: caregiverEmail,
+                  include_caregiver: includeCaregiver,
+                  invitation_consent: invitationConsent,
+                } : {}),
               });
+              setBookingNote(visitMode === "google_meet"
+                ? (result.virtual_visit?.status === "creating"
+                  ? "Video appointment booked. Google is preparing the Meet link; it will appear on this day pass shortly."
+                  : result.virtual_visit?.status === "scheduled"
+                    ? "Video appointment booked. Google Calendar invitations have been sent to the selected participants."
+                    : "Video appointment booked. The hospital team needs to configure Google Calendar or add its Meet link before the visit.")
+                : "Appointment booked.");
+              setInvitationConsent(false);
+              setDay(start.slice(0, 10));
               resource.refresh();
             } catch (e) {
               setError(e.message);
@@ -403,17 +430,31 @@ export function DayPass({ pid, user }) {
           }}
         >
           <label className="field">
-            Department
-            <select
-              className="select"
-              value={dept}
-              onChange={(e) => setDept(e.target.value)}
-            >
-              {taxonomy.data?.departments.map((d) => (
-                <option key={d.name}>{d.name}</option>
-              ))}
+            Appointment format
+            <select className="select" value={visitMode} onChange={(e) => setVisitMode(e.target.value)}>
+              <option value="in_person">In-person hospital visit</option>
+              <option value="google_meet">Online consultation · Google Meet</option>
             </select>
           </label>
+          {visitMode === "in_person" ? <label className="field">
+            Department
+            <select className="select" value={dept} onChange={(e) => setDept(e.target.value)}>
+              {taxonomy.data?.departments.map((d) => <option key={d.name}>{d.name}</option>)}
+            </select>
+          </label> : <>
+            <label className="field">Specialist
+              <select className="select" value={clinicianType} onChange={(e) => setClinicianType(e.target.value)}>
+                <option value="oncologist">Oncologist · Medical Oncology OPD</option>
+                <option value="psychiatrist">Psychiatrist · Psycho-oncology</option>
+              </select>
+            </label>
+            <p className="small muted">The calendar invitation uses a private title and does not include diagnosis or treatment details.</p>
+            <label className="field">Patient email for the invitation<input className="input" type="email" autoComplete="email" required value={patientEmail} onChange={(e) => setPatientEmail(e.target.value)} /></label>
+            <label className="field">Oncologist / psychiatrist email<input className="input" type="email" autoComplete="email" required value={clinicianEmail} onChange={(e) => setClinicianEmail(e.target.value)} /></label>
+            <label className="ob-meet-check"><input type="checkbox" checked={includeCaregiver} onChange={(e) => setIncludeCaregiver(e.target.checked)} /> Include my caregiver in this consultation</label>
+            {includeCaregiver && <label className="field">Caregiver email for the invitation<input className="input" type="email" autoComplete="email" required value={caregiverEmail} onChange={(e) => setCaregiverEmail(e.target.value)} /></label>}
+            <label className="ob-meet-check"><input type="checkbox" checked={invitationConsent} onChange={(e) => setInvitationConsent(e.target.checked)} required /> I agree to send a calendar invitation to these people. Invitees may see one another's email addresses.</label>
+          </>}
           <label className="field">
             Date and time
             <input
@@ -426,11 +467,8 @@ export function DayPass({ pid, user }) {
           </label>
           <button className="btn primary">Book appointment</button>
           <Error message={error} />
+          {bookingNote && <p className="care-notice" role="status">{bookingNote}</p>}
         </form>
-        <p className="small muted">
-          For a video visit, use a configured telemedicine service in Connected
-          services.
-        </p>
       </Panel>
     </div>
   );
@@ -438,7 +476,8 @@ export function DayPass({ pid, user }) {
 
 export function ScheduleDesk({ user }) {
   const [day, setDay] = useState(new Date().toLocaleDateString("en-CA")),
-    resource = useResource(`/schedule?day=${day}`, 15000);
+    resource = useResource(`/schedule?day=${day}`, 15000),
+    integrations = useResource("/v2/integrations", 60000);
   const [suggestions, setSuggestions] = useState({});
   return (
     <div className="stack">
@@ -508,7 +547,8 @@ export function ScheduleDesk({ user }) {
                         <td>
                           {a.department}
                           <br />
-                          {a.room}
+                          {a.virtual_visit ? <span className="small"><Video size={14} /> Video · {a.virtual_visit.clinician_type}</span> : a.room}
+                          {a.virtual_visit && <MeetVisitControls appointment={a} user={user} onDone={resource.refresh} googleConfigured={integrations.data?.services?.find((s) => s.service === "google_meet")?.configured} />}
                         </td>
                         <td className="small">{dateTime(a.start)}</td>
                         <td>
@@ -565,6 +605,46 @@ export function ScheduleDesk({ user }) {
   );
 }
 
+function MeetVisitControls({ appointment, user, onDone, googleConfigured }) {
+  const visit = appointment.virtual_visit;
+  const [meetingUrl, setMeetingUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const canManage = ["doctor", "nurse", "frontdesk", "admin"].includes(user.role);
+  if (!visit) return null;
+  return <div className="ob-meet-controls">
+    <div className="row wrap"><Status value={visit.status} />{visit.meeting_url && <a className="small" href={visit.meeting_url} target="_blank" rel="noopener noreferrer">Open Meet</a>}</div>
+    {canManage && visit.status !== "cancelled" && <>
+              {visit.status !== "scheduled" && visit.status !== "creating" && (googleConfigured
+        ? <Action run={() => request(`/v2/appointments/${appointment.id}/virtual-visit/create`, "POST")} onDone={onDone}>Create Google Meet and email invitees</Action>
+        : <p className="small muted">Google Calendar setup is needed to create and email a Meet invitation.</p>)}
+      <form className="stack ob-meet-link-form" onSubmit={async (event) => {
+        event.preventDefault();
+        setBusy(true);
+        setError("");
+        try {
+          await request(`/v2/appointments/${appointment.id}/virtual-visit/link`, "PATCH", { meeting_url: meetingUrl, clinician_type: visit.clinician_type });
+          setMeetingUrl("");
+          onDone();
+        } catch (e) {
+          setError(e.message);
+        } finally {
+          setBusy(false);
+        }
+      }}>
+        <label className="field">Hospital-created Google Meet link<input className="input" type="url" required placeholder="https://meet.google.com/..." value={meetingUrl} onChange={(e) => setMeetingUrl(e.target.value)} /></label>
+        <button className="btn" disabled={busy}>{busy ? "Saving…" : visit.status === "scheduled" ? "Replace Meet link" : "Attach Meet link"}</button>
+        <Error message={error} />
+      </form>
+      <Action run={() => {
+        if (!window.confirm("Cancel this video appointment and its Google Calendar invitation?")) throw new Error("Cancellation stopped.");
+        return request(`/v2/appointments/${appointment.id}/status`, "POST", { action: "cancelled" });
+      }} onDone={onDone} className="btn danger">Cancel video appointment</Action>
+      {visit.source === "staff_manual" && <p className="small muted">This link was added manually. If it came from a separate Calendar event, cancel that event there too.</p>}
+    </>}
+  </div>;
+}
+
 function ScheduleTimeline({ appointments, departments, clashes }) {
   const conflicted = new Set(clashes.flatMap((c) => c.ids));
   const hours = Array.from({ length: 10 }, (_, i) => 8 + i);
@@ -579,7 +659,7 @@ function ScheduleTimeline({ appointments, departments, clashes }) {
           <div className="care-schedule-hours"><span>Department</span><div>{hours.map((h) => <span key={h}>{String(h).padStart(2, "0")}:00</span>)}</div></div>
           {departments.filter((name) => name !== "Front desk / Records").map((department) => {
             const rows = appointments.filter((a) => a.department === department);
-            return <div className="care-schedule-row" key={department}><div className="care-schedule-dept">{department}<small>{rows.length} booked</small></div><div className="care-schedule-lane">{hours.slice(0, -1).map((hour) => <i key={hour} />)}{rows.map((a) => { const rawLeft = point(a.start); const left = Math.max(0, rawLeft); const width = Math.min(Math.max(point(a.end) - rawLeft, 2.4), 100 - left); return <div key={a.id} className={`care-schedule-slot ${conflicted.has(a.id) ? "clash" : ""}`} style={{ left: `${left}%`, width: `${width}%` }} title={`${new Date(a.start).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}–${new Date(a.end).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })} · ${a.patient_name} (${a.patient_id}) · ${a.room}`}><b>{a.patient_name.split(" ")[0]}</b><small>{new Date(a.start).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })} · {a.room}</small></div>; })}</div></div>;
+            return <div className="care-schedule-row" key={department}><div className="care-schedule-dept">{department}<small>{rows.length} booked</small></div><div className="care-schedule-lane">{hours.slice(0, -1).map((hour) => <i key={hour} />)}{rows.map((a) => { const rawLeft = point(a.start); const left = Math.max(0, rawLeft); const width = Math.min(Math.max(point(a.end) - rawLeft, 2.4), 100 - left); const room = a.virtual_visit ? "Google Meet" : a.room; return <div key={a.id} className={`care-schedule-slot ${conflicted.has(a.id) ? "clash" : ""}`} style={{ left: `${left}%`, width: `${width}%` }} title={`${new Date(a.start).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}–${new Date(a.end).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })} · ${a.patient_name} (${a.patient_id}) · ${room}`}><b>{a.patient_name.split(" ")[0]}</b><small>{new Date(a.start).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })} · {room}</small></div>; })}</div></div>;
           })}
         </div>
       </div>
