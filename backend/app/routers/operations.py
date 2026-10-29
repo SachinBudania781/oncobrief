@@ -7,7 +7,7 @@ from ..models import Appointment
 from ..round2_models import VirtualAppointment
 from ..security import append_audit, identity, roles, visible_ids
 from ..services.scheduling import serial_schedule
-from ..timeutil import hospital_now
+from ..timeutil import hospital_now, to_hospital_wall_time
 
 router=APIRouter(prefix="/api/v2/schedule",tags=["schedule optimisation"])
 
@@ -32,7 +32,7 @@ def waiting(rows):
 def packing(request:Request,day:date,db=Depends(get_db)):
     user=identity(request)
     roles(user,"frontdesk","nurse","doctor","admin")
-    if day<date.today():
+    if day<hospital_now().date():
         raise HTTPException(422,"Choose today or a future date")
     start=datetime.combine(day,datetime.min.time())
     rows=db.scalars(select(Appointment).where(Appointment.start>=start,Appointment.start<start+timedelta(days=1),Appointment.status!="cancelled")).all()
@@ -43,7 +43,7 @@ def packing(request:Request,day:date,db=Depends(get_db)):
     fixed=[item(r) for r in rows if r not in selected]
     planned=[]
     window=start.replace(hour=8)
-    if day==date.today():
+    if day==hospital_now().date():
         now=hospital_now()
         window=max(window,now.replace(minute=(now.minute//10)*10,second=0,microsecond=0)+timedelta(minutes=10))
     for row in sorted(selected,key=lambda r:(r.patient_id,r.start)):
@@ -89,7 +89,7 @@ def apply_packing(body:ApplyPlan,request:Request,db=Depends(get_db)):
         row=db.get(Appointment,move.id)
         if not row or row.patient_id not in allowed or row.status!="booked":
             raise HTTPException(403,"A booking is unavailable or not assigned to your account")
-        expected,start,end=(d.replace(tzinfo=None) for d in (move.expected_start,move.start,move.end))
+        expected,start,end=(to_hospital_wall_time(d) for d in (move.expected_start,move.start,move.end))
         if row.start!=expected:
             raise HTTPException(409,"A booking changed; generate a new preview")
         if start.date()!=row.start.date() or end-start!=row.end-row.start or start<hospital_now() or start.hour<8 or end>start.replace(hour=17,minute=0,second=0,microsecond=0):

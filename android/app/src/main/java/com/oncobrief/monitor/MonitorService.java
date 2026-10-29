@@ -250,7 +250,9 @@ public final class MonitorService extends Service {
         try {
             if (HEART_MEASUREMENT.equals(characteristic) && value.length >= 2) {
                 int flags = value[0] & 255;
-                int rate = (flags & 1) != 0
+                boolean is16Bit = (flags & 1) != 0;
+                if (is16Bit && value.length < 3) return;
+                int rate = is16Bit
                         ? ((value[2] & 255) << 8) | (value[1] & 255)
                         : value[1] & 255;
                 addReading("heart_rate", rate, "bpm");
@@ -259,7 +261,8 @@ public final class MonitorService extends Service {
                 addReading("heart_rate", sfloat(value, 3), "bpm");
             } else if (BP_MEASUREMENT.equals(characteristic) && value.length >= 7) {
                 int flags = value[0] & 255;
-                double scale = (flags & 1) != 0 ? 1.0 : 7.50062;
+                // IEEE-11073 BP flag bit 0 means the pressure values use kPa.
+                double scale = (flags & 1) != 0 ? 7.50062 : 1.0;
                 addReading("systolic", sfloat(value, 1) * scale, "mmHg");
                 addReading("diastolic", sfloat(value, 3) * scale, "mmHg");
             } else if (TEMP_MEASUREMENT.equals(characteristic) && value.length >= 5) {

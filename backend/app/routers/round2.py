@@ -1,4 +1,4 @@
-from ..timeutil import hospital_now, utcnow
+from ..timeutil import hospital_now, hospital_wall_to_utc, to_hospital_wall_time, utcnow
 """Round 2 patient, caregiver, clinician and hospital workflows."""
 import io
 import json
@@ -762,7 +762,7 @@ class ActivityIn(BaseModel):
 @router.post("/v2/patients/{patient_id}/activity")
 def add_activity(patient_id: str, body: ActivityIn, request: Request, db=Depends(get_db)):
     patient_access(db, request, patient_id, "activity")
-    day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    day = hospital_now().replace(hour=0, minute=0, second=0, microsecond=0)
     row = db.scalar(select(Activity).where(Activity.patient_id == patient_id, Activity.date == day))
     if not row:
         row = Activity(patient_id=patient_id, date=day)
@@ -803,6 +803,7 @@ WEARABLE_UNITS = {
     "steps": "steps", "distance_km": "km", "active_minutes": "min",
     "sleep_hours": "h", "temperature_c": "°C",
 }
+ACTIVITY_METRICS = {"steps", "distance_km", "active_minutes", "sleep_hours"}
 WEARABLE_RANGES = {
     "heart_rate": (20, 260), "spo2": (50, 100), "systolic": (50, 280), "diastolic": (25, 180),
     "steps": (0, 200000), "distance_km": (0, 150), "active_minutes": (0, 1440),
@@ -903,9 +904,12 @@ def wearable_history(patient_id: str, request: Request, days: int = 30, db=Depen
     user = patient_access(db, request, patient_id, "activity")
     days = min(365, max(1, days))
     since = utcnow() - timedelta(days=days)
-    rows = db.scalars(select(WearableReading).where(
+    statement = select(WearableReading).where(
         WearableReading.patient_id == patient_id, WearableReading.observed_at >= since
-    ).order_by(WearableReading.observed_at.desc()).limit(5000)).all()
+    )
+    if user.role == "patient":
+        statement = statement.where(WearableReading.metric.notin_(ACTIVITY_METRICS))
+    rows = db.scalars(statement.order_by(WearableReading.observed_at.desc()).limit(5000)).all()
     rows.reverse()
     payload = {"days": days, "items": [serial(row) for row in rows]}
     if user.role != "patient":
@@ -971,7 +975,7 @@ def clinical_dashboard(patient_id: str, request: Request, db=Depends(get_db)):
         result = "Check: local protocol required"
         if not lab:
             result = "Check: result missing"
-        elif (datetime.now() - datetime.fromisoformat(lab["date"])).days > protocol.get("max_age_days", 3):
+        elif (hospital_now() - datetime.fromisoformat(lab["date"])).days > protocol.get("max_age_days", 3):
             result = "Check: result needs refreshing"
         elif cutoff:
             result = "Within signed threshold" if cutoff.get("min", -1e9) <= lab["value"] <= cutoff.get("max", 1e9) else "Check: outside signed threshold"
@@ -1338,9 +1342,20 @@ def shared_transport_location(token: str, db=Depends(get_db)):
         raise HTTPException(404, "This trip location is unavailable")
     data = row.data or {}
     status = data.get("location_sharing", "available")
-    return {"status": status, "location": data.get("location") if status == "active" else None,
-            "updated_at": (data.get("location") or {}).get("observed_at"),
-            "expires_at": share.expires_at.isoformat()}
+    location = data.get("location") if status == "active" else None
+    stale = False
+    if location and location.get("observed_at"):
+        try:
+            observed_at = datetime.fromisoformat(str(location["observed_at"]).replace("Z", "+00:00"))
+            if observed_at.tzinfo is not None:
+                observed_at = observed_at.astimezone(timezone.utc).replace(tzinfo=None)
+            stale = (utcnow() - observed_at).total_seconds() > 90
+        except (TypeError, ValueError):
+            stale = True
+    return {"status": status, "location": location,
+            "location_stale": stale,
+            "updated_at": (location or {}).get("observed_at"),
+            "expires_at": share.expires_at.isoformat() + "Z"}
 
 
 @router.get("/v2/patients/{patient_id}/transport-requests")
@@ -1361,10 +1376,10 @@ def create_transport_request(patient_id: str, body: TransportRequestIn, request:
     appointment = db.get(Appointment, body.appointment_id)
     if not appointment or appointment.patient_id != patient_id:
         raise HTTPException(404, "Choose an appointment in this patient record")
-    if appointment.status != "booked" or appointment.start <= datetime.now():
+    if appointment.status != "booked" or appointment.start <= hospital_now():
         raise HTTPException(422, "Transport requests are for upcoming booked appointments")
-    pickup_at = body.pickup_at.astimezone().replace(tzinfo=None) if body.pickup_at.tzinfo else body.pickup_at
-    if pickup_at <= datetime.now() or pickup_at >= appointment.start:
+    pickup_at = to_hospital_wall_time(body.pickup_at)
+    if pickup_at <= hospital_now() or pickup_at >= appointment.start:
         raise HTTPException(422, "Choose a future pickup time before the appointment")
     active = db.scalars(select(CareRecord).where(
         CareRecord.patient_id == patient_id, CareRecord.kind == "transport_request",
@@ -1398,7 +1413,7 @@ def create_transport_request(patient_id: str, body: TransportRequestIn, request:
     if body.location_consent:
         token = secrets.token_urlsafe(32)
         share = ShareLink(patient_id=patient_id, token_hash=digest(token), kind="transport_location",
-                          fields=[f"request:{row.id}"], expires_at=appointment.end + timedelta(hours=2),
+                          fields=[f"request:{row.id}"], expires_at=hospital_wall_to_utc(appointment.end + timedelta(hours=2)),
                           created_by=user.id, recipient="Hospital transport team and linked caregiver")
         db.add(share)
         db.flush()
@@ -1479,13 +1494,11 @@ def update_transport_request(request_id: int, body: TransportUpdateIn, request: 
         raise HTTPException(409, f"A {row.status} request cannot move to {body.status}")
     data = dict(row.data or {})
     appointment = db.get(Appointment, data.get("appointment_id"))
-    confirmed_pickup_at = body.confirmed_pickup_at
-    if confirmed_pickup_at and confirmed_pickup_at.tzinfo:
-        confirmed_pickup_at = confirmed_pickup_at.astimezone().replace(tzinfo=None)
+    confirmed_pickup_at = to_hospital_wall_time(body.confirmed_pickup_at) if body.confirmed_pickup_at else None
     if body.status == "arranged":
         if not body.arranged_via.strip() or not confirmed_pickup_at:
             raise HTTPException(422, "Enter who arranged the ride and its confirmed pickup time")
-        if confirmed_pickup_at <= datetime.now():
+        if confirmed_pickup_at <= hospital_now():
             raise HTTPException(422, "Confirmed pickup time must be in the future")
         if appointment and confirmed_pickup_at >= appointment.start:
             raise HTTPException(422, "Confirmed pickup time must be before the appointment")
@@ -1709,7 +1722,7 @@ def reschedule(appointment_id: int, body: RescheduleIn, request: Request, db=Dep
         raise HTTPException(404, "Appointment not found")
     user = patient_access(db, request, row.patient_id, "appointments")
     roles(user, "frontdesk", "nurse", "admin")
-    start = body.start.replace(tzinfo=None)
+    start = to_hospital_wall_time(body.start)
     end = start + (row.end - row.start)
     if start < hospital_now() or start.hour < 8 or end > start.replace(hour=17, minute=0, second=0, microsecond=0):
         raise HTTPException(422, "Choose a future slot between 08:00 and 17:00 hospital time")

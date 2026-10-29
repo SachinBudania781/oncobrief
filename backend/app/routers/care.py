@@ -15,7 +15,7 @@ from ..round2_models import User, VirtualAppointment
 from ..taxonomy import DEPARTMENTS, SYMPTOMS
 from .common import Actor, audit, get_actor, load_patient
 from ..services.scheduling import serial_schedule
-from ..timeutil import hospital_now
+from ..timeutil import hospital_now, to_hospital_wall_time
 
 router = APIRouter(prefix="/api", tags=["care"])
 
@@ -66,7 +66,7 @@ def log_med(body: MedLogIn, db: Session = Depends(get_db), actor: Actor = Depend
     if body.status not in {"taken", "missed"} or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", body.time) or body.time not in m.times:
         raise HTTPException(422, "Use an approved reminder time and taken/missed status")
     h, mi = map(int, body.time.split(":"))
-    when = datetime.combine(date.today(), datetime.min.time()).replace(hour=h, minute=mi)
+    when = datetime.combine(hospital_now().date(), datetime.min.time()).replace(hour=h, minute=mi)
     existing = db.scalars(select(MedLog).where(MedLog.medication_id == m.id, MedLog.scheduled_for == when)).first()
     if existing:
         existing.status = body.status
@@ -251,7 +251,7 @@ def book(body: AppointmentIn, db: Session = Depends(get_db), actor: Actor = Depe
     if not dept:
         raise HTTPException(422, "Unknown department")
     try:
-        start = datetime.fromisoformat(body.start).replace(tzinfo=None)
+        start = to_hospital_wall_time(datetime.fromisoformat(body.start))
     except ValueError:
         raise HTTPException(422, "Invalid start date")
     if start < hospital_now() or not 8 <= start.hour < 17:

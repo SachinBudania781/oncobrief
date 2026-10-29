@@ -49,6 +49,7 @@ const METRICS = {
   sleep_hours: { label: "Sleep", unit: "h", color: "#7470a3", icon: Moon },
   temperature_c: { label: "Body temperature", unit: "°C", color: "#b07051", icon: Thermometer },
 };
+const ACTIVITY_METRICS = new Set(["steps", "distance_km", "active_minutes", "sleep_hours"]);
 const RANGE_OPTIONS = [7, 30, 90, 365];
 
 function sfloat(view, offset = 0) {
@@ -194,13 +195,15 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", f
   );
   const readings = resource.data?.items || [];
   const canCapture = ["patient", "caregiver"].includes(viewerRole);
+  const isPatient = viewerRole === "patient";
+  const canEnterActivity = viewerRole === "caregiver";
   const canReviewActivity = ["caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(viewerRole);
   const activityThreshold = resource.data?.activity_threshold_steps;
   const [days, setDays] = useState(30);
   const [metric, setMetric] = useState(viewerRole === "patient" ? "heart_rate" : "steps");
   useEffect(() => {
-    if (focusRevision) setMetric(focusMetric);
-  }, [focusMetric, focusRevision]);
+    if (focusRevision && (!isPatient || !ACTIVITY_METRICS.has(focusMetric))) setMetric(focusMetric);
+  }, [focusMetric, focusRevision, isPatient]);
   const [consent, setConsent] = useState(false);
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -233,6 +236,7 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", f
     });
   }, [demo, demoForMetric, readings]);
 
+  const availableMetrics = Object.entries(METRICS).filter(([key]) => !isPatient || !ACTIVITY_METRICS.has(key));
   const chartRows = useMemo(() => effectiveReadings
     .filter((row) => row.metric === metric)
     .map((row) => ({
@@ -496,14 +500,14 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", f
     { label: "Latest steps", point: steps, unit: "steps", icon: Footprints },
     { label: "Walking distance", point: distance, unit: "km", icon: Footprints },
     { label: "Active time", point: activeMinutes, unit: "min", icon: Activity },
-  ];
+  ].filter((item) => !isPatient || !["Latest steps", "Walking distance", "Active time"].includes(item.label));
   return (
     <div className="ob-wearables">
       <header className="ob-wear-head">
         <div>
           <p className="ob-wear-eyebrow">YOUR WELLBEING, OVER TIME</p>
           <h1>Wearables & trends</h1>
-          <p>Bring supported health readings and daily activity together in one view.</p>
+          <p>{isPatient ? "Keep your supported health readings together to discuss with your care team." : "Bring supported health readings and daily activity together in one view."}</p>
         </div>
         <div className={"ob-wear-device-state " + (connected ? "is-connected" : "")}>
           <span className="ob-wear-dot" />
@@ -581,7 +585,7 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", f
         />
       )}
 
-      <section className="ob-wear-stats" aria-label="Latest health and activity readings">
+      <section className="ob-wear-stats" aria-label={isPatient ? "Latest health readings" : "Latest health and activity readings"}>
         {stats.map(({ label, point, unit, icon: Icon, value }) => (
           <article className="ob-wear-stat" key={label}>
             <span className="ob-wear-stat-icon"><Icon size={18} /></span>
@@ -599,7 +603,7 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", f
           <label className="field">
             Measure
             <select className="select" value={metric} onChange={(event) => setMetric(event.target.value)}>
-              {Object.entries(METRICS).map(([key, info]) => <option key={key} value={key}>{info.label}</option>)}
+              {availableMetrics.map(([key, info]) => <option key={key} value={key}>{info.label}</option>)}
             </select>
           </label>
           <label className="field">
@@ -669,7 +673,7 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", f
         {liveValues[metric] && <p className="ob-wear-live-line"><span className="ob-wear-live-pulse" />Live {METRICS[metric].label.toLowerCase()}: <b>{liveValues[metric].value} {liveValues[metric].unit}</b></p>}
       </Panel>
 
-      {canCapture && <Panel title="Add daily activity" hint="Steps, walking distance, active time and sleep usually come from a phone health platform or the device maker's account sync. Enter a daily total here if your device does not expose it over Bluetooth.">
+      {canEnterActivity && <Panel title="Add daily activity" hint="Steps, walking distance, active time and sleep usually come from a phone health platform or the device maker's account sync. Enter a daily total here if your device does not expose it over Bluetooth.">
         <form className="ob-wear-manual" onSubmit={saveManualActivity}>
           {[
             ["steps", "Steps", "steps", "200000", "1"],
