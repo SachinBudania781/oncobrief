@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from ..db import get_db
 from ..models import Patient
+from ..taxonomy import DEPARTMENTS
 from ..round2_models import AccessGrant, Challenge, LoginSession, User
 from ..security import (COOKIE_SECURE, DEMO_MODE, SESSION_MINUTES, append_audit, digest,
                         identity, password_hash, password_ok, roles, visible_ids)
@@ -190,6 +191,11 @@ class UserIn(BaseModel):
 def create_user(body: UserIn, request: Request, db=Depends(get_db)):
     user = identity(request)
     roles(user, "admin")
+    department_names = {d["name"] for d in DEPARTMENTS if d["name"] != "Front desk / Records"}
+    if body.role in {"doctor", "nurse", "lab"} and body.department not in department_names:
+        raise HTTPException(422, "Doctors, nurses and lab staff must be assigned to a department")
+    if body.role == "frontdesk" and body.department and body.department not in department_names:
+        raise HTTPException(422, "Choose a valid clinical department or leave central front desk unassigned")
     if body.role=="patient" and (len(body.patient_ids)!=1 or not body.phone):
         raise HTTPException(422,"A patient account needs exactly one patient folder and a registered phone number")
     if db.scalar(select(User).where(User.username == body.username)):
@@ -214,7 +220,29 @@ def create_user(body: UserIn, request: Request, db=Depends(get_db)):
 @router.get("/users")
 def users(request: Request, db=Depends(get_db)):
     roles(identity(request), "admin")
-    return [{"id":u.id,"sign_in_id":sign_in_id(db,u),"name":u.name,"username":u.username,"role":u.role,"ward":u.ward} for u in db.scalars(select(User).where(User.active.is_(True)))]
+    return [{"id":u.id,"sign_in_id":sign_in_id(db,u),"name":u.name,"username":u.username,"role":u.role,"department":u.department,"ward":u.ward} for u in db.scalars(select(User).where(User.active.is_(True)))]
+
+
+class DepartmentAssignmentIn(BaseModel):
+    department: str = ""
+
+
+@router.patch("/users/{user_id}/department")
+def assign_department(user_id: int, body: DepartmentAssignmentIn, request: Request, db=Depends(get_db)):
+    actor = identity(request)
+    roles(actor, "admin")
+    member = db.get(User, user_id)
+    if not member or member.role not in {"doctor", "nurse", "lab", "frontdesk"}:
+        raise HTTPException(404, "Department staff account not found")
+    department_names = {d["name"] for d in DEPARTMENTS if d["name"] != "Front desk / Records"}
+    if member.role in {"doctor", "nurse", "lab"} and body.department not in department_names:
+        raise HTTPException(422, "Doctors, nurses and lab staff must be assigned to a department")
+    if member.role == "frontdesk" and body.department and body.department not in department_names:
+        raise HTTPException(422, "Choose a valid clinical department or leave central front desk unassigned")
+    member.department = body.department
+    db.commit()
+    append_audit(db, actor, "assign_department", detail=f"{member.username}: {body.department or 'central front desk'}")
+    return {"id": member.id, "department": member.department}
 
 
 class RelationshipIn(BaseModel):

@@ -154,7 +154,16 @@ def appt_dict(a: Appointment, db: Session) -> dict:
 def appointments(request: Request, day: str | None = None, department: str = "", patient_id: str = "", upcoming: bool = False,
                  db: Session = Depends(get_db)):
     from ..security import identity, visible_ids
-    stmt = select(Appointment).where(Appointment.patient_id.in_(visible_ids(db, identity(request), "appointments"))).order_by(Appointment.start)
+    user = identity(request)
+    if user.role in {"doctor", "nurse", "lab", "frontdesk", "admin"}:
+        department = schedule_department(user, department)
+        stmt = select(Appointment).order_by(Appointment.start)
+        if department:
+            stmt = stmt.where(Appointment.department == department)
+    else:
+        stmt = select(Appointment).where(
+            Appointment.patient_id.in_(visible_ids(db, user, "appointments"))
+        ).order_by(Appointment.start)
     if upcoming:
         stmt = stmt.where(Appointment.start >= hospital_now() - timedelta(hours=2))
     else:
@@ -164,7 +173,31 @@ def appointments(request: Request, day: str | None = None, department: str = "",
         stmt = stmt.where(Appointment.department == department)
     if patient_id:
         stmt = stmt.where(Appointment.patient_id == patient_id)
-    return [appt_dict(a, db) for a in db.scalars(stmt).all()]
+    rows = db.scalars(stmt).all()
+    results = [appt_dict(a, db) for a in rows]
+    if user.role in {"doctor", "nurse", "lab", "frontdesk", "admin"}:
+        for item in results:
+            item.pop("notes", None)
+    return results
+
+
+def schedule_department(user: User, requested: str = "") -> str:
+    from ..security import roles
+    roles(user, "doctor", "nurse", "lab", "frontdesk", "admin")
+    names = {d["name"] for d in DEPARTMENTS if d["name"] != "Front desk / Records"}
+    requested = requested.strip()
+    if requested and requested not in names:
+        raise HTTPException(422, "Unknown department")
+    assigned = (user.department or "").strip()
+    if user.role in {"doctor", "nurse", "lab"} and assigned not in names:
+        raise HTTPException(403, "Ask an administrator to assign your department before opening the schedule")
+    if assigned and user.role != "admin":
+        if assigned not in names:
+            raise HTTPException(403, "Your account has an invalid department assignment")
+        if requested and requested != assigned:
+            raise HTTPException(403, "You can only open your assigned department schedule")
+        return assigned
+    return requested
 
 
 def find_clashes(appts: list[Appointment]) -> list[dict]:
@@ -176,34 +209,70 @@ def find_clashes(appts: list[Appointment]) -> list[dict]:
                     clashes.append({"type": "patient", "ids": [a.id, b.id],
                                     "text": f"Same patient booked in {a.department} ({a.start:%H:%M}) and "
                                             f"{b.department} ({b.start:%H:%M})"})
-                elif a.room == b.room and a.department == b.department:
+                elif a.department == b.department:
+                    clashes.append({"type": "department", "ids": [a.id, b.id],
+                                    "text": f"{a.department} has overlapping bookings {max(a.start, b.start):%H:%M}–{min(a.end, b.end):%H:%M}"})
+                elif a.room == b.room:
                     clashes.append({"type": "room", "ids": [a.id, b.id],
                                     "text": f"{a.room} double-booked {max(a.start, b.start):%H:%M}–{min(a.end, b.end):%H:%M}"})
     return clashes
 
 
 @router.get("/schedule")
-def schedule(request: Request, day: str | None = None, db: Session = Depends(get_db)):
+def schedule(request: Request, day: str | None = None, department: str = "", db: Session = Depends(get_db)):
     start, end = day_bounds(day)
-    from ..security import identity, visible_ids
-    appts = db.scalars(select(Appointment).where(Appointment.patient_id.in_(visible_ids(db, identity(request), "appointments")), Appointment.start >= start, Appointment.start < end)
-                       .order_by(Appointment.start)).all()
-    return {"date": start.date().isoformat(), "departments": [d["name"] for d in DEPARTMENTS],
-            "appointments": [appt_dict(a, db) for a in appts], "clashes": find_clashes(appts)}
+    from ..security import identity
+    user = identity(request)
+    department = schedule_department(user, department)
+    stmt = select(Appointment).where(
+        Appointment.start >= start, Appointment.start < end, Appointment.status != "cancelled"
+    )
+    if department:
+        stmt = stmt.where(Appointment.department == department)
+    appts = db.scalars(stmt.order_by(Appointment.start)).all()
+    rows = [appt_dict(a, db) for a in appts]
+    for item in rows:
+        item.pop("notes", None)
+    departments = [department] if department else [d["name"] for d in DEPARTMENTS if d["name"] != "Front desk / Records"]
+    return {"date": start.date().isoformat(), "department": department, "departments": departments,
+            "appointments": rows, "clashes": find_clashes(appts)}
 
 
 @router.get("/slots")
-def slots(department: str, day: str, db: Session = Depends(get_db)):
+def slots(request: Request, department: str, day: str, patient_id: str = "", db: Session = Depends(get_db)):
+    from ..security import identity, require_patient, roles
+    user = identity(request)
+    roles(user, "patient", "caregiver", "doctor", "nurse", "lab", "frontdesk", "admin")
+    dept_names = {d["name"] for d in DEPARTMENTS if d["name"] != "Front desk / Records"}
+    if department not in dept_names:
+        raise HTTPException(422, "Unknown department")
+    if user.role in {"patient", "caregiver"}:
+        if not patient_id:
+            raise HTTPException(422, "Choose a patient folder")
+        require_patient(db, user, patient_id, "appointments")
+    else:
+        assigned = schedule_department(user, department)
+        if assigned and assigned != department:
+            raise HTTPException(403, "You can only check slots for your assigned department")
+        if patient_id and not db.get(Patient, patient_id):
+            raise HTTPException(404, "Patient not found")
     start, end = day_bounds(day)
-    taken = db.scalars(select(Appointment).where(Appointment.department == department,
-                                                 Appointment.start >= start, Appointment.start < end)).all()
+    taken = db.scalars(select(Appointment).where(
+        Appointment.start < end, Appointment.end > start, Appointment.status != "cancelled"
+    )).all()
     out = []
-    t = start.replace(hour=9)
-    while t < start.replace(hour=16, minute=30):
-        busy = sum(1 for a in taken if a.start <= t < a.end)
-        if t > hospital_now() and busy < 2:
-            out.append(t.strftime("%H:%M"))
-        t += timedelta(minutes=20)
+    slot_start = start.replace(hour=9)
+    slot_end = start.replace(hour=16, minute=30)
+    now = hospital_now()
+    while slot_start < slot_end:
+        candidate_end = slot_start + timedelta(minutes=20)
+        if slot_start > now and not any(
+            slot_start < a.end and a.start < candidate_end
+            and (a.department == department or (patient_id and a.patient_id == patient_id))
+            for a in taken
+        ):
+            out.append(slot_start.strftime("%H:%M"))
+        slot_start += timedelta(minutes=20)
     return out
 
 
@@ -253,8 +322,12 @@ def book(body: AppointmentIn, db: Session = Depends(get_db), actor: Actor = Depe
     else:
         department_name = body.department
     dept = next((d for d in DEPARTMENTS if d["name"] == department_name), None)
-    if not dept:
+    if not dept or department_name == "Front desk / Records":
         raise HTTPException(422, "Unknown department")
+    if user.role in {"doctor", "nurse", "lab", "frontdesk"}:
+        assigned_department = schedule_department(user, department_name)
+        if assigned_department and assigned_department != department_name:
+            raise HTTPException(403, "You can only book into your assigned department")
     try:
         start = to_hospital_wall_time(datetime.fromisoformat(body.start))
     except ValueError:
@@ -262,17 +335,22 @@ def book(body: AppointmentIn, db: Session = Depends(get_db), actor: Actor = Depe
     if start < hospital_now() or not 8 <= start.hour < 17:
         raise HTTPException(422, "Book a future appointment between 08:00 and 17:00")
     end = start + timedelta(minutes=20)
-    overlapping = db.scalars(select(Appointment).where(Appointment.status != "cancelled", Appointment.start < end, Appointment.end > start)).all()
+    overlapping = db.scalars(select(Appointment).where(
+        Appointment.status != "cancelled", Appointment.start < end, Appointment.end > start
+    )).all()
     if any(a.patient_id == p.id for a in overlapping):
         raise HTTPException(409, "The patient already has an appointment at this time. Choose another slot.")
-    if body.visit_mode == "google_meet":
-        room = f"Online-{secrets.token_hex(3)}"
-    else:
-        room = next((r for r in dept["rooms"] if not any(a.room == r and a.department == dept["name"] for a in overlapping)), None)
-        if room is None:
-            raise HTTPException(409, "No room is free at this time. Choose another slot.")
-    clinician = ("Psychiatrist" if body.visit_mode == "google_meet" and body.clinician_type == "psychiatrist"
-                 else p.treating_oncologist or "Duty doctor")
+    if any(a.department == dept["name"] for a in overlapping):
+        raise HTTPException(409, "This department slot was just booked. Choose another available time.")
+    room = f"Online-{secrets.token_hex(3)}" if body.visit_mode == "google_meet" else dept["rooms"][0]
+    faculty = db.scalars(select(User).where(
+        User.role == "doctor", User.active.is_(True), User.department == dept["name"]
+    ).order_by(User.id)).all()
+    clinician = next((member.name for member in faculty if p.treating_oncologist and member.name == p.treating_oncologist), None)
+    clinician = clinician or (faculty[0].name if faculty else None)
+    if not clinician and dept["name"] == "Medical Oncology OPD":
+        clinician = p.treating_oncologist
+    clinician = clinician or ("Psychiatrist" if body.visit_mode == "google_meet" and body.clinician_type == "psychiatrist" else "Faculty assignment pending")
     a = Appointment(patient_id=p.id, department=dept["name"], clinician=clinician,
                     room=room, start=start, end=end,
                     visit_type=body.visit_type, notes=body.notes)

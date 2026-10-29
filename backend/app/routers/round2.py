@@ -38,6 +38,21 @@ def patient_access(db, request, pid, scope="profile"):
     return user
 
 
+def require_department_schedule(db, request, department):
+    user = identity(request)
+    roles(user, "doctor", "nurse", "lab", "frontdesk", "admin")
+    from ..taxonomy import DEPARTMENTS
+    names = {d["name"] for d in DEPARTMENTS if d["name"] != "Front desk / Records"}
+    assigned = (user.department or "").strip()
+    if user.role in {"doctor", "nurse", "lab"} and assigned not in names:
+        raise HTTPException(403, "Ask an administrator to assign your department before managing this schedule")
+    if assigned and user.role != "admin" and assigned != department:
+        raise HTTPException(403, "You can only manage appointments in your assigned department")
+    if department not in names:
+        raise HTTPException(422, "Unknown department")
+    return user
+
+
 def serial(row, exclude=()):
     out = {c.name: getattr(row, c.name) for c in row.__table__.columns if c.name not in exclude}
     return {k: v.isoformat() + "Z" if isinstance(v, datetime) else v for k, v in out.items()}
@@ -1699,17 +1714,24 @@ def suggest_slot(appointment_id: int, request: Request, db=Depends(get_db)):
     row = db.get(Appointment, appointment_id)
     if not row:
         raise HTTPException(404, "Appointment not found")
-    patient_access(db, request, row.patient_id, "appointments")
-    others = db.scalars(select(Appointment).where(Appointment.id != row.id, Appointment.status != "cancelled")).all()
+    require_department_schedule(db, request, row.department)
+    others = db.scalars(select(Appointment).where(
+        Appointment.id != row.id, Appointment.status != "cancelled"
+    )).all()
     duration = row.end - row.start
-    start = row.start.replace(hour=8, minute=0, second=0, microsecond=0)
-    candidates = [start + timedelta(minutes=10 * i) for i in range(54) if start + timedelta(minutes=10 * i) >= hospital_now()]
+    day_start = row.start.replace(hour=9, minute=0, second=0, microsecond=0)
+    day_end = row.start.replace(hour=17, minute=0, second=0, microsecond=0)
+    candidates = [day_start + timedelta(minutes=20 * i) for i in range(24)
+                  if day_start + timedelta(minutes=20 * i) >= hospital_now()]
     candidates.sort(key=lambda t: abs((t - row.start).total_seconds()))
     for t in candidates:
-        if t + duration > start.replace(hour=17):
+        end = t + duration
+        if end > day_end:
             continue
-        if not any(t < a.end and a.start < t + duration and (a.patient_id == row.patient_id or a.room == row.room) for a in others):
-            return {"start": t.isoformat(), "end": (t + duration).isoformat(), "room": row.room, "approval_required": True}
+        if not any(t < a.end and a.start < end and
+                   (a.department == row.department or a.patient_id == row.patient_id or a.room == row.room)
+                   for a in others):
+            return {"start": t.isoformat(), "end": end.isoformat(), "room": row.room, "approval_required": True}
     raise HTTPException(409, "No free slot that fits on this day")
 
 
@@ -1723,15 +1745,19 @@ def reschedule(appointment_id: int, body: RescheduleIn, request: Request, db=Dep
     row = db.get(Appointment, appointment_id)
     if not row:
         raise HTTPException(404, "Appointment not found")
-    user = patient_access(db, request, row.patient_id, "appointments")
-    roles(user, "frontdesk", "nurse", "admin")
+    user = require_department_schedule(db, request, row.department)
     start = to_hospital_wall_time(body.start)
     end = start + (row.end - row.start)
-    if start < hospital_now() or start.hour < 8 or end > start.replace(hour=17, minute=0, second=0, microsecond=0):
-        raise HTTPException(422, "Choose a future slot between 08:00 and 17:00 hospital time")
+    if start < hospital_now() or start.hour < 9 or end > start.replace(hour=17, minute=0, second=0, microsecond=0):
+        raise HTTPException(422, "Choose a future slot between 09:00 and 17:00 hospital time")
     from sqlalchemy import or_
-    clash = db.scalar(select(Appointment).where(Appointment.id != row.id, Appointment.status != "cancelled", Appointment.start < end,
-                                                Appointment.end > start, or_(Appointment.patient_id == row.patient_id, Appointment.room == row.room)))
+    clash = db.scalar(select(Appointment).where(
+        Appointment.id != row.id, Appointment.status != "cancelled",
+        Appointment.start < end, Appointment.end > start,
+        or_(Appointment.department == row.department,
+            Appointment.patient_id == row.patient_id,
+            Appointment.room == row.room)
+    ))
     if clash:
         raise HTTPException(409, "Slot was taken. Request a new suggestion.")
     visit = appointment_virtual_visit(db, row.id)
