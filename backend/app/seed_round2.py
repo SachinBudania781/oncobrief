@@ -78,8 +78,13 @@ def initialise():
                      ("caregiver", "Ananya (Meera's daughter)", "caregiver")]
             pats = list(db.scalars(select(Patient)))
             for username, name, role in specs:
+                department = {
+                    "doctor": "Medical Oncology OPD",
+                    "nurse": "Day-care Chemotherapy",
+                    "lab": "Biochemistry & Haematology Lab",
+                }.get(role, "")
                 u = User(username=username, name=name, role=role, password_hash=password_hash("OncoDemo!2026"),
-                         department="Biochemistry & Haematology Lab" if role == "lab" else "", ward="Day care" if role == "nurse" else "")
+                         department=department, ward="Day care" if role == "nurse" else "")
                 db.add(u)
                 db.flush()
                 for p in pats:
@@ -91,6 +96,16 @@ def initialise():
                     db.add(AccessGrant(user_id=u.id, patient_id=p.id, scopes=scopes, consent_by="Fabricated demo relationship"))
             db.commit()
         if DEMO_MODE:
+            # Keep existing demo accounts attached to their department after upgrades.
+            for username, department in [
+                ("doctor", "Medical Oncology OPD"),
+                ("nurse", "Day-care Chemotherapy"),
+                ("lab", "Biochemistry & Haematology Lab"),
+            ]:
+                member = db.scalar(select(User).where(User.username == username))
+                if member and not member.department:
+                    member.department = department
+            db.commit()
             # Fabricated hospital numbers, distinct from patient fixtures; no SMS in demo.
             for index, username in enumerate(["doctor", "nurse", "lab", "frontdesk", "navigator", "dietitian", "privacy", "admin"], start=1):
                 member = db.scalar(select(User).where(User.username == username))

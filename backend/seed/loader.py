@@ -20,6 +20,7 @@ from app.models import Activity, Appointment, Document, Medication, MedLog, Meta
 from app.routers.documents import store_document
 from app.services.ocr import extract_text
 from app.taxonomy import CATEGORIES, SYMPTOMS
+from app.timeutil import hospital_now
 
 from . import data
 from .render import render
@@ -97,7 +98,7 @@ def restore_demo_files(db):
         for index, spec in enumerate(data.SCANNER_SAMPLES):
             stem = SCANNER_DIR / f"scan_{index:02d}_{spec['subtype'].lower()}"
             if not any(SCANNER_DIR.glob(stem.name + ".*")):
-                render(spec, patients[spec["pid"]], seed_day or datetime.combine(date.today(), datetime.min.time()), stem)
+                render(spec, patients[spec["pid"]], seed_day or datetime.combine(hospital_now().date(), datetime.min.time()), stem)
     if restored:
         print(f"[seed] restored {restored} fabricated demo source files; database unchanged")
 
@@ -116,13 +117,13 @@ def ensure_seeded(force: bool = False):
 
 
 def seed():
-    print("[seed] building demo world for", date.today())
+    print("[seed] building demo world for", hospital_now().date())
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     shutil.rmtree(STORAGE_DIR, ignore_errors=True)
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    today = datetime.combine(date.today(), datetime.min.time())
-    delta = (date.today() - REF_DAY).days
+    today = datetime.combine(hospital_now().date(), datetime.min.time())
+    delta = (hospital_now().date() - REF_DAY).days
     manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
     pats = {p["id"]: p for p in data.PATIENTS}
 
@@ -202,7 +203,7 @@ def seed():
                 db.add(Activity(patient_id=pid, date=day, steps=max(steps, 800),
                                 sleep_hours=round(rng.uniform(5.2, 7.6), 1), resting_hr=rng.randint(68, 86)))
 
-        db.merge(Meta(key="seed_date", value=date.today().isoformat()))
+        db.merge(Meta(key="seed_date", value=hospital_now().date().isoformat()))
         db.commit()
         print("[seed] done")
     finally:

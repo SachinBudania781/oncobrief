@@ -45,6 +45,19 @@ class LoginSession(Base):
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class WearableDeviceCredential(Base):
+    __tablename__ = "wearable_device_credentials"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    device_name: Mapped[str] = mapped_column(String, default="Android wearable companion")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 class Challenge(Base):
     __tablename__ = "auth_challenges"
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -188,3 +201,21 @@ class TreatingClinician(Base):
     __tablename__ = "treating_clinicians"
     patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id"),primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"),index=True)
+
+
+class VirtualAppointment(Base):
+    """Google Meet details kept separate from the original appointment table."""
+    __tablename__ = "virtual_appointments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    appointment_id: Mapped[int] = mapped_column(ForeignKey("appointments.id"), unique=True, index=True)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id"), index=True)
+    clinician_type: Mapped[str] = mapped_column(String, default="oncologist")
+    status: Mapped[str] = mapped_column(String, default="needs_setup")
+    meeting_url: Mapped[str] = mapped_column(EncryptedText, default="")
+    google_event_id: Mapped[str] = mapped_column(String, default="")
+    invitees: Mapped[str] = mapped_column(EncryptedText, default="[]")
+    caregiver_included: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String, default="google_calendar")
+    created_by: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
