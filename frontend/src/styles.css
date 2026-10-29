@@ -149,3 +149,6 @@ label.field > span { display: block; font-size: 13px; font-weight: 500; color: v
   border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; display: flex; gap: 6px; align-items: center;
 }
 .tabs button.active {
+  color: var(--plum-dark);
+  border-bottom-color: var(--plum);
+}
