@@ -12,6 +12,7 @@
     "build:patient": "node scripts/build-apps.mjs patient",
     "build:doctor": "node scripts/build-apps.mjs doctor",
     "build:staff": "node scripts/build-apps.mjs staff",
+    "build:hub": "node scripts/build-apps.mjs hub",
     "build:apps": "node scripts/build-apps.mjs all",
     "preview": "vite preview"
   },

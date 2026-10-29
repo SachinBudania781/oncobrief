@@ -11,6 +11,7 @@ ADAPTERS = {
     "formulary": ("FORMULARY_ADAPTER_URL", "FORMULARY_ADAPTER_KEY"),
     "er": ("ER_ALERT_ADAPTER_URL", "ER_ALERT_ADAPTER_KEY"),
     "sms": ("SMS_ADAPTER_URL", "SMS_ADAPTER_KEY"),
+    "email": ("EMAIL_ADAPTER_URL", "EMAIL_ADAPTER_KEY"),
     "whatsapp": ("WHATSAPP_ADAPTER_URL", "WHATSAPP_ADAPTER_KEY"),
     "phone": ("TELEPHONY_ADAPTER_URL", "TELEPHONY_ADAPTER_KEY"),
     "speech": ("BHASHINI_ADAPTER_URL", "BHASHINI_API_KEY"),
@@ -49,3 +50,4 @@ def deliver(service, payload):
         return result
     except (httpx.HTTPError, ValueError):
         raise HTTPException(502, "The configured service did not return a valid response. Please retry or contact staff.")
+

@@ -674,6 +674,7 @@ export function Integrations({ pid, user, language }) {
       {user.role === "admin" && (
         <>
           <AdminUserForm />
+          <DepartmentAssignments />
           <RelationshipForm />
         </>
       )}
@@ -682,13 +683,14 @@ export function Integrations({ pid, user, language }) {
 }
 
 function AdminUserForm() {
+  const taxonomy = useResource("/taxonomy");
   const [v, setV] = useState({
       username: "",
       name: "",
       role: "doctor",
       password: "",
       phone: "",
-      department: "",
+      department: "Medical Oncology OPD",
       ward: "",
       patient_ids: "",
     }),
@@ -704,7 +706,6 @@ function AdminUserForm() {
           "name",
           "password",
           "phone",
-          "department",
           "ward",
           "patient_ids",
         ].map((key) => (
@@ -720,6 +721,14 @@ function AdminUserForm() {
             />
           </label>
         ))}
+        <label className="field">
+          Department
+          <select className="select" required={["doctor", "nurse", "lab"].includes(v.role)} value={v.department} onChange={(e) => setV({ ...v, department: e.target.value })}>
+            {![ "doctor", "nurse", "lab" ].includes(v.role) && <option value="">Central / unassigned</option>}
+            {taxonomy.data?.departments.filter((d) => d.name !== "Front desk / Records").map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}
+          </select>
+          <small className="muted">Doctors, nurses and lab staff need a department so their schedule stays scoped.</small>
+        </label>
         <label className="field">
           Role
           <select
@@ -763,6 +772,34 @@ function AdminUserForm() {
           </div>
         )}
       </div>
+    </Panel>
+  );
+}
+
+function DepartmentAssignments() {
+  const users = useResource("/auth/users");
+  const taxonomy = useResource("/taxonomy");
+  const [departments, setDepartments] = useState({});
+  const staff = (users.data || []).filter((member) => ["doctor", "nurse", "lab", "frontdesk"].includes(member.role));
+  const options = (taxonomy.data?.departments || []).filter((d) => d.name !== "Front desk / Records");
+  return (
+    <Panel title="Department access for staff" hint="A department assignment controls which hospital timetable a staff account can open. Leave central front desk unassigned to allow hospital-wide scheduling.">
+      {staff.length ? (
+        <div className="stack">
+          {staff.map((member) => (
+            <div className="grid2" key={member.id}>
+              <div><b>{member.name}</b><p className="small muted">{member.role} · {member.username}</p></div>
+              <div className="stack">
+                <select className="select" value={departments[member.id] ?? member.department ?? ""} onChange={(e) => setDepartments((current) => ({ ...current, [member.id]: e.target.value }))}>
+                  {member.role === "frontdesk" && <option value="">Central front desk · all departments</option>}
+                  {options.map((department) => <option key={department.name} value={department.name}>{department.name}</option>)}
+                </select>
+                <Action run={() => request(`/auth/users/${member.id}/department`, "PATCH", { department: departments[member.id] ?? member.department ?? "" })} onDone={users.refresh}>Save department</Action>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : <Empty>No staff accounts yet.</Empty>}
     </Panel>
   );
 }

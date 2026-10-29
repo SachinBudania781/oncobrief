@@ -10,6 +10,7 @@ Copy `.env.example` to `backend/.env` for local configuration, or enter the vari
 | --- | --- | --- |
 | Cited clinician briefs, Ask my records / Ask the chart, Explain report | `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, optionally `LLM_BASE_URL` | Deterministic briefs, extractive answers and local report explanations remain available |
 | Patient phone OTP / SMS | `SMS_ADAPTER_URL`, `SMS_ADAPTER_KEY` | Demo sign-ins work; production OTP returns a setup error |
+| Hospital/caregiver transport SMS/email | SMS_ADAPTER_URL and SMS_ADAPTER_KEY or EMAIL_ADAPTER_URL and EMAIL_ADAPTER_KEY; HOSPITAL_TRANSPORT_PHONE or HOSPITAL_TRANSPORT_EMAIL; caregiver account phone/email | Without a configured adapter and verified contact, requests appear in-app only. |
 | WhatsApp reminders/check-ins | `WHATSAPP_ADAPTER_URL`, `WHATSAPP_ADAPTER_KEY` | In-app reminders work |
 | Ordinary phone calls | `TELEPHONY_ADAPTER_URL`, `TELEPHONY_ADAPTER_KEY`, public HTTPS `PUBLIC_BASE_URL` | Browser call demo works; no ordinary phone rings |
 | Bhashini / open speech service | `BHASHINI_ADAPTER_URL`, `BHASHINI_API_KEY` | Browser speech and typed input work |
@@ -20,8 +21,9 @@ Copy `.env.example` to `backend/.env` for local configuration, or enter the vari
 | Cross-hospital evidence | `EVIDENCE_ADAPTER_URL`, `EVIDENCE_ADAPTER_KEY` | No invented cohort evidence; consented local cohorts require at least 10 matching real records |
 | Photo severity / meal estimates | `VISION_ADAPTER_URL`, `VISION_API_KEY` | Photo history and manual clinician/dietitian entries work; AI output remains a review draft |
 | AQI / weather | `ENVIRONMENT_ADAPTER_URL`, `ENVIRONMENT_API_KEY` | Approved seasonal advice works; no live AQI or forecast is invented |
-| Wearables | `WEARABLE_ADAPTER_URL`, `WEARABLE_API_KEY` | Explicitly labelled manual activity entry works |
-| Video visits | `TELEMEDICINE_ADAPTER_URL`, `TELEMEDICINE_API_KEY` | Scheduling and care chat work |
+| Wearables | Standard BLE GATT profiles can be read directly in supported secure browsers; `WEARABLE_ADAPTER_URL`, `WEARABLE_API_KEY` remain for vendor/hospital adapters | Patient-consented live capture supports standard heart-rate, blood-pressure, pulse-oximeter and thermometer services while the page stays open; steps/distance/sleep need manual entry or a vendor/phone-health feed. WHOOP history requires a separately registered OAuth app. |
+| Transport coordination | Four options: Uber, Rapido, hospital-arranged and caregiver-arranged; SMS/email and verified contacts required for external messages | Uber/Rapido open their services; OncoBrief does not book or pay for rides. Hospital/caregiver requests notify assigned accounts in-app and can send SMS/email when configured. Optional live location is shared only after separate consent and a patient start action; its link expires two hours after the appointment ends and can be stopped. Browser tracking can pause when the app is closed or device sleeps. |
+| Google Meet appointments | `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET`, `GOOGLE_CALENDAR_REFRESH_TOKEN`; optional `GOOGLE_CALENDAR_ID` and `GOOGLE_CALENDAR_TIME_ZONE` | Patients can request a video appointment; the care team can paste a hospital-created Meet link. Google Calendar creation and email invitations remain unavailable until credentials are configured. Links are generated asynchronously. See [Google Meet setup](GOOGLE_MEET.md). |
 | ER pre-alert | `ER_ALERT_ADAPTER_URL`, `ER_ALERT_ADAPTER_KEY` | Emergency instructions, nurse triage, share card and maps link work; ER delivery is not claimed |
 | Navigation and care contact | `HOSPITAL_ADDRESS`, `HOSPITAL_EMERGENCY_PHONE`, `PUBLIC_BASE_URL` | No invented hospital address, phone or indoor route |
 | Survivor buddies | `BUDDY_DIRECTORY_PATH`, trained volunteers and a navigator | Requests are recorded; matches are not fabricated |
@@ -102,6 +104,14 @@ The navigator verifies availability and arranges the introduction. A patient can
 - Treating clinician review of the 100-question regression set, emergency rules, protocols, translations and clinical workflows. The fixture explicitly says `clinician_reviewed: false`.
 - Doctor and dietitian approval of food-library items; doctor approval of the other guidance library items. Demo approvals are labelled as demo fixtures. Production starts unpublished.
 - Real formulary protocols, verified trial records and prices, hospital room directions, trained buddy directory, escalation contacts and ER arrangements.
+- A hospital or navigator must verify local transport contacts, accessibility options, pickup/dispatch process and any fare-support program before external ride arrangements can be offered.
 - India-region hosting, encrypted database volume/backups, persistent document storage, restore testing, retention policy and privacy-officer procedures. These cannot be established by pasting an API key.
 
 Only fabricated patients belong on the public demo. In production, select a separate database and persistent data directory, configure a stable encryption key, turn on secure cookies and staff TOTP, and approve processing terms before setting `LLM_DATA_PROCESSING_APPROVED=true`. Name/phone/ABHA redaction reduces exposure; it is not a guarantee of complete anonymisation.
+
+
+## Android wearable companion
+
+The native Android companion uses a patient-scoped bearer credential issued from the authenticated patient Wearables page. Credentials are stored hashed by the API, expire after 90 days, and can be revoked. The bearer is accepted only for POST /api/v2/patients/{patient_id}/wearables and only with source=android_ble; it cannot read patient data or call other API routes. The Android app encrypts its credential and offline queue with Android Keystore.
+
+The companion listens only to standard Bluetooth GATT health services that a sensor actually exposes. Vendor APIs, vendor account credentials, Apple HealthKit, and non-standard watch protocols are separate integrations. Android's connected-device foreground service keeps the user informed but cannot promise uninterrupted capture or delivery.

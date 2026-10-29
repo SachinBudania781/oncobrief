@@ -13,7 +13,12 @@ const portals = {
 
 export default function Login() {
   const { setUser } = useAuth();
-  const [portal, setPortal] = useState(APP_TARGET === "all" ? "patient" : APP_TARGET);
+  const routePortal = new URLSearchParams(window.location.search).get("portal")
+    || window.location.pathname.match(/^\/legacy\/(patient|doctor|staff)$/)?.[1];
+  const initialPortal = APP_TARGET === "all"
+    ? (portals[routePortal] ? routePortal : "patient")
+    : APP_TARGET;
+  const [portal, setPortal] = useState(initialPortal);
   const [config, setConfig] = useState(null), [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState(""), [totp, setTotp] = useState("");
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [mode, setMode] = useState("id");

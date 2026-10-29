@@ -118,6 +118,10 @@ def question_documents(docs: list[Document], query: str, limit: int = 3) -> list
     terms = {aliases.get(t, t) for t in tokenize(query)} - stop
     exact = search_documents(docs, query)
     exact_ids = {d.id for d, _ in exact}
+    # A query made entirely of stop words has no useful lexical signal.
+    # Never turn every document into a match just because it is recent.
+    if not terms:
+        return []
     ranked = []
     for doc in docs:
         passages = chunk(doc, size=1800, overlap=250)
@@ -126,8 +130,6 @@ def question_documents(docs: list[Document], query: str, limit: int = 3) -> list
             hay = f"{doc.title} {doc.subtype} {passage['text']}".lower()
             words = {aliases.get(t, t) for t in tokenize(hay)}
             score = len(terms & words) + (3 if doc.id in exact_ids else 0)
-            if not terms:
-                score = 1
             if score and (best is None or score > best[0]):
                 best = (score, passage["text"])
         if best:
