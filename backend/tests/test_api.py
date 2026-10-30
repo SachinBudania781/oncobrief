@@ -54,6 +54,57 @@ def test_schedule_detects_clashes(client):
     assert {"patient", "room"} <= kinds
 
 
+def test_schedule_and_taxonomy_share_hospital_calendar_clock(client, monkeypatch):
+    from datetime import datetime
+    import app.routers.care as care_router
+    import app.routers.documents as documents_router
+
+    hospital_now = datetime(2040, 1, 2, 12, 34)
+    monkeypatch.setattr(care_router, "hospital_now", lambda: hospital_now)
+    monkeypatch.setattr(documents_router, "hospital_now", lambda: hospital_now)
+
+    taxonomy = client.get("/api/taxonomy").json()
+    schedule = client.get("/api/schedule").json()
+
+    assert taxonomy["hospital_today"] == "2040-01-02"
+    assert taxonomy["hospital_now"] == "2040-01-02T12:34"
+    assert schedule["date"] == taxonomy["hospital_today"]
+    assert schedule["current_time"] == taxonomy["hospital_now"]
+
+
+def test_upcoming_appointments_use_hospital_clock_and_exclude_cancelled(client, monkeypatch):
+    from datetime import datetime, timedelta
+    from sqlalchemy import delete
+    from app.db import SessionLocal
+    from app.models import Appointment
+    import app.routers.care as care_router
+
+    hospital_now = datetime(2040, 1, 2, 12, 0)
+    monkeypatch.setattr(care_router, "hospital_now", lambda: hospital_now)
+    past = Appointment(patient_id="OB-2026-0001", department="Medical Oncology OPD", room="OPD-3",
+                       clinician="Dr. R. Menon", start=hospital_now - timedelta(hours=1),
+                       end=hospital_now - timedelta(minutes=40), visit_type="follow_up", status="booked")
+    future = Appointment(patient_id="OB-2026-0001", department="Medical Oncology OPD", room="OPD-3",
+                         clinician="Dr. R. Menon", start=hospital_now + timedelta(hours=1),
+                         end=hospital_now + timedelta(hours=1, minutes=20), visit_type="follow_up", status="booked")
+    cancelled = Appointment(patient_id="OB-2026-0001", department="Medical Oncology OPD", room="OPD-3",
+                            clinician="Dr. R. Menon", start=hospital_now + timedelta(hours=2),
+                            end=hospital_now + timedelta(hours=2, minutes=20), visit_type="follow_up", status="cancelled")
+    with SessionLocal() as db:
+        db.add_all([past, future, cancelled])
+        db.commit()
+        future_id = future.id
+        created_ids = [past.id, future.id, cancelled.id]
+
+    try:
+        rows = client.get("/api/appointments", params={"upcoming": "true", "patient_id": "OB-2026-0001"}).json()
+        assert [row["id"] for row in rows] == [future_id]
+    finally:
+        with SessionLocal() as db:
+            db.execute(delete(Appointment).where(Appointment.id.in_(created_ids)))
+            db.commit()
+
+
 def test_stats_use_hospital_day_and_exclude_cancelled_appointments(client, monkeypatch):
     from datetime import datetime
     from sqlalchemy import delete

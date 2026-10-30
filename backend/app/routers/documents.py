@@ -21,6 +21,7 @@ from ..services.retrieval import search_documents
 from ..taxonomy import CATEGORIES, DEPARTMENTS, LAB_REFERENCE, SYMPTOMS, VISIT_TYPES, flag_for
 from ..security import identity, require_patient, read_file, encrypt_file, roles
 from ..services.protected_files import file_token, verify_token, watermarked, doc_geometry, render_page
+from ..timeutil import hospital_now
 from .common import Actor, audit, get_actor, load_patient
 
 router = APIRouter(prefix="/api", tags=["documents"])
@@ -47,8 +48,10 @@ def doc_dict(d: Document, snippet: str | None = None, full: bool = False) -> dic
 
 @router.get("/taxonomy")
 def taxonomy():
+    now = hospital_now()
     return {"categories": CATEGORIES, "departments": DEPARTMENTS, "symptoms": SYMPTOMS,
-            "visit_types": VISIT_TYPES, "lab_tests": {k: v["unit"] for k, v in LAB_REFERENCE.items()}}
+            "visit_types": VISIT_TYPES, "lab_tests": {k: v["unit"] for k, v in LAB_REFERENCE.items()},
+            "hospital_today": now.date().isoformat(), "hospital_now": now.isoformat(timespec="minutes")}
 
 
 @router.get("/patients/{patient_id}/documents")

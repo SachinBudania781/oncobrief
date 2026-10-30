@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import Brief from "../apps/doctor/Brief";
 import { Empty, Error, Load, Panel } from "./UI";
-import { dateTime, request, useResource } from "./client";
+import { hospitalDateTime, request, useResource } from "./client";
 
 const VISITS = [
   ["new", "New patient", "Referral, pathology and what is missing"],
@@ -20,15 +20,11 @@ const VISITS = [
   ["transfer", "Hospital transfer", "History from another hospital"],
 ];
 
-function localDay() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords }) {
-  const day = localDay();
+  const calendar = useResource("/taxonomy");
+  const day = calendar.data?.hospital_today || "";
   const queue = useResource(
-    `/appointments?day=${day}&department=${encodeURIComponent("Medical Oncology OPD")}`,
+    `/appointments?${day ? `day=${day}&` : ""}department=${encodeURIComponent("Medical Oncology OPD")}`,
     30000,
   );
   const [query, setQuery] = useState("");
@@ -76,7 +72,7 @@ export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords }) 
         <Panel
           title="Today’s oncology clinic"
           hint="Choose a scheduled patient to start a visit brief. The queue is limited to patients assigned to your account."
-          action={<span className="care-inline-meta"><CalendarDays size={15} /> {new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>}
+          action={<span className="care-inline-meta"><CalendarDays size={15} /> {day ? hospitalDateTime(day) : "Hospital date"}</span>}
         >
           <Load resource={queue}>
             {(items) => items.length ? (
@@ -88,7 +84,7 @@ export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords }) 
                     className={`care-clinic-queue-item ${pid === a.patient_id ? "active" : ""}`}
                     onClick={() => choose(a.patient_id, a.visit_type)}
                   >
-                    <span className="care-clinic-time"><Clock3 size={15} />{new Date(a.start).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
+                    <span className="care-clinic-time"><Clock3 size={15} />{String(a.start).slice(11, 16)}</span>
                     <span className="care-clinic-queue-name"><b>{a.patient_name}</b><small>{a.visit_type?.replaceAll("_", " ")} · {a.patient_id}</small></span>
                     <span className="care-clinic-room">{a.room || a.department}</span>
                   </button>
@@ -122,7 +118,7 @@ export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords }) 
             {activePatient ? (
               <div className="care-clinic-patient">
                 <div className="care-clinic-patient-head"><span className="care-clinic-avatar"><UserRound size={19} /></span><div><b>{activePatient.name}</b><small>{activePatient.age ?? "—"}{activePatient.sex ? ` · ${activePatient.sex}` : ""} · {activePatient.id}</small></div></div>
-                {selectedAppointment && <p className="small muted">Scheduled {dateTime(selectedAppointment.start)} · {selectedAppointment.department} · {selectedAppointment.room}</p>}
+                {selectedAppointment && <p className="small muted">Scheduled {hospitalDateTime(selectedAppointment.start)} · {selectedAppointment.department} · {selectedAppointment.room}</p>}
                 <div className="care-clinic-visits">
                   {VISITS.map(([key, label, hint]) => <button key={key} className={visit === key ? "active" : ""} onClick={() => { setVisit(key); setBrief(null); }}><b>{label}</b><small>{hint}</small></button>)}
                 </div>

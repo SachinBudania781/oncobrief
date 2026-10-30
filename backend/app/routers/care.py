@@ -165,7 +165,7 @@ def appointments(request: Request, day: str | None = None, department: str = "",
             Appointment.patient_id.in_(visible_ids(db, user, "appointments"))
         ).order_by(Appointment.start)
     if upcoming:
-        stmt = stmt.where(Appointment.start >= hospital_now() - timedelta(hours=2))
+        stmt = stmt.where(Appointment.start >= hospital_now(), Appointment.status != "cancelled")
     else:
         start, end = day_bounds(day)
         stmt = stmt.where(Appointment.start >= start, Appointment.start < end)
@@ -220,7 +220,8 @@ def find_clashes(appts: list[Appointment]) -> list[dict]:
 
 @router.get("/schedule")
 def schedule(request: Request, day: str | None = None, department: str = "", db: Session = Depends(get_db)):
-    start, end = day_bounds(day)
+    now = hospital_now()
+    start, end = day_bounds(day or now.date().isoformat())
     from ..security import identity, visible_ids
     user = identity(request)
     legacy_scoped_day = day is None and not department and user.role in {"doctor", "nurse", "lab", "frontdesk"}
@@ -242,6 +243,7 @@ def schedule(request: Request, day: str | None = None, department: str = "", db:
         item.pop("notes", None)
     departments = [department] if department else [d["name"] for d in DEPARTMENTS if d["name"] != "Front desk / Records"]
     return {"date": start.date().isoformat(), "department": department, "departments": departments,
+            "current_time": now.isoformat(timespec="minutes"),
             "appointments": rows, "clashes": find_clashes(appts)}
 
 

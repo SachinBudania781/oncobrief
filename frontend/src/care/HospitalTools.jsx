@@ -275,16 +275,18 @@ function BulkImport({ pid, taxonomy }) {
 }
 
 export function DayPass({ pid, user }) {
-  const [day, setDay] = useState(new Date().toLocaleDateString("en-CA"));
+  const taxonomy = useResource("/taxonomy");
+  const [day, setDay] = useState("");
   const resource = useResource(
-    `/v2/patients/${pid}/day-pass?day=${day}`,
+    `/v2/patients/${pid}/day-pass${day ? `?day=${day}` : ""}`,
     15000,
   );
-  const taxonomy = useResource("/taxonomy"),
-    [dept, setDept] = useState("Medical Oncology OPD"),
-    [bookingDay, setBookingDay] = useState(new Date().toLocaleDateString("en-CA")),
+  const [dept, setDept] = useState("Medical Oncology OPD"),
+    [bookingDay, setBookingDay] = useState(""),
     [selectedSlot, setSelectedSlot] = useState(""),
     [error, setError] = useState("");
+  const hospitalToday = taxonomy.data?.hospital_today || resource.data?.date || "";
+  const appointmentDay = bookingDay || hospitalToday;
   const [visitMode, setVisitMode] = useState("in_person"),
     [clinicianType, setClinicianType] = useState("oncologist"),
     [patientEmail, setPatientEmail] = useState(""),
@@ -297,7 +299,7 @@ export function DayPass({ pid, user }) {
     ? (clinicianType === "psychiatrist" ? "Psycho-oncology" : "Medical Oncology OPD")
     : dept;
   const slotResource = useResource(
-    `/slots?department=${encodeURIComponent(bookingDepartment)}&day=${bookingDay}&patient_id=${encodeURIComponent(pid)}`,
+    `/slots?department=${encodeURIComponent(bookingDepartment)}&day=${appointmentDay}&patient_id=${encodeURIComponent(pid)}`,
     30000,
   );
   useEffect(() => setSelectedSlot(""), [bookingDay, bookingDepartment]);
@@ -311,7 +313,7 @@ export function DayPass({ pid, user }) {
           className="input"
           type="date"
           aria-label="Hospital day"
-          value={day}
+          value={day || d.date}
           onChange={(e) => setDay(e.target.value)}
         />
         <Load resource={resource}>
@@ -409,10 +411,12 @@ export function DayPass({ pid, user }) {
             e.preventDefault();
             setError("");
             try {
+              const appointmentDate = bookingDay || taxonomy.data?.hospital_today || resource.data?.date;
+              if (!appointmentDate) throw new Error("The hospital calendar is still loading. Try again in a moment.");
               const result = await request("/appointments", "POST", {
                 patient_id: pid,
-                department: dept,
-                start: `${bookingDay}T${selectedSlot}`,
+                department: bookingDepartment,
+                start: `${appointmentDate}T${selectedSlot}`,
                 visit_type: "follow_up",
                 visit_mode: visitMode,
                 ...(visitMode === "google_meet" ? {
@@ -432,7 +436,7 @@ export function DayPass({ pid, user }) {
                     : "Video appointment booked. The hospital team needs to configure Google Calendar or add its Meet link before the visit.")
                 : "Appointment booked.");
               setInvitationConsent(false);
-              setDay(bookingDay);
+              setDay(appointmentDate);
               setSelectedSlot("");
               resource.refresh();
               slotResource.refresh();
@@ -473,8 +477,8 @@ export function DayPass({ pid, user }) {
               type="date"
               className="input"
               required
-              min={new Date().toLocaleDateString("en-CA")}
-              value={bookingDay}
+              min={taxonomy.data?.hospital_today || resource.data?.date || ""}
+              value={bookingDay || hospitalToday}
               onChange={(e) => setBookingDay(e.target.value)}
             />
           </label>
@@ -499,19 +503,20 @@ export function DayPass({ pid, user }) {
 }
 
 export function ScheduleDesk({ user }) {
-  const [day, setDay] = useState(new Date().toLocaleDateString("en-CA"));
+  const [day, setDay] = useState("");
   const [department, setDepartment] = useState(user.department || "");
   const taxonomy = useResource("/taxonomy");
   const scopedDepartment = user.role === "admin" ? department : (user.department || department);
-  const scheduleUrl = `/schedule?day=${day}${scopedDepartment ? `&department=${encodeURIComponent(scopedDepartment)}` : ""}`;
+  const scheduleUrl = `/schedule${day ? `?day=${day}` : ""}${scopedDepartment ? `${day ? "&" : "?"}department=${encodeURIComponent(scopedDepartment)}` : ""}`;
   const resource = useResource(scheduleUrl, 15000);
+  const scheduleDay = day || resource.data?.date || taxonomy.data?.hospital_today || "";
   const integrations = useResource("/v2/integrations", 60000);
   const [suggestions, setSuggestions] = useState({});
   const canSeeHospitalWide = user.role === "admin" || (user.role === "frontdesk" && !user.department);
   const departments = (taxonomy.data?.departments || []).map((d) => d.name).filter((name) => name !== "Front desk / Records");
   return (
     <div className="stack">
-      {canSeeHospitalWide && <PackedSchedule day={day} user={user} onDone={resource.refresh} />}
+      {canSeeHospitalWide && scheduleDay && <PackedSchedule day={scheduleDay} user={user} onDone={resource.refresh} />}
       <Panel
         title={scopedDepartment ? `${scopedDepartment} timetable` : "Hospital department timetables"}
         hint="Department staff can see all bookings in their assigned department. Patients see only their own appointment itinerary."
@@ -519,7 +524,7 @@ export function ScheduleDesk({ user }) {
         <div className="grid2">
           <label className="field">
             Schedule date
-            <input className="input" type="date" value={day} onChange={(e) => setDay(e.target.value)} />
+            <input className="input" type="date" value={scheduleDay} onChange={(e) => setDay(e.target.value)} />
           </label>
           {user.role === "admin" || (user.role === "frontdesk" && !user.department) ? (
             <label className="field">
@@ -543,7 +548,7 @@ export function ScheduleDesk({ user }) {
               </div>
               {d.clashes.map((c, i) => <p className="care-notice" key={i}>{c.text}</p>)}
               <ScheduleTimeline appointments={d.appointments} departments={d.departments} clashes={d.clashes} department={d.department} />
-              <DepartmentSlotBoard appointments={d.appointments} departments={d.departments} day={day} />
+              <DepartmentSlotBoard appointments={d.appointments} departments={d.departments} day={scheduleDay || d.date} currentTime={d.current_time} />
               <div className="care-scroll">
                 <table className="list">
                   <thead>
@@ -584,14 +589,14 @@ export function ScheduleDesk({ user }) {
   );
 }
 
-function DepartmentSlotBoard({ appointments, departments, day }) {
+function DepartmentSlotBoard({ appointments, departments, day, currentTime }) {
   const times = Array.from({ length: 23 }, (_, index) => {
     const minutes = 9 * 60 + index * 20;
     return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
   });
-  const today = new Date().toLocaleDateString("en-CA");
-  const now = new Date();
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const [today, clock] = String(currentTime || "").split("T");
+  const [hour = "", minute = ""] = clock.split(":");
+  const currentMinutes = hour && minute ? Number(hour) * 60 + Number(minute) : Number.NaN;
   return (
     <Panel title="Department slots" hint="Booked times are unavailable to patients. Staff can see who holds each booking and the assigned faculty.">
       {departments.map((department) => (

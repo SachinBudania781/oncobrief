@@ -32,7 +32,7 @@ import {
 import Modal from "./Modal";
 import { useAuth } from "./Auth";
 import Login from "./Login";
-import { request, useResource, dateTime, nice } from "./client";
+import { request, useResource, dateTime, hospitalDateTime, nice } from "./client";
 import { ClinicDesk, StaffActivity } from "./DoctorStaffTools";
 import {
   Action,
@@ -109,6 +109,7 @@ export default function Workspace() {
 function CareSpace() {
   const { user, logout } = useAuth(),
     patients = useResource("/patients"),
+    calendar = useResource("/taxonomy"),
     notes = useResource("/v2/notifications", 15000);
   const [pid, setPid] = useState(user.patient_ids[0] || ""),
     [tab, setTab] = useState("home"),
@@ -266,11 +267,7 @@ function CareSpace() {
           <div className="care-page-heading">
             <div>
               <p className="eyebrow">
-                {new Date().toLocaleDateString("en-IN", {
-                  weekday: "long",
-                  day: "numeric",
-                  month: "long",
-                })}
+                {calendar.data?.hospital_today ? hospitalDateTime(calendar.data.hospital_today) : ""}
               </p>
               <h1>{title}</h1>
             </div>

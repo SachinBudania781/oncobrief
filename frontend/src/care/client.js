@@ -68,6 +68,22 @@ export const dateTime = (value) =>
         value.includes("T") ? value : value + "T00:00:00",
       ).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })
     : "Not recorded";
+
+export function hospitalDateTime(value) {
+  if (!value) return "Not recorded";
+  const text = String(value);
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) return dateTime(text);
+  const wallTime = text.length === 10 ? `${text}T00:00:00Z` : `${text.replace(" ", "T")}Z`;
+  const date = new Date(wallTime);
+  return Number.isNaN(date.getTime())
+    ? dateTime(text)
+    : date.toLocaleString("en-IN", {
+        dateStyle: "medium",
+        ...(text.length === 10 ? {} : { timeStyle: "short" }),
+        timeZone: "UTC",
+      });
+}
+
 export const nice = (key) => key?.replaceAll("_", " ");
 
 export function speak(text, language = "en") {

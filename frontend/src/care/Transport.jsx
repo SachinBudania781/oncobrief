@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Accessibility, CalendarDays, Car, Check, ExternalLink, MapPin, Users } from "lucide-react";
-import { request, useResource, dateTime } from "./client";
+import { request, useResource, hospitalDateTime } from "./client";
 import { Empty, Error, Load, Panel, Status } from "./UI";
 
 const RIDE_TYPES = {
@@ -30,14 +30,24 @@ function localInput(value) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
 
-function defaultPickup(appointment) {
-  const visit = new Date(appointment.start).getTime();
-  const suggested = Math.max(Date.now() + 5 * 60000, visit - 60 * 60000);
-  return localInput(new Date(Math.min(suggested, visit - 60000)).toISOString());
+function wallDate(value) {
+  return new Date(`${String(value).replace(" ", "T").replace(/Z$/i, "")}Z`);
+}
+
+function defaultPickup(appointment, hospitalNow) {
+  if (!hospitalNow) return "";
+  const visit = wallDate(appointment.start).getTime();
+  const now = wallDate(hospitalNow).getTime();
+  if (!Number.isFinite(visit) || !Number.isFinite(now)) return "";
+  const latestPickup = visit - 60000;
+  if (latestPickup <= now) return "";
+  const suggested = Math.max(now + 5 * 60000, visit - 60 * 60000);
+  return new Date(Math.min(suggested, latestPickup)).toISOString().slice(0, 16);
 }
 
 export default function Transport({ pid, user, active = true }) {
   const patientMode = ["patient", "caregiver"].includes(user.role);
+  const calendar = useResource(patientMode ? "/taxonomy" : null);
   const appointments = useResource(patientMode ? `/appointments?upcoming=true&patient_id=${encodeURIComponent(pid)}` : null, 30000);
   const requests = useResource(patientMode ? `/v2/patients/${encodeURIComponent(pid)}/transport-requests` : "/v2/transport-requests", 20000);
   const [appointmentId, setAppointmentId] = useState("");
@@ -110,7 +120,7 @@ export default function Transport({ pid, user, active = true }) {
       {patientMode ? (
         <Panel title="Plan transport" hint="Choose one of four ways to get to an upcoming hospital visit. Uber and Rapido open their booking service; hospital or caregiver requests are sent for coordination.">
           <Load resource={appointments}>
-            {(items) => items.some((item) => item.status === "booked" && new Date(item.start).getTime() > Date.now()) ? (
+            {(items) => items.some((item) => item.status === "booked") ? (
               <form className="stack" onSubmit={submit}>
                 <label className="field">
                   Hospital appointment
@@ -118,11 +128,11 @@ export default function Transport({ pid, user, active = true }) {
                     const nextId = event.target.value;
                     setAppointmentId(nextId);
                     const visit = items.find((item) => String(item.id) === nextId);
-                    setPickupAt(visit ? defaultPickup(visit) : "");
+                    setPickupAt(visit ? defaultPickup(visit, calendar.data?.hospital_now) : "");
                   }}>
                     <option value="">Choose an upcoming appointment</option>
                     {items.filter((item) => item.status === "booked" && new Date(item.start).getTime() > Date.now()).map((item) => (
-                      <option key={item.id} value={item.id}>{dateTime(item.start)} · {item.department}</option>
+                      <option key={item.id} value={item.id}>{hospitalDateTime(item.start)} · {item.department}</option>
                     ))}
                   </select>
                 </label>
@@ -231,9 +241,9 @@ function PatientRequestCard({ item, onUpdate }) {
   }, [watchId]);
   return (
     <article className="ob-transport-card">
-      <div className="row wrap ob-transport-title"><div><b><CalendarDays size={16} />{appointment ? `${dateTime(appointment.start)} · ${appointment.department}` : "Appointment details unavailable"}</b><small>Pickup requested for {dateTime(data.pickup_at)}</small></div><Status value={item.status} /></div>
+      <div className="row wrap ob-transport-title"><div><b><CalendarDays size={16} />{appointment ? `${hospitalDateTime(appointment.start)} · ${appointment.department}` : "Appointment details unavailable"}</b><small>Pickup requested for {hospitalDateTime(data.pickup_at)}</small></div><Status value={item.status} /></div>
       <div className="ob-transport-details"><span><MapPin size={15} />{data.pickup_address}{data.landmark ? ` · ${data.landmark}` : ""}</span><span><Car size={15} />{RIDE_TYPES[data.ride_type] || "Other ride"}</span>{data.support?.length > 0 && <span><Accessibility size={15} />{data.support.map((key) => SUPPORT_LABELS[key]).join("; ")}</span>}<span><Users size={15} />{data.companion_count || 0} additional travellers</span>{data.fare_support && <span>Travel-cost help requested</span>}</div>
-      {data.arranged_via && <p><b>Arranged via:</b> {data.arranged_via}{data.confirmed_pickup_at ? ` · Pickup ${dateTime(data.confirmed_pickup_at)}` : ""}</p>}
+      {data.arranged_via && <p><b>Arranged via:</b> {data.arranged_via}{data.confirmed_pickup_at ? ` · Pickup ${hospitalDateTime(data.confirmed_pickup_at)}` : ""}</p>}
       {data.coordination_note && <p className="ob-transport-note"><b>Care-team update:</b> {data.coordination_note}</p>}
       {data.notes && <p><b>Your note:</b> {data.notes}</p>}
       {data.location_consent && !["completed", "cancelled", "unable"].includes(item.status) && <div className="ob-live-location-controls">
@@ -281,8 +291,8 @@ function CoordinatorCard({ item, onUpdate }) {
   };
   return (
     <article className="ob-transport-card">
-      <div className="row wrap ob-transport-title"><div><b>{item.patient_name || item.patient_id} · {appointment ? `${appointment.department} · ${dateTime(appointment.start)}` : "Appointment unavailable"}</b><small>{item.patient_id} · Requested by {item.author_name}</small></div><Status value={item.status} /></div>
-      <div className="ob-transport-details"><span><MapPin size={15} />{data.pickup_address}{data.landmark ? ` · ${data.landmark}` : ""}</span><span><Car size={15} />{RIDE_TYPES[data.ride_type] || "Other ride"}</span><span><CalendarDays size={15} />Preferred pickup {dateTime(data.pickup_at)}</span>{data.support?.length > 0 && <span><Accessibility size={15} />{data.support.map((key) => SUPPORT_LABELS[key]).join("; ")}</span>}<span><Users size={15} />{data.companion_count || 0} additional travellers</span>{data.fare_support && <span>Travel-cost support requested</span>}</div>
+      <div className="row wrap ob-transport-title"><div><b>{item.patient_name || item.patient_id} · {appointment ? `${appointment.department} · ${hospitalDateTime(appointment.start)}` : "Appointment unavailable"}</b><small>{item.patient_id} · Requested by {item.author_name}</small></div><Status value={item.status} /></div>
+      <div className="ob-transport-details"><span><MapPin size={15} />{data.pickup_address}{data.landmark ? ` · ${data.landmark}` : ""}</span><span><Car size={15} />{RIDE_TYPES[data.ride_type] || "Other ride"}</span><span><CalendarDays size={15} />Preferred pickup {hospitalDateTime(data.pickup_at)}</span>{data.support?.length > 0 && <span><Accessibility size={15} />{data.support.map((key) => SUPPORT_LABELS[key]).join("; ")}</span>}<span><Users size={15} />{data.companion_count || 0} additional travellers</span>{data.fare_support && <span>Travel-cost support requested</span>}</div>
       {data.notes && <p><b>Patient note:</b> {data.notes}</p>}
       {!closed && <form className="stack ob-transport-update" onSubmit={save}>
         <div className="grid2">
