@@ -145,7 +145,7 @@ def initialise():
                     ("clinical_profile", {"allergies": "None recorded in this fabricated fixture; verify clinically", "height_cm": 158, "weight_kg": 58, "egfr": 82, "blood_group": "O+", "ward": "Day care", "biomarkers": "HER2 negative"}),
                     ("roadmap", {"text": "Fabricated demo roadmap: review blood tests before the next cycle.", "regimen": p.current_regimen, "cycle": 4, "total_cycles": 6, "cycle_start": datetime.now().date().isoformat(), "cycle_days": 21, "side_effect_days": "Ask the treating team for the regimen-specific symptom calendar."}),
                     ("measurement", {"site": "left_breast", "size_mm": 31, "date": (datetime.now() - timedelta(days=60)).date().isoformat(), "finding": "tumour", "text": "Fabricated demonstration measurement"}),
-                    ("measurement", {"site": "left_breast", "size_mm": 19, "date": datetime.now().date().isoformat(), "finding": "tumour", "text": "Fabricated demonstration measurement"}),
+                    ("measurement", {"site": "left_breast", "size_mm": 19, "date": demo_today.isoformat(), "finding": "tumour", "text": "Fabricated demonstration measurement"}),
                 ]:
                     db.add(CareRecord(patient_id=p.id, kind=kind, author_id=doctor.id, author_name=doctor.name, author_role="doctor", data=data,
                                        status="approved" if kind == "roadmap" else "recorded", approved_by="Demo clinician" if kind == "roadmap" else None))

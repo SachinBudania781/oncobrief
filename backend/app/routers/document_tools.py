@@ -92,7 +92,8 @@ async def medicine_scan(patient_id: str, request: Request, file: UploadFile = Fi
             warnings.append("Expiry month could not be read reliably")
         else:
             expiry = f"{year}-{month:02d}"
-            if (year, month) < (datetime.now().year, datetime.now().month):
+            current_month = hospital_now().date().replace(day=1)
+            if (year, month) < (current_month.year, current_month.month):
                 warnings.append("Printed expiry is in the past. Do not use this strip; contact the pharmacist.")
     else:
         warnings.append("Expiry not verified; check it with the pharmacist")

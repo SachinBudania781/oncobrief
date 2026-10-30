@@ -54,6 +54,35 @@ def test_schedule_detects_clashes(client):
     assert {"patient", "room"} <= kinds
 
 
+def test_stats_use_hospital_day_and_exclude_cancelled_appointments(client, monkeypatch):
+    from datetime import datetime
+    from sqlalchemy import delete
+    from app.db import SessionLocal
+    from app.models import Appointment
+    import app.routers.patients as patients_router
+
+    hospital_today = datetime(2040, 1, 2, 12, 0)
+    monkeypatch.setattr(patients_router, "hospital_now", lambda: hospital_today)
+    created_ids = []
+    with SessionLocal() as db:
+        booked = Appointment(patient_id="OB-2026-0001", department="Medical Oncology OPD", room="OPD-3",
+                             clinician="Dr. R. Menon", start=hospital_today.replace(hour=10),
+                             end=hospital_today.replace(hour=10, minute=20), visit_type="follow_up", status="booked")
+        cancelled = Appointment(patient_id="OB-2026-0002", department="Medical Oncology OPD", room="OPD-4",
+                                clinician="Dr. R. Menon", start=hospital_today.replace(hour=11),
+                                end=hospital_today.replace(hour=11, minute=20), visit_type="follow_up", status="cancelled")
+        db.add_all([booked, cancelled])
+        db.commit()
+        created_ids = [booked.id, cancelled.id]
+
+    try:
+        assert client.get("/api/stats").json()["appointments_today"] == 1
+    finally:
+        with SessionLocal() as db:
+            db.execute(delete(Appointment).where(Appointment.id.in_(created_ids)))
+            db.commit()
+
+
 def test_search_reads_ocr_text(client):
     hits = client.get("/api/patients/OB-2026-0002/documents", params={"q": "EGFR"}).json()
     assert any("EGFR" in (h.get("snippet") or "") for h in hits)

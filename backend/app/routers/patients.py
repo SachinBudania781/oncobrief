@@ -128,11 +128,16 @@ def audit_log(request: Request, patient_id: str | None = None, limit: int = 50, 
 
 @router.get("/stats")
 def stats(db: Session = Depends(get_db)):
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    upload_day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    upload_tomorrow = upload_day + timedelta(days=1)
+    appointment_day = hospital_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    appointment_tomorrow = appointment_day + timedelta(days=1)
     return {
         "patients": db.scalar(select(func.count()).select_from(Patient)),
         "documents": db.scalar(select(func.count()).select_from(Document)),
-        "documents_today": db.scalar(select(func.count()).select_from(Document).where(Document.uploaded_at >= today)),
+        "documents_today": db.scalar(select(func.count()).select_from(Document).where(
+            Document.uploaded_at >= upload_day, Document.uploaded_at < upload_tomorrow)),
         "appointments_today": db.scalar(select(func.count()).select_from(Appointment).where(
-            Appointment.start >= today, Appointment.start < today + timedelta(days=1))),
+            Appointment.start >= appointment_day, Appointment.start < appointment_tomorrow,
+            Appointment.status != "cancelled")),
     }

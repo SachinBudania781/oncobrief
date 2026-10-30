@@ -545,7 +545,7 @@ def review(approval_id: int, body: ReviewIn, request: Request, db=Depends(get_db
                 raise HTTPException(422, "Reminder times must use HH:MM")
             med = Medication(patient_id=row.patient_id, name=body.medicine.strip(), dose=body.dose,
                              frequency=body.frequency, times=sorted(set(body.times)), instructions=body.instructions,
-                             start=datetime.now(), active=True)
+                             start=hospital_now(), active=True)
             db.add(med)
             db.flush()
             row.medication_id = med.id
