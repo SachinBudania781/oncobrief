@@ -49,8 +49,39 @@ def test_negated_imaging_is_not_flagged(client):
 
 
 def test_schedule_detects_clashes(client):
-    clashes = client.get("/api/schedule").json()["clashes"]
-    kinds = {c["type"] for c in clashes}
+    from datetime import datetime, timedelta
+
+    from app.db import SessionLocal
+    from app.models import Appointment
+
+    start = datetime(2099, 1, 15, 9, 0)
+    appointments = [
+        Appointment(patient_id="OB-2026-0001", department="Medical Oncology OPD", clinician="Test clinician",
+                    room="TEST-ROOM-A", start=start, end=start + timedelta(minutes=30),
+                    visit_type="follow_up", status="booked"),
+        Appointment(patient_id="OB-2026-0001", department="Medical Oncology OPD", clinician="Test clinician",
+                    room="TEST-ROOM-B", start=start + timedelta(minutes=15), end=start + timedelta(minutes=45),
+                    visit_type="follow_up", status="booked"),
+        Appointment(patient_id="OB-2026-0002", department="Medical Oncology OPD", clinician="Test clinician",
+                    room="TEST-ROOM-A", start=start + timedelta(minutes=15), end=start + timedelta(minutes=45),
+                    visit_type="follow_up", status="booked"),
+    ]
+
+    with SessionLocal() as db:
+        db.add_all(appointments)
+        db.commit()
+        try:
+            schedule = client.get(
+                "/api/schedule",
+                params={"day": "2099-01-15", "department": "Medical Oncology OPD"},
+            ).json()
+        finally:
+            for appointment in appointments:
+                db.delete(appointment)
+            db.commit()
+
+    assert len(schedule["appointments"]) == len(appointments)
+    kinds = {clash["type"] for clash in schedule["clashes"]}
     assert {"patient", "room"} <= kinds
 
 
