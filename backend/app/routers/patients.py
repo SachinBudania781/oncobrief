@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import Appointment, AuditLog, Document, LabValue, Patient
+from ..timeutil import hospital_now
 from .common import Actor, audit, get_actor, load_patient
 
 router = APIRouter(prefix="/api", tags=["patients"])
@@ -60,7 +61,7 @@ class NewPatient(BaseModel):
 
 @router.post("/patients")
 def create_patient(body: NewPatient, db: Session = Depends(get_db), actor: Actor = Depends(get_actor)):
-    year = datetime.now().year
+    year = hospital_now().year
     n = db.scalar(select(func.count()).select_from(Patient)) + 1
     pid = f"OB-{year}-{n:04d}"
     while db.get(Patient, pid):

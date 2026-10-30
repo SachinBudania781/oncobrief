@@ -17,6 +17,7 @@ from ..security import append_audit, encrypt_file, identity, read_file, require_
 from ..services.ocr import extract_text
 from ..services.uploads import check_identity, validate_file
 from ..taxonomy import CATEGORIES
+from ..timeutil import hospital_now
 from .documents import store_document
 from .round2 import patient_access, serial
 
@@ -42,7 +43,7 @@ async def voice_reminder(patient_id: str, request: Request, file: UploadFile = F
     with tempfile.TemporaryDirectory(dir=DATA_DIR) as tmp:
         path = Path(tmp) / ("family-voice" + suffix)
         path.write_bytes(data)
-        doc, _ = store_document(db, db.get(Patient, patient_id), category="Patient-reported", subtype="Other", record_date=datetime.now(),
+        doc, _ = store_document(db, db.get(Patient, patient_id), category="Patient-reported", subtype="Other", record_date=hospital_now(),
                                 title="Family voice reminder", department="Patient", uploaded_by=f"{user.name} ({user.role})", source="family_voice",
                                 src_path=path, mime=mime, ocr_text="Patient-consented family voice reminder", ocr_method="audio")
     append_audit(db, user, "record_family_voice", patient_id, f"D{doc.id}")

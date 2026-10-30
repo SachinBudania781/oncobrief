@@ -1,12 +1,12 @@
-from .timeutil import utcnow
 """Idempotent Round 2 setup. Demo fixtures are always identified as fabricated."""
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
 from sqlalchemy import select
 from .db import SessionLocal
 from .models import Patient
 from .round2_models import AccessGrant, Approval, CareRecord, LibraryItem, User, TreatingClinician
 from .security import DEMO_MODE, cipher, password_hash
+from .timeutil import hospital_now, utcnow
 
 LIBRARY = [
     ("food_safety", "food", "Food safety during treatment", "https://www.cancer.gov/about-cancer/treatment/side-effects/infection", {
@@ -140,11 +140,12 @@ def initialise():
             doctor = db.scalar(select(User).where(User.username == "doctor"))
             p = db.get(Patient, "OB-2026-0001")
             if p and doctor:
+                demo_today = hospital_now().date()
                 for kind, data in [
                     ("preferences", {"goals": "Stay involved in family life and return to work", "worries": "Nausea, travel costs and missing a dose", "diet": "vegetarian", "travel_km": 180}),
                     ("clinical_profile", {"allergies": "None recorded in this fabricated fixture; verify clinically", "height_cm": 158, "weight_kg": 58, "egfr": 82, "blood_group": "O+", "ward": "Day care", "biomarkers": "HER2 negative"}),
-                    ("roadmap", {"text": "Fabricated demo roadmap: review blood tests before the next cycle.", "regimen": p.current_regimen, "cycle": 4, "total_cycles": 6, "cycle_start": datetime.now().date().isoformat(), "cycle_days": 21, "side_effect_days": "Ask the treating team for the regimen-specific symptom calendar."}),
-                    ("measurement", {"site": "left_breast", "size_mm": 31, "date": (datetime.now() - timedelta(days=60)).date().isoformat(), "finding": "tumour", "text": "Fabricated demonstration measurement"}),
+                    ("roadmap", {"text": "Fabricated demo roadmap: review blood tests before the next cycle.", "regimen": p.current_regimen, "cycle": 4, "total_cycles": 6, "cycle_start": demo_today.isoformat(), "cycle_days": 21, "side_effect_days": "Ask the treating team for the regimen-specific symptom calendar."}),
+                    ("measurement", {"site": "left_breast", "size_mm": 31, "date": (demo_today - timedelta(days=60)).isoformat(), "finding": "tumour", "text": "Fabricated demonstration measurement"}),
                     ("measurement", {"site": "left_breast", "size_mm": 19, "date": demo_today.isoformat(), "finding": "tumour", "text": "Fabricated demonstration measurement"}),
                 ]:
                     db.add(CareRecord(patient_id=p.id, kind=kind, author_id=doctor.id, author_name=doctor.name, author_role="doctor", data=data,
