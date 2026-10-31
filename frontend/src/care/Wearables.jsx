@@ -186,7 +186,8 @@ function VitalAlertProtocolEditor({ pid, thresholds, protocol, onSaved }) {
 }
 
 export default function Wearables({ pid, demo = false, viewerRole = "patient", focusMetric = "steps", focusRevision = 0 }) {
-  const resource = useResource("/v2/patients/" + encodeURIComponent(pid) + "/wearables?days=365", 30000);
+  const [days, setDays] = useState(30);
+  const resource = useResource("/v2/patients/" + encodeURIComponent(pid) + "/wearables?days=" + days, 30000);
   const deviceResource = useResource(
     ["patient", "caregiver"].includes(viewerRole)
       ? "/v2/patients/" + encodeURIComponent(pid) + "/wearable-devices"
@@ -199,7 +200,6 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", f
   const canEnterActivity = viewerRole === "caregiver";
   const canReviewActivity = ["caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(viewerRole);
   const activityThreshold = resource.data?.activity_threshold_steps;
-  const [days, setDays] = useState(30);
   const [metric, setMetric] = useState(viewerRole === "patient" ? "heart_rate" : "steps");
   useEffect(() => {
     if (focusRevision && (!isPatient || !ACTIVITY_METRICS.has(focusMetric))) setMetric(focusMetric);
@@ -243,9 +243,17 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", f
       ...row,
       time: new Date(row.observed_at).getTime(),
       label: shortDate(row.observed_at),
+      range: row.aggregated ? [Number(row.min_value), Number(row.max_value)] : undefined,
     }))
     .filter((row) => Number.isFinite(row.time) && row.time >= Date.now() - days * 86400000)
     .slice(-1500), [days, effectiveReadings, metric]);
+  const hasAggregatedRows = chartRows.some((row) => row.aggregated);
+  const chartMin = chartRows.length
+    ? Math.min(...chartRows.map((row) => Math.min(Number(row.value), Number(row.min_value ?? row.value))))
+    : 0;
+  const chartMax = chartRows.length
+    ? Math.max(...chartRows.map((row) => Math.max(Number(row.value), Number(row.max_value ?? row.value))))
+    : 0;
 
   const latestDemo = useMemo(() => {
     const out = {};
@@ -615,7 +623,11 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", f
           <button className="btn ob-wear-refresh" onClick={resource.refresh} aria-label="Refresh wearable readings"><RefreshCw size={16} />Refresh</button>
         </div>
         <div className="ob-wear-chart-title">
-          <div><b>{METRICS[metric].label}</b><span>{chartIsDemo ? "Illustrative sample data · not connected" : (chartRows.length ? "Saved readings" : "No readings yet")}</span></div>
+          <div><b>{METRICS[metric].label}</b><span>{chartIsDemo
+            ? "Illustrative sample data · not connected"
+            : hasAggregatedRows
+              ? "Downsampled trend · hover for the range within each interval"
+              : (chartRows.length ? "Saved readings" : "No readings yet")}</span></div>
           <strong style={{ color: METRICS[metric].color }}>{METRICS[metric].unit}</strong>
         </div>
         {resource.error ? (
@@ -634,9 +646,9 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", f
                 <XAxis dataKey="time" type="number" domain={["dataMin", "dataMax"]} tickFormatter={shortDate} tickCount={6} axisLine={false} tickLine={false} fontSize={11} />
                 <YAxis
                   dataKey="value"
-                  domain={reviewLine != null
-                    ? [(dataMin) => Math.max(0, Math.min(dataMin, reviewLine) * 0.9),
-                       (dataMax) => Math.max(dataMax, reviewLine) * 1.1]
+                  domain={reviewLine != null || hasAggregatedRows
+                    ? [Math.max(0, Math.min(chartMin, reviewLine ?? chartMin) * 0.9),
+                       Math.max(chartMax, reviewLine ?? chartMax) * 1.1]
                     : ["auto", "auto"]}
                   width={42}
                   axisLine={false}
@@ -660,9 +672,25 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", f
                 )}
                 <ChartTooltip
                   labelFormatter={(value) => new Date(value).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}
-                  formatter={(value) => [Number(value).toLocaleString("en-IN") + " " + METRICS[metric].unit, METRICS[metric].label]}
+                  formatter={(value, name, props) => {
+                    const row = props?.payload;
+                    const point = Number(value).toLocaleString("en-IN") + " " + METRICS[metric].unit;
+                    const range = row?.aggregated && row.sample_count > 1
+                      ? ` · range ${Number(row.min_value).toLocaleString("en-IN")}–${Number(row.max_value).toLocaleString("en-IN")} · ${row.sample_count} readings`
+                      : "";
+                    return [point + range, METRICS[metric].label];
+                  }}
                   contentStyle={{ borderRadius: 14, borderColor: "#e4ebe6", boxShadow: "0 12px 30px rgba(30,55,45,.10)" }}
                 />
+                {hasAggregatedRows && <Area
+                  type="monotone"
+                  dataKey="range"
+                  stroke="none"
+                  fill={METRICS[metric].color}
+                  fillOpacity={0.12}
+                  activeDot={false}
+                  isAnimationActive={false}
+                />}
                 <Area type="monotone" dataKey="value" stroke={METRICS[metric].color} strokeWidth={2.5} fill="url(#wearableTrendFill)" activeDot={{ r: 5, strokeWidth: 0 }} dot={chartRows.length < 18 ? { r: 2.5, strokeWidth: 0 } : false} />
               </AreaChart>
             </ResponsiveContainer>
@@ -698,3 +726,4 @@ export default function Wearables({ pid, demo = false, viewerRole = "patient", f
     </div>
   );
 }
+

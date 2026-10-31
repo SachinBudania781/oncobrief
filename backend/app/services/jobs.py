@@ -1,4 +1,4 @@
-from ..timeutil import hospital_now, utcnow
+from ..timeutil import hospital_now, hospital_wall_to_utc, utcnow
 """Idempotent in-app reminders and opt-in outbound jobs, using the hospital timezone."""
 import re
 from datetime import datetime, timedelta
@@ -77,8 +77,8 @@ def tick(now=None):
             # Evaluate the latest saved daily total after the day has closed.
             # Missing wearable data is never treated as zero activity.
             activity_day = now.date() - timedelta(days=1)
-            activity_start = datetime.combine(activity_day, datetime.min.time())
-            activity_end = activity_start + timedelta(days=1)
+            activity_start = hospital_wall_to_utc(datetime.combine(activity_day, datetime.min.time()))
+            activity_end = hospital_wall_to_utc(datetime.combine(activity_day + timedelta(days=1), datetime.min.time()))
             latest_steps = db.scalar(
                 select(WearableReading)
                 .where(
@@ -186,3 +186,4 @@ def tick(now=None):
 
 if __name__ == "__main__":
     tick()
+

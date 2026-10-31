@@ -105,6 +105,35 @@ def test_upcoming_appointments_use_hospital_clock_and_exclude_cancelled(client, 
             db.commit()
 
 
+def test_day_pass_hides_cancelled_appointments(client):
+    from datetime import datetime, timedelta
+    from sqlalchemy import delete
+    from app.db import SessionLocal
+    from app.models import Appointment
+
+    start = datetime(2040, 1, 2, 10, 0)
+    booked = Appointment(patient_id="OB-2026-0001", department="Medical Oncology OPD", room="OPD-3",
+                         clinician="Dr. R. Menon", start=start, end=start + timedelta(minutes=20),
+                         visit_type="follow_up", status="booked")
+    cancelled = Appointment(patient_id="OB-2026-0001", department="Medical Oncology OPD", room="OPD-4",
+                            clinician="Dr. R. Menon", start=start + timedelta(hours=1),
+                            end=start + timedelta(hours=1, minutes=20), visit_type="follow_up", status="cancelled")
+    with SessionLocal() as db:
+        db.add_all([booked, cancelled])
+        db.commit()
+        booked_id, cancelled_id = booked.id, cancelled.id
+
+    try:
+        response = client.get("/api/v2/patients/OB-2026-0001/day-pass", params={"day": "2040-01-02"})
+        assert response.status_code == 200
+        assert [stop["id"] for stop in response.json()["stops"]] == [booked_id]
+        assert cancelled_id not in [stop["id"] for stop in response.json()["stops"]]
+    finally:
+        with SessionLocal() as db:
+            db.execute(delete(Appointment).where(Appointment.id.in_([booked_id, cancelled_id])))
+            db.commit()
+
+
 def test_stats_use_hospital_day_and_exclude_cancelled_appointments(client, monkeypatch):
     from datetime import datetime
     from sqlalchemy import delete
@@ -134,6 +163,88 @@ def test_stats_use_hospital_day_and_exclude_cancelled_appointments(client, monke
             db.commit()
 
 
+def test_dense_wearable_history_is_bucketed_across_requested_range(client):
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import delete
+    from app.db import SessionLocal
+    from app.models import WearableReading
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    readings = [WearableReading(
+        patient_id="OB-2026-0001", metric="heart_rate", value=60 + (index % 20), unit="bpm",
+        observed_at=now - timedelta(minutes=1500 - index), source="android_ble", device_name="Test sensor",
+    ) for index in range(1501)]
+    with SessionLocal() as db:
+        db.add_all(readings)
+        db.commit()
+        created_ids = [row.id for row in readings]
+
+    try:
+        response = client.get("/api/v2/patients/OB-2026-0001/wearables", params={"days": 2})
+        assert response.status_code == 200
+        payload = response.json()
+        points = [row for row in payload["items"] if row["metric"] == "heart_rate"]
+        assert payload["aggregated"] is True
+        assert payload["bucket_seconds"] == 900
+        assert len(points) < len(readings)
+        assert sum(row["sample_count"] for row in points) == len(readings)
+        assert min(row["min_value"] for row in points) == 60
+        assert max(row["max_value"] for row in points) == 79
+    finally:
+        with SessionLocal() as db:
+            db.execute(delete(WearableReading).where(WearableReading.id.in_(created_ids)))
+            db.commit()
+
+
+def test_low_activity_review_uses_hospital_local_day(client, monkeypatch):
+    from datetime import datetime
+    from sqlalchemy import delete, select
+    from app.db import SessionLocal
+    from app.models import WearableReading
+    from app.round2_models import AccessGrant, JobReceipt, Notification, User
+    import app.services.jobs as jobs
+
+    monkeypatch.setenv("HOSPITAL_TIME_ZONE", "Asia/Kolkata")
+    patient_id = "OB-2026-0001"
+    recipient = User(username="activity-boundary-test", name="Activity test caregiver", role="caregiver")
+    readings = [
+        WearableReading(patient_id=patient_id, metric="steps", value=100, unit="steps",
+                        observed_at=datetime(2040, 1, 1, 12, 0), source="manual", device_name="test"),
+        # This second sample is already Jan 2 in the hospital timezone and must
+        # not hide the low total recorded on Jan 1.
+        WearableReading(patient_id=patient_id, metric="steps", value=5000, unit="steps",
+                        observed_at=datetime(2040, 1, 1, 20, 0), source="manual", device_name="test"),
+    ]
+    key = "low-activity:OB-2026-0001:2040-01-01"
+    with SessionLocal() as db:
+        db.add(recipient)
+        db.flush()
+        recipient_id = recipient.id
+        db.add(AccessGrant(user_id=recipient_id, patient_id=patient_id, scopes=["activity"], consent_by="test"))
+        db.add_all(readings)
+        db.commit()
+        reading_ids = [row.id for row in readings]
+
+    try:
+        jobs.tick(now=datetime(2040, 1, 2, 0, 5))
+        with SessionLocal() as db:
+            assert db.get(JobReceipt, key) is not None
+            assert db.scalar(select(Notification.id).where(
+                Notification.user_id == recipient_id,
+                Notification.patient_id == patient_id,
+                Notification.channel == "activity",
+            )) is not None
+    finally:
+        with SessionLocal() as db:
+            db.execute(delete(JobReceipt).where(JobReceipt.key == key))
+            db.execute(delete(Notification).where(Notification.user_id == recipient_id))
+            db.execute(delete(AccessGrant).where(AccessGrant.user_id == recipient_id))
+            db.execute(delete(User).where(User.id == recipient_id))
+            db.execute(delete(WearableReading).where(WearableReading.id.in_(reading_ids)))
+            db.commit()
+
+
 def test_search_reads_ocr_text(client):
     hits = client.get("/api/patients/OB-2026-0002/documents", params={"q": "EGFR"}).json()
     assert any("EGFR" in (h.get("snippet") or "") for h in hits)
+

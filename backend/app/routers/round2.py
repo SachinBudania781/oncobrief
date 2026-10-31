@@ -12,7 +12,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import BigInteger, cast, func, select, update
 from ..db import get_db
 from ..models import Activity, Appointment, Document, LabValue, Medication, MedLog, Patient, SymptomReport, WearableReading
 from ..round2_models import WearableDeviceCredential
@@ -922,14 +922,92 @@ def wearable_history(patient_id: str, request: Request, days: int = 30, db=Depen
     user = patient_access(db, request, patient_id, "activity")
     days = min(365, max(1, days))
     since = utcnow() - timedelta(days=days)
-    statement = select(WearableReading).where(
+    filters = [
         WearableReading.patient_id == patient_id, WearableReading.observed_at >= since
-    )
+    ]
     if user.role == "patient":
-        statement = statement.where(WearableReading.metric.notin_(ACTIVITY_METRICS))
-    rows = db.scalars(statement.order_by(WearableReading.observed_at.desc()).limit(5000)).all()
-    rows.reverse()
-    payload = {"days": days, "items": [serial(row) for row in rows]}
+        filters.append(WearableReading.metric.notin_(ACTIVITY_METRICS))
+
+    # Keep dense continuous sensor histories longitudinal instead of returning only
+    # the newest 1,500 raw points. Alerts still evaluate every raw upload separately.
+    reading_count = db.scalar(
+        select(func.count()).select_from(WearableReading).where(*filters)
+    ) or 0
+    aggregated = reading_count > 1500
+    if not aggregated:
+        rows = db.scalars(
+            select(WearableReading).where(*filters)
+            .order_by(WearableReading.observed_at.desc(), WearableReading.id.desc())
+            .limit(1500)
+        ).all()
+        rows.reverse()
+        items = [serial(row) for row in rows]
+        bucket_seconds = None
+    else:
+        # Approximate chart points stay below 400 per metric across the selected
+        # range. The latest sample is retained as the plotted value; bucket min/max
+        # and count are included so a short excursion is visible in the tooltip.
+        bucket_seconds = (
+            900 if days <= 2 else
+            1800 if days <= 7 else
+            7200 if days <= 30 else
+            21600 if days <= 90 else
+            86400
+        )
+        dialect = db.get_bind().dialect.name
+        if dialect == "sqlite":
+            epoch_seconds = func.strftime("%s", WearableReading.observed_at)
+        else:
+            epoch_seconds = func.extract("epoch", WearableReading.observed_at)
+        bucket = cast(cast(epoch_seconds, BigInteger) / bucket_seconds, BigInteger)
+        base = select(
+            WearableReading.id.label("id"),
+            WearableReading.patient_id.label("patient_id"),
+            WearableReading.metric.label("metric"),
+            WearableReading.value.label("value"),
+            WearableReading.unit.label("unit"),
+            WearableReading.observed_at.label("observed_at"),
+            WearableReading.source.label("source"),
+            WearableReading.device_name.label("device_name"),
+            bucket.label("bucket"),
+        ).where(*filters).subquery()
+        ranked = select(
+            base,
+            func.row_number().over(
+                partition_by=(base.c.metric, base.c.bucket),
+                order_by=(base.c.observed_at.desc(), base.c.id.desc()),
+            ).label("sample_rank"),
+        ).subquery()
+        summary = select(
+            base.c.metric.label("metric"),
+            base.c.bucket.label("bucket"),
+            func.min(base.c.value).label("min_value"),
+            func.max(base.c.value).label("max_value"),
+            func.count().label("sample_count"),
+        ).group_by(base.c.metric, base.c.bucket).subquery()
+        rows = db.execute(
+            select(ranked, summary.c.min_value, summary.c.max_value, summary.c.sample_count)
+            .join(summary, (ranked.c.metric == summary.c.metric) & (ranked.c.bucket == summary.c.bucket))
+            .where(ranked.c.sample_rank == 1)
+            .order_by(ranked.c.observed_at.asc(), ranked.c.id.asc())
+        ).all()
+        items = [{
+            "id": row.id,
+            "patient_id": row.patient_id,
+            "metric": row.metric,
+            "value": row.value,
+            "unit": row.unit,
+            "observed_at": row.observed_at.isoformat() + "Z",
+            "source": row.source,
+            "device_name": row.device_name,
+            "min_value": row.min_value,
+            "max_value": row.max_value,
+            "sample_count": row.sample_count,
+            "aggregated": True,
+        } for row in rows]
+
+    payload = {"days": days, "items": items, "aggregated": aggregated,
+               "bucket_seconds": bucket_seconds}
     if user.role != "patient":
         payload["activity_threshold_steps"] = low_activity_steps_threshold()
         protocol = current_vital_alert_protocol(db, patient_id)
@@ -1098,7 +1176,12 @@ def day_pass(patient_id: str, request: Request, day: str = "", db=Depends(get_db
     except ValueError:
         raise HTTPException(422, "Use YYYY-MM-DD")
     end = start + timedelta(days=1)
-    appts = db.scalars(select(Appointment).where(Appointment.patient_id == patient_id, Appointment.start >= start, Appointment.start < end).order_by(Appointment.start)).all()
+    appts = db.scalars(select(Appointment).where(
+        Appointment.patient_id == patient_id,
+        Appointment.start >= start,
+        Appointment.start < end,
+        Appointment.status != "cancelled",
+    ).order_by(Appointment.start)).all()
     out = []
     from ..services.google_meet import public_visit
     for a in appts:
@@ -2127,3 +2210,4 @@ def care_review(patient_id:str,request:Request,db=Depends(get_db)):
     db.commit()
     append_audit(db,user,"draft_care_review",patient_id,f"Approval {row.id}")
     return serial(row)
+
