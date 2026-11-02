@@ -88,6 +88,22 @@ the complete backend suite on PostgreSQL and audits the independent manifest.
 
 ## Remaining constraints
 
+### Follow-up audit
+
+The next fix branch adds immutable Memory Up visit snapshots, blocks publishing
+after the appointment time/doctor changes, and keeps historical note labels stable.
+It also stops browser GPS collection when a trip becomes completed, cancelled,
+unable or stopped; provides a Stop Sharing action when reopening an active trip;
+and removes restart controls for a withdrawn location link.
+
+The transport regression was reproduced before the fix in the actual React
+component: after the server marked the trip completed, its geolocation watcher
+was still registered. `frontend/tests/transport-browser.cjs` now tests that behavior
+and remote-link withdrawal with mocked APIs and synthetic GPS. It starts an
+in-process Vite server by default. Run with Playwright on Node's module path and
+`MEMORY_UP_BROWSER_CHANNEL=chrome` for installed Chrome. Existing Memory Up browser
+tests remain separate. No production dependency manifest was changed for these tests.
+
 The historical dense-history cap, cancelled day-pass stops and hospital-local
 low-activity day boundary still require changes to the excluded shared backend
 files. The patient medicine-alarm clock and cross-origin PUT allowance also remain

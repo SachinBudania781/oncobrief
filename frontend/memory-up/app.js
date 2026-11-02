@@ -53,13 +53,19 @@ function render() {
     body.className = "advice";
     body.textContent = row.advice;
     card.append(heading, meta, badge, body);
+    if (row.appointment_changed) {
+      const changed = document.createElement("p");
+      changed.className = "meta";
+      changed.textContent = "The booking changed after this note was created. These instructions retain their original appointment details; ask the department to confirm current plans.";
+      card.append(changed);
+    }
     if (row.attachment_url) {
       const link = document.createElement("a");
       link.href = row.attachment_url;
       link.textContent = `Download original · ${row.attachment_name}`;
       card.append(link);
     }
-    if (row.status === "draft" && context.user.role === "doctor" && context.user.department === row.department) {
+    if (row.status === "draft" && !row.appointment_changed && context.user.role === "doctor" && context.user.department === row.department) {
       const button = document.createElement("button");
       button.textContent = "I reviewed this advice · publish for patient";
       button.addEventListener("click", async () => {

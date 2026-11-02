@@ -197,8 +197,19 @@ function PatientRequestCard({ item, onUpdate }) {
   const [trackingError, setTrackingError] = useState("");
   const [trackingBusy, setTrackingBusy] = useState(false);
   const [watchId, setWatchId] = useState(null);
+  const [serverSharingActive, setServerSharingActive] = useState(item.data?.location_sharing === "active");
+  const [withdrawn, setWithdrawn] = useState(item.data?.location_sharing === "stopped");
   const data = item.data || {};
   const appointment = item.appointment;
+  useEffect(() => {
+    if (data.location_sharing === "active") setServerSharingActive(true);
+    if (["completed", "cancelled", "unable"].includes(item.status) || data.location_sharing === "stopped") {
+      if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
+      setWatchId(null);
+      setServerSharingActive(false);
+      if (data.location_sharing === "stopped") setWithdrawn(true);
+    }
+  }, [item.status, data.location_sharing, watchId]);
   const startSharing = async () => {
     setTrackingError("");
     setTrackingBusy(true);
@@ -209,6 +220,7 @@ function PatientRequestCard({ item, onUpdate }) {
       }));
       if (!mounted.current) return;
       await request(`/v2/transport-requests/${item.id}/location/start`, "POST");
+      setServerSharingActive(true);
       await request(`/v2/transport-requests/${item.id}/location`, "POST", {
         latitude: first.coords.latitude,
         longitude: first.coords.longitude,
@@ -243,6 +255,8 @@ function PatientRequestCard({ item, onUpdate }) {
       if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
       setWatchId(null);
       await request(`/v2/transport-requests/${item.id}/location/stop`, "POST");
+      setServerSharingActive(false);
+      setWithdrawn(true);
       onUpdate();
     } catch (e) {
       setTrackingError(e.message);
@@ -261,13 +275,14 @@ function PatientRequestCard({ item, onUpdate }) {
       {data.coordination_note && <p className="ob-transport-note"><b>Care-team update:</b> {data.coordination_note}</p>}
       {data.notes && <p><b>Your note:</b> {data.notes}</p>}
       {data.location_consent && !["completed", "cancelled", "unable"].includes(item.status) && <div className="ob-live-location-controls">
-        <p className="small muted">Trip location: {watchId !== null ? "sharing from this page" : data.location_sharing === "active" ? "active; resume updates here if this page was reopened" : "not started"}. Updates stop when you stop sharing or the link expires.</p>
-        {watchId === null
-          ? <button className="btn" type="button" disabled={trackingBusy} onClick={startSharing}><MapPin size={16} />{trackingBusy ? "Starting…" : data.location_sharing === "active" ? "Resume trip location" : "Start trip location"}</button>
-          : <button className="btn" type="button" disabled={trackingBusy} onClick={stopSharing}><Check size={16} />{trackingBusy ? "Stopping…" : "Stop sharing"}</button>}
+        {withdrawn ? <p className="small muted">This trip's location link has been withdrawn. Its last location is no longer shared.</p> : <>
+          <p className="small muted">Trip location: {watchId !== null ? "sharing from this page" : serverSharingActive ? "active; resume updates here if this page was reopened" : "not started"}. Updates stop when you stop sharing or the link expires.</p>
+          {watchId === null && <button className="btn" type="button" disabled={trackingBusy} onClick={startSharing}><MapPin size={16} />{trackingBusy ? "Starting…" : serverSharingActive ? "Resume trip location" : "Start trip location"}</button>}
+          {(watchId !== null || serverSharingActive) && <button className="btn" type="button" disabled={trackingBusy} onClick={stopSharing}><Check size={16} />{trackingBusy ? "Stopping…" : "Stop sharing"}</button>}
+        </>}
         <Error message={trackingError} />
       </div>}
-      {!['completed', 'cancelled'].includes(item.status) && <><button className="btn" type="button" onClick={async () => { setError(""); try { if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId); await request(`/v2/transport-requests/${item.id}/cancel`, "POST"); onUpdate(); } catch (e) { setError(e.message); } }}>Cancel request</button><Error message={error} /></>}
+      {!['completed', 'cancelled'].includes(item.status) && <><button className="btn" type="button" onClick={async () => { setError(""); try { if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId); setWatchId(null); await request(`/v2/transport-requests/${item.id}/cancel`, "POST"); setServerSharingActive(false); setWithdrawn(true); onUpdate(); } catch (e) { setError(e.message); } }}>Cancel request</button><Error message={error} /></>}
     </article>
   );
 }

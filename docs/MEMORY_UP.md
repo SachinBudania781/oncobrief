@@ -49,6 +49,13 @@ attachment stays separately available in Memory Up. This adds records through
 existing services and does not change the Documents screen or its source files.
 Older published notes are not automatically backfilled by this change.
 
+New drafts store an immutable appointment time and doctor in an additive snapshot
+table. Rescheduling or changing the doctor before review blocks publication; add a
+corrected note. Published notes retain their original labels after later booking
+changes. Legacy published notes with a filed summary use its immutable report date
+and reviewer instead of displaying a different booking's doctor. Old drafts without
+a snapshot cannot reconstruct an earlier booking time.
+
 ## Verify
 
 ```sh

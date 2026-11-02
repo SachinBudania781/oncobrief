@@ -52,6 +52,20 @@ class MemoryUpDocument(Base):
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), unique=True)
 
 
+class MemoryUpVisitSnapshot(Base):
+    """Immutable visit labels for new notes; additive for existing databases."""
+    __tablename__ = "pantheon_memory_up_visit_snapshots"
+    note_id: Mapped[int] = mapped_column(ForeignKey("pantheon_memory_up.id"), primary_key=True)
+    start: Mapped[datetime] = mapped_column(DateTime)
+    clinician: Mapped[str] = mapped_column(String)
+
+
+def visit_changed(row, visit, snapshot):
+    return (not visit or visit.status == "cancelled" or visit.patient_id != row.patient_id
+            or visit.department != row.department or bool(snapshot and (
+                visit.start != snapshot.start or (visit.clinician or "") != snapshot.clinician)))
+
+
 def user_for(db, request, patient_id):
     user = identity(request)
     require_patient(db, user, patient_id, "documents")
@@ -80,10 +94,26 @@ def visible_note(db, request, note_id):
 def payload(db, row):
     visit = db.get(Appointment, row.appointment_id)
     filed = db.get(MemoryUpDocument, row.id)
+    snapshot = db.get(MemoryUpVisitSnapshot, row.id)
+    # Never relabel a historical note with another patient's current booking.
+    if snapshot:
+        appointment_at, doctor = snapshot.start, snapshot.clinician
+    elif filed:
+        from .models import Document
+        document = db.get(Document, filed.document_id)
+        appointment_at = document.record_date if document else None
+        doctor = row.approved_by
+    else:
+        same_record = visit and visit.patient_id == row.patient_id and visit.department == row.department
+        appointment_at, doctor = (visit.start, visit.clinician) if same_record else (None, "")
+    changed = visit_changed(row, visit, snapshot)
+    if not snapshot and filed and visit and appointment_at is not None:
+        changed = changed or visit.start != appointment_at
     return {"id": row.id, "patient_id": row.patient_id, "department": row.department,
             "appointment_id": row.appointment_id,
-            "appointment_at": visit.start.isoformat() if visit else None,
-            "doctor": visit.clinician if visit else "", "title": row.title,
+            "appointment_at": appointment_at.isoformat() if appointment_at else None,
+            "appointment_changed": changed,
+            "doctor": doctor, "title": row.title,
             "advice": row.advice, "status": row.status, "author": row.author_name,
             "created_at": row.created_at.isoformat() + "Z", "approved_by": row.approved_by,
             "approved_at": row.approved_at.isoformat() + "Z" if row.approved_at else None,
@@ -184,6 +214,8 @@ async def create_memory_up(patient_id: str, request: Request, appointment_id: in
                    attachment_mime=attachment_mime)
     try:
         db.add(row)
+        db.flush()
+        db.add(MemoryUpVisitSnapshot(note_id=row.id, start=visit.start, clinician=visit.clinician or ""))
         db.commit()
     except Exception:
         db.rollback()
@@ -206,6 +238,8 @@ def publish_memory_up(note_id: int, request: Request, db=Depends(get_db)):
         raise HTTPException(409, "The appointment was cancelled; review the record before publishing")
     if visit.patient_id != row.patient_id or visit.department != row.department:
         raise HTTPException(409, "The appointment's patient or department changed; create a corrected Memory Up")
+    if visit_changed(row, visit, db.get(MemoryUpVisitSnapshot, row.id)):
+        raise HTTPException(409, "The appointment time or doctor changed; create a corrected Memory Up before publishing")
     # Compare-and-set protects against two review requests publishing the same
     # draft concurrently, including across separate application workers.
     result = db.execute(update(MemoryUp).where(

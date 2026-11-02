@@ -193,3 +193,60 @@ def test_failed_document_filing_does_not_publish_advice(memory_client, monkeypat
     rows = client.get("/api/memory-up/patients/MEM-1").json()
     assert rows[0]["status"] == "draft"
     assert client.get("/api/memory-up/patients/MEM-1", headers={"x-test-user": "patient"}).json() == []
+
+
+@pytest.mark.parametrize("change", ["time", "doctor"])
+def test_rescheduled_or_reassigned_draft_requires_new_review(memory_client, change):
+    from app.models import Appointment
+
+    client, _, engine, _ = memory_client
+    note = draft(client).json()
+    with Session(engine) as db:
+        visit = db.get(Appointment, 1)
+        if change == "time":
+            visit.start += timedelta(hours=1)
+        else:
+            visit.clinician = "New booking doctor"
+        db.commit()
+    listed = client.get("/api/memory-up/patients/MEM-1").json()[0]
+    assert listed["appointment_at"] == note["appointment_at"]
+    assert listed["doctor"] == note["doctor"]
+    assert listed["appointment_changed"] is True
+    assert client.post(f"/api/memory-up/{note['id']}/publish").status_code == 409
+
+
+def test_published_note_keeps_its_original_visit_details(memory_client):
+    from app.models import Appointment
+
+    client, _, engine, _ = memory_client
+    note = draft(client).json()
+    assert client.post(f"/api/memory-up/{note['id']}/publish").status_code == 200
+    with Session(engine) as db:
+        visit = db.get(Appointment, 1)
+        visit.start += timedelta(days=1)
+        visit.patient_id, visit.clinician = "MEM-2", "Other patient's doctor"
+        db.commit()
+    listed = client.get("/api/memory-up/patients/MEM-1", headers={"x-test-user": "patient"}).json()[0]
+    assert listed["appointment_at"] == note["appointment_at"]
+    assert listed["doctor"] == note["doctor"]
+    assert listed["appointment_changed"] is True
+
+
+def test_legacy_published_note_uses_filed_document_date(memory_client):
+    from sqlalchemy import delete
+    from app.models import Appointment
+    from app.memory_up import MemoryUpVisitSnapshot
+
+    client, _, engine, _ = memory_client
+    note = draft(client).json()
+    assert client.post(f"/api/memory-up/{note['id']}/publish").status_code == 200
+    with Session(engine) as db:
+        db.execute(delete(MemoryUpVisitSnapshot).where(MemoryUpVisitSnapshot.note_id == note["id"]))
+        visit = db.get(Appointment, 1)
+        visit.start += timedelta(days=1)
+        visit.clinician = "Other booking doctor"
+        db.commit()
+    listed = client.get("/api/memory-up/patients/MEM-1", headers={"x-test-user": "patient"}).json()[0]
+    assert listed["appointment_at"] == note["appointment_at"]
+    assert listed["doctor"] == "doctor"  # immutable reviewer, not the changed booking
+    assert listed["appointment_changed"] is True
