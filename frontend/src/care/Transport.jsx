@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Accessibility, CalendarDays, Car, Check, ExternalLink, MapPin, Users } from "lucide-react";
 import { request, useResource, hospitalDateTime } from "./client";
 import { Empty, Error, Load, Panel, Status } from "./UI";
@@ -25,6 +25,8 @@ const STATUS_LABELS = {
 
 function localInput(value) {
   if (!value) return "";
+  // API pickup times without an offset are already hospital wall times.
+  if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(String(value))) return String(value).replace(" ", "T").slice(0, 16);
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -45,7 +47,11 @@ function defaultPickup(appointment, hospitalNow) {
   return new Date(Math.min(suggested, latestPickup)).toISOString().slice(0, 16);
 }
 
-export default function Transport({ pid, user, active = true }) {
+export default function Transport(props) {
+  return <TransportWorkspace key={props.pid} {...props} />;
+}
+
+function TransportWorkspace({ pid, user, active = true }) {
   const patientMode = ["patient", "caregiver"].includes(user.role);
   const calendar = useResource(patientMode ? "/taxonomy" : null);
   const appointments = useResource(patientMode ? `/appointments?upcoming=true&patient_id=${encodeURIComponent(pid)}` : null, 30000);
@@ -131,7 +137,7 @@ export default function Transport({ pid, user, active = true }) {
                     setPickupAt(visit ? defaultPickup(visit, calendar.data?.hospital_now) : "");
                   }}>
                     <option value="">Choose an upcoming appointment</option>
-                    {items.filter((item) => item.status === "booked" && new Date(item.start).getTime() > Date.now()).map((item) => (
+                    {items.filter((item) => item.status === "booked").map((item) => (
                       <option key={item.id} value={item.id}>{hospitalDateTime(item.start)} · {item.department}</option>
                     ))}
                   </select>
@@ -182,6 +188,11 @@ export default function Transport({ pid, user, active = true }) {
 }
 
 function PatientRequestCard({ item, onUpdate }) {
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const [error, setError] = useState("");
   const [trackingError, setTrackingError] = useState("");
   const [trackingBusy, setTrackingBusy] = useState(false);
@@ -196,12 +207,14 @@ function PatientRequestCard({ item, onUpdate }) {
       const first = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, {
         enableHighAccuracy: true, maximumAge: 10000, timeout: 20000,
       }));
+      if (!mounted.current) return;
       await request(`/v2/transport-requests/${item.id}/location/start`, "POST");
       await request(`/v2/transport-requests/${item.id}/location`, "POST", {
         latitude: first.coords.latitude,
         longitude: first.coords.longitude,
         accuracy_m: first.coords.accuracy,
       });
+      if (!mounted.current) return;
       let lastSent = Date.now();
       const id = navigator.geolocation.watchPosition((position) => {
         if (Date.now() - lastSent < 20000) return;
@@ -215,7 +228,8 @@ function PatientRequestCard({ item, onUpdate }) {
         enableHighAccuracy: true, maximumAge: 10000, timeout: 20000,
       });
       setWatchId(id);
-      onUpdate();
+      // Refresh resets useResource.data and unmounts this card, which immediately
+      // clears the new watcher. Polling will update the saved sharing status.
     } catch (e) {
       setTrackingError(e.code ? "Location permission was denied or unavailable. Allow location access and try again." : e.message);
     } finally {

@@ -64,33 +64,54 @@ def evaluate_vital_readings(db, patient_id, saved_readings):
     }
     changed = False
     now = utcnow()
-    candidates = sorted(
+    ordered = sorted(
         (row for row in saved_readings if row.metric in thresholds and row.source in LIVE_SOURCES),
         key=lambda row: (row.observed_at, row.id or 0),
     )
-    for candidate in candidates:
+    # Evaluate the final state of each metric once per upload. Delayed/replayed
+    # historical batches must not reopen an alert after a newer recovery.
+    candidates = {row.metric: row for row in ordered}
+    for candidate in candidates.values():
         label_unit = VITAL_LABELS.get(candidate.metric)
         if not label_unit:
             continue
         label, unit = label_unit
         threshold = float(thresholds[candidate.metric])
+        later = db.scalar(select(WearableReading.id).where(
+            WearableReading.patient_id == patient_id,
+            WearableReading.metric == candidate.metric,
+            WearableReading.source.in_(LIVE_SOURCES),
+            WearableReading.observed_at > candidate.observed_at,
+            WearableReading.observed_at <= now,
+        ).limit(1))
+        if later is not None:
+            continue
         recent = db.scalars(select(WearableReading).where(
             WearableReading.patient_id == patient_id,
             WearableReading.metric == candidate.metric,
             WearableReading.source.in_(LIVE_SOURCES),
             WearableReading.observed_at <= candidate.observed_at,
             WearableReading.observed_at >= candidate.observed_at - timedelta(minutes=5),
-        ).order_by(WearableReading.observed_at.desc(), WearableReading.id.desc()).limit(2)).all()
+        ).order_by(WearableReading.observed_at.desc(), WearableReading.id.desc())).all()
         if len(recent) < 2:
             continue
-        newest, previous = recent[0], recent[1]
-        if newest.observed_at - previous.observed_at < timedelta(seconds=10):
+        newest = recent[0]
+        previous = next((row for row in recent[1:]
+                         if newest.observed_at - row.observed_at >= timedelta(seconds=10)), None)
+        if previous is None:
             continue
-        if now - newest.observed_at > timedelta(minutes=5):
+        if not timedelta(0) <= now - newest.observed_at <= timedelta(minutes=5):
             continue
 
+        # Continuous sensors can emit every second. Compare samples spanning at
+        # least ten seconds, and require all intervening samples to agree. Using
+        # only adjacent samples prevented both alerts and recovery at high rates.
+        interval = [row for row in recent if row.observed_at >= previous.observed_at]
+        below = all(row.value < threshold for row in interval)
+        recovered = all(row.value >= threshold for row in interval)
+
         active = active_alerts.get(candidate.metric)
-        if newest.value < threshold and previous.value < threshold and not active:
+        if below and not active:
             recipients = _assigned_recipients(db, patient_id)
             if not recipients:
                 continue
@@ -131,7 +152,7 @@ def evaluate_vital_readings(db, patient_id, saved_readings):
                 ))
             active_alerts[candidate.metric] = alert_row
             changed = True
-        elif newest.value >= threshold and previous.value >= threshold and active:
+        elif recovered and active:
             active.status = "resolved"
             active.updated_at = newest.observed_at
             active.data = dict(active.data or {}) | {
