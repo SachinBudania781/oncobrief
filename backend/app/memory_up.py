@@ -45,6 +45,13 @@ class MemoryUp(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class MemoryUpDocument(Base):
+    """Additive link table; does not alter existing Memory Up or document columns."""
+    __tablename__ = "pantheon_memory_up_documents"
+    note_id: Mapped[int] = mapped_column(ForeignKey("pantheon_memory_up.id"), primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), unique=True)
+
+
 def user_for(db, request, patient_id):
     user = identity(request)
     require_patient(db, user, patient_id, "documents")
@@ -72,6 +79,7 @@ def visible_note(db, request, note_id):
 
 def payload(db, row):
     visit = db.get(Appointment, row.appointment_id)
+    filed = db.get(MemoryUpDocument, row.id)
     return {"id": row.id, "patient_id": row.patient_id, "department": row.department,
             "appointment_id": row.appointment_id,
             "appointment_at": visit.start.isoformat() if visit else None,
@@ -79,6 +87,7 @@ def payload(db, row):
             "advice": row.advice, "status": row.status, "author": row.author_name,
             "created_at": row.created_at.isoformat() + "Z", "approved_by": row.approved_by,
             "approved_at": row.approved_at.isoformat() + "Z" if row.approved_at else None,
+            "document_id": filed.document_id if filed else None,
             "attachment_name": row.attachment_name,
             "attachment_url": f"/api/memory-up/{row.id}/attachment" if row.attachment else None}
 
@@ -205,7 +214,23 @@ def publish_memory_up(note_id: int, request: Request, db=Depends(get_db)):
     if result.rowcount != 1:
         db.rollback()
         raise HTTPException(409, "This Memory Up has already been published")
-    db.commit()
+    # File the reviewed advice through the existing document service in the same
+    # transaction. Patient reports, search and record-aware chat then share it.
+    document = None
+    filed_path = None
+    try:
+        db.flush()
+        db.refresh(row)
+        from .services.memory_up_documents import file_reviewed_advice, remove_filed_copy
+        document = file_reviewed_advice(db, row, user, visit, MEMORY_DIR)
+        filed_path = document.file_path
+        db.add(MemoryUpDocument(note_id=row.id, document_id=document.id))
+        db.commit()
+    except Exception:
+        db.rollback()
+        if filed_path is not None:
+            remove_filed_copy(filed_path)
+        raise
     db.refresh(row)
     append_audit(db, user, "memory_up_published", row.patient_id, f"Memory Up {row.id}")
     return payload(db, row)

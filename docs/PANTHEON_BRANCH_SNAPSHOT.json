@@ -1,0 +1,97 @@
+{
+  "date": "2026-11-02",
+  "base": "8e3c3c71dfc4b904593eedd38abd0a46d5164225",
+  "branches": [
+    {
+      "branch": "feat/android-background-vitals",
+      "sha": "1df63e10e24335338aaf8258ac7241608a63a482",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "feat/department-schedules",
+      "sha": "28fd238b65434481e55d8600a74f5b1c715abec0",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "feat/pantheon-deified-work",
+      "sha": "1df63e10e24335338aaf8258ac7241608a63a482",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "feat/pantheon-memory-up",
+      "sha": "4d5daa99712bce6283859d11aa2794ae9bdc1f9a",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "feat/patient-ai-chat",
+      "sha": "5430c69ab62b67577c46279d679cbd2d63b00efa",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "feat/patient-dose-reminders",
+      "sha": "98c52db5e3fed297900e960eda6949f999219333",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "feat/round2-google-meet-appointments",
+      "sha": "c1c961697959cf167c916c1a0f351c15f980b8a9",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "feat/round2-multi-role-portals",
+      "sha": "044455b9b16bd2bda3a3b6ae09caa94d1bccdbc4",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "fix/integration-bugs",
+      "sha": "6ad5e02c7b230b59a73a9725b3eb10fe0f66c34d",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "fix/integration-bugs-followup",
+      "sha": "62b46f2ecc16eabf8cc4621e103caf4bf1b67a76",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "fix/integration-consistency-audit",
+      "sha": "b4b1fc0e83188eb65f74535da85dfde5730332a0",
+      "included_as_ancestor": false
+    },
+    {
+      "branch": "fix/integration-schedule-clash-check",
+      "sha": "e702111db55c2dc164f6548c5fb031659995b658",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "fix/pantheon-memory-up-audit",
+      "sha": "8e3c3c71dfc4b904593eedd38abd0a46d5164225",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "fix/pantheon-owned-bugs-2026-11-02",
+      "sha": "5f7abfa455f043b9924932f016ce916514997f0d",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "fix/pantheon-round2-bugs",
+      "sha": "6270ee87bc361f3866d901974482dba54db38e7a",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "fix/pantheon-work-bugs",
+      "sha": "677c3547c642e7efdadea60938a45c492cc21e92",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "integration/pantheon-deified-all",
+      "sha": "dde1c0fe17e513cd45e9384ee501712a08c7d61b",
+      "included_as_ancestor": true
+    },
+    {
+      "branch": "integration/round2-all-features",
+      "sha": "4c4a8969b53a341100f4e5b8e501902d45f0c240",
+      "included_as_ancestor": true
+    }
+  ],
+  "exclusion_reason": "b4b1fc0 changes Sachin-created backend files; prohibited by user. Its Wearables UI changes are already represented."
+}

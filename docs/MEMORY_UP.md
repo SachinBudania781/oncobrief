@@ -42,8 +42,12 @@ staff upload-activity panels when the extension is enabled. The existing Documen
 navigation and permission code were created by Sachin and remain untouched, so no
 Memory Up button is inserted into that screen. A future authorized integration can
 link `/memory-up` from Documents without changing this feature's storage or API.
-Memory Up records currently live in the extension's table, not in the existing
-document list or record-retrieval pipeline.
+Drafts live only in the extension's table. In the integrated runtime, publishing
+also files a reviewed summary through the existing document service, so it appears
+in the normal Documents list, full-text search and record-aware chat. The original
+attachment stays separately available in Memory Up. This adds records through
+existing services and does not change the Documents screen or its source files.
+Older published notes are not automatically backfilled by this change.
 
 ## Verify
 
@@ -64,7 +68,7 @@ and atomically publishes a draft only once. It also preserves unsaved advice and
 attachment/appointment when refreshing or publishing another note, clears stale
 history immediately on patient changes, and shows readable validation messages.
 
-Eleven backend tests cover these cases. Optional browser regressions are in
+Backend tests cover these cases and document-filing rollback. Optional browser regressions are in
 `frontend/memory-up/tests/browser.cjs`. Run with Playwright available on Node's
 module path and an installed browser. Set `MEMORY_UP_BROWSER_CHANNEL=chrome` to use
 installed Chrome; otherwise the test uses Playwright Chromium. This test mocks the

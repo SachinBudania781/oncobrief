@@ -1,0 +1,34 @@
+name: Pantheon integrated runtime
+on: [push, pull_request]
+env:
+  SCARF_ANALYTICS: "false"
+jobs:
+  combined:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pantheon_test
+          POSTGRES_PASSWORD: local_ci_only
+          POSTGRES_DB: pantheon_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y tesseract-ocr fonts-dejavu-core
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: pip install -r backend/requirements-pantheon-integrated.txt pytest pip-audit
+      - run: cd backend && pytest -q
+      - run: cd backend && pytest -q
+        env:
+          DATABASE_URL: postgresql://pantheon_test:local_ci_only@localhost:5432/pantheon_test
+      - run: pip-audit -r backend/requirements-pantheon-integrated.txt
+      - uses: actions/setup-node@v4
+        with: { node-version: "24" }
+      - run: cd frontend && npm ci && npm run build && npm run build:apps
+      - run: node --test frontend/tests/wearablePackets.test.mjs
+      - run: cd frontend && npm audit --audit-level=moderate

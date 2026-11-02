@@ -42,6 +42,8 @@ def memory_client(tmp_path, monkeypatch):
                                clinician="Doctor", room="Test", visit_type="follow_up", status=status))
         db.commit()
     monkeypatch.setattr(feature, "MEMORY_DIR", tmp_path / "memory-up")
+    from app.routers import documents
+    monkeypatch.setattr(documents, "STORAGE_DIR", tmp_path / "storage")
     app = FastAPI()
 
     @app.middleware("http")
@@ -176,3 +178,18 @@ def test_two_stale_review_sessions_can_publish_only_once(memory_client):
         with pytest.raises(HTTPException) as failure:
             publish_memory_up(note_id, request, second)
         assert failure.value.status_code == 409
+
+
+def test_failed_document_filing_does_not_publish_advice(memory_client, monkeypatch):
+    from app.services import memory_up_documents
+
+    client, _, _, _ = memory_client
+    note_id = draft(client).json()["id"]
+    def unavailable(*args):
+        raise RuntimeError("Synthetic storage failure")
+    monkeypatch.setattr(memory_up_documents, "file_reviewed_advice", unavailable)
+    with pytest.raises(RuntimeError, match="Synthetic storage failure"):
+        client.post(f"/api/memory-up/{note_id}/publish")
+    rows = client.get("/api/memory-up/patients/MEM-1").json()
+    assert rows[0]["status"] == "draft"
+    assert client.get("/api/memory-up/patients/MEM-1", headers={"x-test-user": "patient"}).json() == []
