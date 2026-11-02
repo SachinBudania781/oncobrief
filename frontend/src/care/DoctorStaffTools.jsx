@@ -13,6 +13,7 @@ import {
 import Brief from "../apps/doctor/Brief";
 import { Empty, Error, Load, Panel } from "./UI";
 import { hospitalDateTime, request, useResource } from "./client";
+import MemoryUpLink from "./MemoryUpLink";
 
 const VISITS = [
   ["new", "New patient", "Referral, pathology and what is missing"],
@@ -135,6 +136,8 @@ export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords }) 
         </div>
       </div>
 
+      <MemoryUpLink pid={pid} />
+
       {brief && <Panel title="Visit brief" hint="Each item includes a source link where the record supports it." action={<span className="care-inline-meta"><CheckCircle2 size={15} /> Ready for review</span>}><Brief data={brief} onOpen={onOpen} /></Panel>}
     </div>
   );
@@ -149,6 +152,7 @@ export function StaffActivity({ user, onOpen }) {
 
   return (
     <div className="stack">
+      <MemoryUpLink />
       <Panel title="Recent uploads" hint="Recent documents visible to your role. Open a row to review the original file." action={
         <label className="care-activity-department"><span>Department</span><select className="select" value={department} onChange={(e) => setDepartment(e.target.value)} aria-label="Filter uploads by department">{(taxonomy.data?.departments || []).map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}</select></label>
       }>

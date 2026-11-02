@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Memory Up · OncoBrief</title><link rel="stylesheet" href="/memory-up-assets/style.css"><script type="module" src="/memory-up-assets/app.js"></script></head>
+<body><header><a href="/">OncoBrief</a><span id="identity">Your appointment notebook</span></header>
+<main><section class="intro"><span class="eyebrow">DOCUMENTS · APPOINTMENT ADVICE</span><h1>Memory Up</h1><p>Keep what your doctor suggested in one place. Return to the right department, appointment and advice whenever you need it.</p></section>
+<p id="error" role="alert" hidden></p><p id="status" role="status"></p>
+<section class="panel"><label for="patient">Patient record</label><select id="patient"><option value="">Loading your records…</option></select><p id="empty-access" hidden>No patient document access is available for this account. Ask the care team to check your assigned access.</p></section>
+<section id="compose" class="panel" hidden><h2>Add a Memory Up</h2><p>Save the doctor's actual appointment advice or attach the original document. A doctor from the department reviews it before the patient can read it.</p>
+<form id="memory-form"><label for="appointment">Department and appointment</label><select id="appointment" name="appointment_id" required></select>
+<label for="title">Document title</label><input id="title" name="title" value="Memory Up" maxlength="200" required>
+<label for="advice">What the doctor suggested</label><textarea id="advice" name="advice" rows="7" maxlength="10000" placeholder="Record the instructions from this appointment, including follow-up tasks and dates where given."></textarea>
+<label for="file">Original appointment document (optional)</label><input id="file" name="file" type="file" accept=".pdf,.txt,.jpg,.jpeg,.png,.webp"><small>PDF, text or image · up to 15 MB. Include written advice or an attachment.</small>
+<label class="check"><input name="identity_confirmed" type="checkbox" value="true" required>I checked that these instructions and any attachment belong to this patient and appointment.</label>
+<button id="save" type="submit">Save for doctor review</button></form></section>
+<section class="panel"><div class="section-head"><h2 id="history-title">Your Memory Up documents</h2><button id="refresh" type="button">Refresh</button></div><label for="department">Filter by department</label><select id="department"><option value="">All available departments</option></select><div id="history" aria-live="polite"></div></section>
+<footer>Memory Up preserves appointment instructions from your care team. If a note is unclear, ask the department before acting on it.</footer></main></body></html>
