@@ -55,3 +55,19 @@ pytest -q tests/test_memory_up.py
 The tests cover doctor review, draft hiding, patient and department isolation,
 document-scope consent, encrypted attachments, invalid uploads, context filtering
 and static asset allowlisting.
+
+## Audit fixes
+
+The follow-up audit adds checks for conflicting printed patient identity in uploaded
+documents, rejects publication after an appointment's patient or department changes,
+and atomically publishes a draft only once. It also preserves unsaved advice and its
+attachment/appointment when refreshing or publishing another note, clears stale
+history immediately on patient changes, and shows readable validation messages.
+
+Eleven backend tests cover these cases. Optional browser regressions are in
+`frontend/memory-up/tests/browser.cjs`. Run with Playwright available on Node's
+module path and an installed browser. Set `MEMORY_UP_BROWSER_CHANNEL=chrome` to use
+installed Chrome; otherwise the test uses Playwright Chromium. This test mocks the
+API with synthetic data and verifies the browser's state transitions; the backend
+tests separately verify actual access and storage rules. No production dependency
+manifest is changed to install the optional test runner.

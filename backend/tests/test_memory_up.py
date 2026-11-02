@@ -134,3 +134,45 @@ def test_page_assets_and_traversal_protection(memory_client):
     assert client.get("/memory-up").status_code == 200
     assert client.get("/memory-up-assets/app.js").status_code == 200
     assert client.get("/memory-up-assets/unknown").status_code == 404
+
+
+def test_wrong_patient_attachment_rejected_and_removed(memory_client):
+    client, _, _, feature = memory_client
+    response = client.post("/api/memory-up/patients/MEM-1",
+                           data={"appointment_id": 1, "identity_confirmed": "true"},
+                           files={"file": ("wrong-patient.txt", b"Patient ID: OB-2026-0002\nBring prior scans.", "text/plain")})
+    assert response.status_code == 409
+    assert list(feature.MEMORY_DIR.iterdir()) == []
+    assert client.get("/api/memory-up/patients/MEM-1").json() == []
+
+
+@pytest.mark.parametrize("changed", [{"patient_id": "MEM-2"}, {"department": "Pathology"}, {"status": "cancelled"}])
+def test_changed_appointment_cannot_publish_old_advice(memory_client, changed):
+    from app.models import Appointment
+
+    client, _, engine, _ = memory_client
+    note_id = draft(client).json()["id"]
+    with Session(engine) as db:
+        visit = db.get(Appointment, 1)
+        for key, value in changed.items():
+            setattr(visit, key, value)
+        db.commit()
+    assert client.post(f"/api/memory-up/{note_id}/publish").status_code == 409
+    assert client.get("/api/memory-up/patients/MEM-1", headers={"x-test-user": "patient"}).json() == []
+
+
+def test_two_stale_review_sessions_can_publish_only_once(memory_client):
+    from fastapi import HTTPException
+    from app.memory_up import MemoryUp, publish_memory_up
+
+    client, users, engine, _ = memory_client
+    note_id = draft(client).json()["id"]
+    request = Request({"type": "http", "state": {"user": users["doctor"]}})
+    with Session(engine, expire_on_commit=False) as first, Session(engine, expire_on_commit=False) as second:
+        # Both requests have read the draft before either review commits.
+        stale = second.get(MemoryUp, note_id)
+        assert stale.status == "draft"
+        assert publish_memory_up(note_id, request, first)["status"] == "published"
+        with pytest.raises(HTTPException) as failure:
+            publish_memory_up(note_id, request, second)
+        assert failure.value.status_code == 409

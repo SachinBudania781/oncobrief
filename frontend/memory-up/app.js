@@ -2,13 +2,16 @@ const el = (id) => document.getElementById(id);
 let context = null;
 let notes = [];
 let version = 0;
+let formPatient = "";
+let loadedPatient = "";
 const error = (message = "") => { el("error").textContent = message; el("error").hidden = !message; };
 
 async function api(path, method = "GET", body) {
   const response = await fetch(path, { method, credentials: "same-origin", ...(body ? { body } : {}) });
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
-    throw new Error(response.status === 401 ? "Sign in to OncoBrief using the link at the top, then reopen Memory Up." : detail.detail || "The request could not be completed.");
+    const message = Array.isArray(detail.detail) ? detail.detail.map((item) => item.msg).join("; ") : detail.detail;
+    throw new Error(response.status === 401 ? "Sign in to OncoBrief using the link at the top, then reopen Memory Up." : message || "The request could not be completed.");
   }
   return response.json();
 }
@@ -25,6 +28,7 @@ function wallTime(value) {
 }
 
 function render() {
+  if (loadedPatient !== el("patient").value) return;
   const patientMode = ["patient", "caregiver"].includes(context?.user.role);
   const rows = notes.filter((row) => !el("department").value || row.department === el("department").value);
   el("history").replaceChildren();
@@ -59,13 +63,15 @@ function render() {
       const button = document.createElement("button");
       button.textContent = "I reviewed this advice · publish for patient";
       button.addEventListener("click", async () => {
+        const selectedVersion = version;
         error();
         button.disabled = true;
         try {
           await api(`/api/memory-up/${row.id}/publish`, "POST");
+          if (version !== selectedVersion) return;
           el("status").textContent = "Memory Up is now available to the patient and authorized caregivers.";
           await loadPatient();
-        } catch (e) { error(e.message); button.disabled = false; }
+        } catch (e) { if (version === selectedVersion) { error(e.message); button.disabled = false; } }
       });
       card.append(button);
     }
@@ -73,14 +79,21 @@ function render() {
   }
 }
 
-async function loadPatient() {
+async function loadPatient({ resetDraft = false } = {}) {
   const current = ++version;
   const pid = el("patient").value;
   error();
   el("compose").hidden = true;
   el("history").replaceChildren();
-  // Never retain another patient's draft text or selected attachment.
-  el("memory-form").reset();
+  notes = [];
+  loadedPatient = "";
+  el("department").disabled = true;
+  const selectedAppointment = el("appointment").value;
+  // Refresh/publish must not erase unsaved advice. Only clear a draft when
+  // changing patients or after its successful save.
+  const clearDraft = formPatient !== pid || resetDraft;
+  if (clearDraft) el("memory-form").reset();
+  formPatient = pid;
   if (!pid) return;
   try {
     const [nextContext, nextNotes] = await Promise.all([
@@ -91,9 +104,12 @@ async function loadPatient() {
     context = nextContext;
     notes = nextNotes;
     el("appointment").replaceChildren(option("", "Choose the appointment"), ...context.appointments.map((a) => option(a.id, `${a.department} · ${wallTime(a.start)} · ${a.clinician || ""}`)));
+    if (!clearDraft && context.appointments.some((a) => String(a.id) === selectedAppointment)) el("appointment").value = selectedAppointment;
     el("compose").hidden = !context.can_write;
     el("save").disabled = context.appointments.length === 0;
     el("department").replaceChildren(option("", "All available departments"), ...[...new Set(notes.map((n) => n.department))].sort().map((d) => option(d, d)));
+    el("department").disabled = false;
+    loadedPatient = pid;
     render();
   } catch (e) { if (current === version) error(e.message); }
 }
@@ -112,13 +128,13 @@ el("memory-form").addEventListener("submit", async (event) => {
     await api(`/api/memory-up/patients/${encodeURIComponent(pid)}`, "POST", form);
     if (version !== selectedVersion) return;
     el("status").textContent = "Draft saved. The department's doctor can now review and publish it.";
-    await loadPatient();
+    await loadPatient({ resetDraft: true });
   } catch (e) { if (version === selectedVersion) error(e.message); }
-  finally { el("save").disabled = !context?.appointments.length; }
+  finally { if (version === selectedVersion) el("save").disabled = !context?.appointments.length; }
 });
 el("patient").addEventListener("change", () => { el("status").textContent = ""; loadPatient(); });
 el("department").addEventListener("change", render);
-el("refresh").addEventListener("click", loadPatient);
+el("refresh").addEventListener("click", () => loadPatient());
 
 try {
   context = await api("/api/memory-up/context");

@@ -5,7 +5,8 @@ import secrets
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import DateTime, ForeignKey, String, select
+from sqlalchemy import DateTime, ForeignKey, String, select, update
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .config import STORAGE_DIR
@@ -13,7 +14,8 @@ from .db import Base, get_db
 from .encrypted_types import EncryptedText
 from .models import Appointment, Patient
 from .security import append_audit, encrypt_file, identity, read_file, require_patient, visible_ids
-from .services.uploads import validate_file
+from .services.uploads import check_identity, validate_file
+from .services.ocr import extract_text
 from .taxonomy import DEPARTMENTS
 from .timeutil import utcnow
 
@@ -158,6 +160,9 @@ async def create_memory_up(patient_id: str, request: Request, appointment_id: in
         path = MEMORY_DIR / (secrets.token_hex(24) + suffix)
         path.write_bytes(data)
         try:
+            text, _, _ = await run_in_threadpool(extract_text, path, attachment_mime)
+            check_identity(text, db.get(Patient, patient_id), True,
+                           "Department staff confirmed the patient and appointment before upload")
             encrypt_file(path)
         except Exception:
             path.unlink(missing_ok=True)
@@ -190,8 +195,18 @@ def publish_memory_up(note_id: int, request: Request, db=Depends(get_db)):
     visit = db.get(Appointment, row.appointment_id)
     if not visit or visit.status == "cancelled":
         raise HTTPException(409, "The appointment was cancelled; review the record before publishing")
-    row.status, row.approved_by, row.approved_at = "published", user.name, utcnow()
+    if visit.patient_id != row.patient_id or visit.department != row.department:
+        raise HTTPException(409, "The appointment's patient or department changed; create a corrected Memory Up")
+    # Compare-and-set protects against two review requests publishing the same
+    # draft concurrently, including across separate application workers.
+    result = db.execute(update(MemoryUp).where(
+        MemoryUp.id == row.id, MemoryUp.status == "draft",
+    ).values(status="published", approved_by=user.name, approved_at=utcnow()))
+    if result.rowcount != 1:
+        db.rollback()
+        raise HTTPException(409, "This Memory Up has already been published")
     db.commit()
+    db.refresh(row)
     append_audit(db, user, "memory_up_published", row.patient_id, f"Memory Up {row.id}")
     return payload(db, row)
 
