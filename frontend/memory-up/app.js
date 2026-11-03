@@ -54,6 +54,12 @@ function render() {
     body.className = "advice";
     body.textContent = row.advice;
     card.append(heading, meta, badge, body);
+    if (row.document_id) {
+      const filed = document.createElement("a");
+      filed.href = `/?${new URLSearchParams({patient_id: loadedPatient, view: "records", document_id: row.document_id})}`;
+      filed.textContent = "Open reviewed document in records";
+      card.append(filed);
+    }
     if (row.appointment_changed) {
       const changed = document.createElement("p");
       changed.className = "meta";
@@ -89,6 +95,9 @@ function render() {
 async function loadPatient({ resetDraft = false } = {}) {
   const current = ++version;
   const pid = el("patient").value;
+  for (const [id, view] of [["records-link", "records"], ["appointments-link", "day"]]) {
+    el(id).href = `/?${new URLSearchParams({patient_id: pid, view})}`;
+  }
   error();
   el("compose").hidden = true;
   el("history").replaceChildren();
@@ -112,6 +121,8 @@ async function loadPatient({ resetDraft = false } = {}) {
     notes = nextNotes;
     el("appointment").replaceChildren(option("", "Choose the appointment"), ...context.appointments.map((a) => option(a.id, `${a.department} · ${wallTime(a.start)} · ${a.clinician || ""}`)));
     if (!clearDraft && context.appointments.some((a) => String(a.id) === selectedAppointment)) el("appointment").value = selectedAppointment;
+    const entry = new URLSearchParams(location.search);
+    if (clearDraft && entry.get("patient_id") === pid && context.appointments.some((a) => String(a.id) === entry.get("appointment_id"))) el("appointment").value = entry.get("appointment_id");
     el("compose").hidden = !context.can_write;
     el("save").disabled = context.appointments.length === 0;
     el("department").replaceChildren(option("", "All available departments"), ...[...new Set(notes.map((n) => n.department))].sort().map((d) => option(d, d)));
@@ -163,3 +174,4 @@ try {
   el("empty-access").hidden = context.patients.length > 0;
   await loadPatient();
 } catch (e) { error(e.message); el("patient").replaceChildren(option("", "Sign in to view your records")); }
+
