@@ -49,10 +49,13 @@ async function main() {
       if (url.pathname.endsWith('/context')) return route.fulfill({ json: context });
       return route.fulfill({ json: second ? [] : [{ id: 1, title: 'Private first-patient advice',
         advice: 'Synthetic instructions', status: published ? 'published' : 'draft',
-        approved_by: published ? 'Test doctor' : '', department: 'Radiology',
+        approved_by: published ? 'Test doctor' : '', document_id: published ? 42 : null, department: 'Radiology',
         appointment_at: '2040-01-02T10:00:00', doctor: 'Test doctor' }] });
     });
-    await page.goto(`http://127.0.0.1:${server.address().port}/memory-up`);
+    await page.goto(`http://127.0.0.1:${server.address().port}/memory-up?patient_id=TEST-1&appointment_id=1`);
+    await page.locator('#compose').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#appointment').inputValue(), '1');
+    assert.match(await page.locator('#records-link').getAttribute('href'), /patient_id=TEST-1&view=records/);
     await page.locator('#appointment').selectOption('1');
     await page.locator('#advice').fill('Unsaved appointment notes');
     await page.locator('#file').setInputFiles({ name: 'visit.txt', mimeType: 'text/plain', buffer: Buffer.from('Synthetic advice') });
@@ -63,6 +66,7 @@ async function main() {
     assert.equal(await page.locator('#file').evaluate(node => node.files.length), 1);
     await page.getByText('I reviewed this advice · publish for patient').click();
     await page.getByText('Reviewed by Test doctor').waitFor();
+    assert.equal(await page.getByText('Open reviewed document in records').getAttribute('href'), '/?patient_id=TEST-1&view=records&document_id=42');
     assert.equal(await page.locator('#advice').inputValue(), 'Unsaved appointment notes');
 
     invalidUpload = true;
@@ -100,3 +104,4 @@ async function main() {
   }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
+
