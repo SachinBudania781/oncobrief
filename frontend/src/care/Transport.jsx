@@ -70,6 +70,18 @@ function TransportWorkspace({ pid, user, active = true }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const appliedEntry = useRef(false);
+  useEffect(() => {
+    if (appliedEntry.current || !appointments.data || !calendar.data?.hospital_now) return;
+    appliedEntry.current = true;
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("patient_id") !== pid) return;
+    const visit = appointments.data.find((item) => String(item.id) === query.get("appointment_id"));
+    if (visit) {
+      setAppointmentId(String(visit.id));
+      setPickupAt(defaultPickup(visit, calendar.data.hospital_now));
+    }
+  }, [appointments.data, calendar.data, pid]);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -336,4 +348,5 @@ function CoordinatorCard({ item, onUpdate }) {
     </article>
   );
 }
+
 
