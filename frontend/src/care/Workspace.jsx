@@ -49,6 +49,7 @@ import {
   ApprovalQueue,
   ClinicalChart,
   SmartInbox,
+  PatientCheckInHistory,
 } from "./ClinicalTools";
 import {
   CareChat,
@@ -77,6 +78,7 @@ import "./interface.css";
 const NAV = [
   ["home", "Overview", Home, "profile"],
   ["checkin", "Daily check-in", HeartPulse, "checkin"],
+  ["patientCheckins", "Patient check-ins", ClipboardList, "doctor"],
   ["companion", "AI Chat", MessageCircle, "documents"],
   ["medicines", "Medicines & requests", Pill, "medicines"],
   ["clinical", "Care journey", Stethoscope, "documents"],
@@ -111,9 +113,12 @@ function CareSpace() {
     patients = useResource("/patients"),
     calendar = useResource("/taxonomy"),
     notes = useResource("/v2/notifications", 15000);
-  const [pid, setPid] = useState(user.patient_ids[0] || ""),
-    [tab, setTab] = useState("home"),
-    [docId, setDocId] = useState(null),
+  const entry = new URLSearchParams(window.location.search);
+  const requestedPatient = entry.get("patient_id");
+  const allowedEntry = user.patient_ids.includes(requestedPatient);
+  const [pid, setPid] = useState(allowedEntry ? requestedPatient : user.patient_ids[0] || ""),
+    [tab, setTab] = useState(allowedEntry ? entry.get("view") || "home" : "home"),
+    [docId, setDocId] = useState(allowedEntry && /^\d+$/.test(entry.get("document_id") || "") ? Number(entry.get("document_id")) : null),
     [language, setLanguage] = useState("en"),
     [menu, setMenu] = useState(false),
     [showNotifications, setShowNotifications] = useState(false),
@@ -178,12 +183,20 @@ function CareSpace() {
   };
   const nav = NAV.filter(
     (n) =>
-      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])) && (n[0] !== "wearables" || ["patient", "caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(user.role)) &&
+      can(n[3]) && (user.role !== "doctor" || n[0] !== "checkin") && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])) && (n[0] !== "wearables" || ["patient", "caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(user.role)) &&
       (n[0] !== "transport" || ["patient", "caregiver", "frontdesk", "navigator", "nurse", "admin"].includes(user.role)),
   );
   useEffect(() => {
     if (!nav.some((n) => n[0] === tab)) setTab("home");
   }, [pid]);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("patient_id", pid);
+    url.searchParams.set("view", tab);
+    url.searchParams.delete("document_id");
+    if (tab !== "transport") url.searchParams.delete("appointment_id");
+    window.history.replaceState(null, "", url);
+  }, [pid, tab]);
   useEffect(() => {
     if (patient?.preferred_language) setLanguage(patient.preferred_language);
   }, [patient?.id]);
@@ -411,6 +424,9 @@ function CareSpace() {
                     <Panel title="Prefer to speak?"><p className="muted small">A voice-guided check-in, at your pace.</p><button className="btn" onClick={() => setPhoneCheckin(true)}>Open voice check-in <ArrowUpRight size={16} /></button></Panel>
                   </div>
                 </div>
+              )}
+              {tab === "patientCheckins" && user.role === "doctor" && (
+                <PatientCheckInHistory pid={pid} />
               )}
               {tab === "companion" && (
                 <AIAssistantWidget
@@ -858,3 +874,4 @@ export function SharedCard() {
     </div>
   );
 }
+
