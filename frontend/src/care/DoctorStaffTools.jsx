@@ -136,7 +136,7 @@ export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords }) 
         </div>
       </div>
 
-      <MemoryUpLink pid={pid} />
+      <MemoryUpLink pid={pid} appointmentId={selectedAppointment?.id} />
 
       {brief && <Panel title="Visit brief" hint="Each item includes a source link where the record supports it." action={<span className="care-inline-meta"><CheckCircle2 size={15} /> Ready for review</span>}><Brief data={brief} onOpen={onOpen} /></Panel>}
     </div>
@@ -170,3 +170,4 @@ export function StaffActivity({ user, onOpen }) {
     </div>
   );
 }
+
