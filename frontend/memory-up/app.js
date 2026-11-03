@@ -4,6 +4,7 @@ let notes = [];
 let version = 0;
 let formPatient = "";
 let loadedPatient = "";
+let saving = false;
 const error = (message = "") => { el("error").textContent = message; el("error").hidden = !message; };
 
 async function api(path, method = "GET", body) {
@@ -122,6 +123,7 @@ async function loadPatient({ resetDraft = false } = {}) {
 
 el("memory-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (saving) return;
   error();
   const pid = el("patient").value;
   const selectedVersion = version;
@@ -129,14 +131,24 @@ el("memory-form").addEventListener("submit", async (event) => {
   const file = el("file").files[0];
   if (!form.get("advice").trim() && !file) { error("Write the appointment advice or choose a document."); return; }
   if (!file) form.delete("file");
-  el("save").disabled = true;
+  saving = true;
+  // Keep the submitted draft stable until the server responds. A refresh could
+  // otherwise re-enable Save, and edits made during upload would be discarded.
+  const controls = [...document.querySelectorAll("input, textarea, select, button")];
+  const disabledBefore = controls.map((control) => control.disabled);
+  controls.forEach((control) => { control.disabled = true; });
   try {
     await api(`/api/memory-up/patients/${encodeURIComponent(pid)}`, "POST", form);
     if (version !== selectedVersion) return;
     el("status").textContent = "Draft saved. The department's doctor can now review and publish it.";
     await loadPatient({ resetDraft: true });
   } catch (e) { if (version === selectedVersion) error(e.message); }
-  finally { if (version === selectedVersion) el("save").disabled = !context?.appointments.length; }
+  finally {
+    saving = false;
+    controls.forEach((control, index) => { control.disabled = disabledBefore[index]; });
+    el("save").disabled = loadedPatient !== el("patient").value || !context?.appointments.length;
+    el("department").disabled = loadedPatient !== el("patient").value;
+  }
 });
 el("patient").addEventListener("change", () => { el("status").textContent = ""; loadPatient(); });
 el("department").addEventListener("change", render);
