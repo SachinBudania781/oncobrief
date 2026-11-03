@@ -2,6 +2,7 @@
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Memory Up · OncoBrief</title><link rel="stylesheet" href="/memory-up-assets/style.css"><script type="module" src="/memory-up-assets/app.js"></script></head>
 <body><header><a href="/">OncoBrief</a><span id="identity">Your appointment notebook</span></header>
 <main><section class="intro"><span class="eyebrow">DOCUMENTS · APPOINTMENT ADVICE</span><h1>Memory Up</h1><p>Keep what your doctor suggested in one place. Return to the right department, appointment and advice whenever you need it.</p></section>
+<nav aria-label="Related care screens"><a id="records-link" href="/">Reports & uploads</a> · <a id="appointments-link" href="/">Hospital day pass</a></nav>
 <p id="error" role="alert" hidden></p><p id="status" role="status"></p>
 <section class="panel"><label for="patient">Patient record</label><select id="patient"><option value="">Loading your records…</option></select><p id="empty-access" hidden>No patient document access is available for this account. Ask the care team to check your assigned access.</p></section>
 <section id="compose" class="panel" hidden><h2>Add a Memory Up</h2><p>Save the doctor's actual appointment advice or attach the original document. A doctor from the department reviews it before the patient can read it.</p>
@@ -13,3 +14,4 @@
 <button id="save" type="submit">Save for doctor review</button></form></section>
 <section class="panel"><div class="section-head"><h2 id="history-title">Your Memory Up documents</h2><button id="refresh" type="button">Refresh</button></div><label for="department">Filter by department</label><select id="department"><option value="">All available departments</option></select><div id="history" aria-live="polite"></div></section>
 <footer>Memory Up preserves appointment instructions from your care team. If a note is unclear, ask the department before acting on it.</footer></main></body></html>
+
