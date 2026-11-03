@@ -12,6 +12,7 @@ import { request, useResource, dateTime } from "./client";
 import { Action, Empty, Error, Load, Panel, Status } from "./UI";
 import UploadForm from "../components/UploadForm";
 import Records from "../apps/doctor/Records";
+import MemoryUpLink from "./MemoryUpLink";
 
 export function RecordsDesk({ pid, user, onOpen }) {
   const taxonomy = useResource("/taxonomy"),
@@ -22,6 +23,7 @@ export function RecordsDesk({ pid, user, onOpen }) {
   const staffUpload = ["doctor", "nurse", "lab", "admin"].includes(user.role);
   return (
     <div className="stack">
+      <MemoryUpLink pid={pid} />
       <Panel
         title="Original records"
         hint="Every explanation can be checked against the original document. Access is logged and files are watermarked."
@@ -313,7 +315,7 @@ export function DayPass({ pid, user }) {
           className="input"
           type="date"
           aria-label="Hospital day"
-          value={day || d.date}
+          value={day || resource.data?.date || taxonomy.data?.hospital_today || ""}
           onChange={(e) => setDay(e.target.value)}
         />
         <Load resource={resource}>
@@ -347,6 +349,10 @@ export function DayPass({ pid, user }) {
                         <p>{s.virtual_visit ? "Video consultation" : s.room} · {String(s.start).slice(11, 16)}–{String(s.end).slice(11, 16)}</p>
                         <p className="small muted">Faculty · {s.clinician || "Assignment pending"}</p>
                         <Status value={s.status} />
+                        <div className="row wrap">
+                          <MemoryUpLink pid={pid} appointmentId={s.id} />
+                          {!s.virtual_visit && ["patient", "caregiver"].includes(user.role) && <a className="btn" href={`/?patient_id=${encodeURIComponent(pid)}&view=transport&appointment_id=${s.id}`}>Arrange transport</a>}
+                        </div>
                         {s.virtual_visit && <div className="ob-meet-card">
                           <div className="row wrap"><Video size={17} /><b>Google Meet · {s.virtual_visit.clinician_type}</b><Status value={s.virtual_visit.status} /></div>
                           {s.virtual_visit.status === "scheduled" && s.virtual_visit.meeting_url ? <a className="btn primary" href={s.virtual_visit.meeting_url} target="_blank" rel="noopener noreferrer">Join video consultation</a> : <p className="small muted">The hospital team will add the meeting link. Check this appointment again before your visit.</p>}
@@ -1130,3 +1136,4 @@ function PackedSchedule({ day, user, onDone }) {
     </Panel>
   );
 }
+
