@@ -24,6 +24,10 @@ async function main() {
     let denySecond = false;
     let invalidUpload = false;
     let published = false;
+    let releaseUpload;
+    let uploadStarted;
+    let holdUpload = false;
+    let uploadCount = 0;
     const context = {
       user: { name: 'Test doctor', role: 'doctor', department: 'Radiology' },
       patients: [{ id: 'TEST-1', name: 'Synthetic one' }, { id: 'TEST-2', name: 'Synthetic two' }],
@@ -35,6 +39,11 @@ async function main() {
       const second = url.searchParams.get('patient_id') === 'TEST-2' || url.pathname.endsWith('/TEST-2');
       if (second && denySecond) return route.fulfill({ status: 403, json: { detail: 'Access revoked' } });
       if (url.pathname.endsWith('/publish')) { published = true; return route.fulfill({ json: {} }); }
+      if (route.request().method() === 'POST' && holdUpload) {
+        uploadCount++;
+        uploadStarted();
+        await new Promise(resolve => { releaseUpload = resolve; });
+      }
       if (route.request().method() === 'POST' && invalidUpload)
         return route.fulfill({ status: 422, json: { detail: [{ msg: 'Field required: appointment' }] } });
       if (url.pathname.endsWith('/context')) return route.fulfill({ json: context });
@@ -58,9 +67,21 @@ async function main() {
 
     invalidUpload = true;
     await page.locator('[name=identity_confirmed]').check();
+    holdUpload = true;
+    const started = new Promise(resolve => { uploadStarted = resolve; });
     await page.locator('#save').click();
+    await started;
+    for (const selector of ['#save', '#refresh', '#patient', '#advice', '#file']) {
+      assert.equal(await page.locator(selector).isDisabled(), true, selector);
+    }
+    await page.locator('#memory-form').dispatchEvent('submit');
+    assert.equal(uploadCount, 1);
+    holdUpload = false;
+    releaseUpload();
     await page.getByText('Field required: appointment', { exact: true }).waitFor();
     assert.equal(await page.locator('#advice').inputValue(), 'Unsaved appointment notes');
+    assert.equal(await page.locator('#advice').isDisabled(), false);
+    assert.equal(await page.locator('#refresh').isDisabled(), false);
 
     denySecond = true;
     await page.locator('#patient').selectOption('TEST-2');
