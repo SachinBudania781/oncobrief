@@ -137,6 +137,66 @@ export function AlertConsole({ onSelect }) {
   );
 }
 
+export function PatientCheckInHistory({ pid }) {
+  const history = useResource(
+    pid ? `/v2/patients/${encodeURIComponent(pid)}/records?kind=checkin` : null,
+    30000,
+  );
+  const symptoms = ["nausea", "pain", "fatigue", "appetite", "breathing"];
+  return (
+    <Panel
+      title="Patient daily check-ins"
+      hint="Review symptoms and notes submitted by the patient or caregiver. New check-ins appear automatically."
+    >
+      <Load resource={history}>
+        {(items) => {
+          const checkins = (Array.isArray(items) ? items : [])
+            .filter((item) => item?.kind === "checkin" && item.data)
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          if (!checkins.length)
+            return <Empty>No patient check-ins have been submitted for this patient.</Empty>;
+          return (
+            <div className="stack">
+              {checkins.map((item) => (
+                <article className="care-record" key={item.id}>
+                  <div className="row wrap">
+                    <b>{dateTime(item.created_at)}</b>
+                    <span className="spacer" />
+                    <span className="small muted">
+                      Submitted by {item.author_name || item.data.reported_by || "patient"}
+                      {item.author_role ? ` · ${nice(item.author_role)}` : ""}
+                    </span>
+                  </div>
+                  <div className="grid2" style={{ marginTop: 12 }}>
+                    {symptoms.map((key) => (
+                      <p className="small" key={key}>
+                        <b>{nice(key)}:</b> {item.data[key] ?? 0}/4
+                      </p>
+                    ))}
+                    <p className="small">
+                      <b>Distress:</b> {item.data.distress ?? 0}/10
+                    </p>
+                    {item.data.temperature != null && (
+                      <p className="small">
+                        <b>Temperature:</b> {item.data.temperature} °C
+                      </p>
+                    )}
+                  </div>
+                  {item.data.text?.trim() && (
+                    <p className="small" style={{ whiteSpace: "pre-wrap" }}>
+                      <b>Patient note:</b> {item.data.text}
+                    </p>
+                  )}
+                </article>
+              ))}
+            </div>
+          );
+        }}
+      </Load>
+    </Panel>
+  );
+}
+
 export function ApprovalQueue({ pid, onUpdate }) {
   const resource = useResource(`/v2/patients/${pid}/approvals`, 12000);
   return (
@@ -914,3 +974,4 @@ function JourneyReplay({ events, progress, onOpen }) {
     </div>
   );
 }
+
