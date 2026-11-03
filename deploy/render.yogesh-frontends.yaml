@@ -20,6 +20,11 @@
       "routes": [
         {
           "type": "rewrite",
+          "source": "/memory-up-assets/*",
+          "destination": "https://oncobrief-round2-api-vane.onrender.com/memory-up-assets/*"
+        },
+        {
+          "type": "rewrite",
           "source": "/memory-up",
           "destination": "https://oncobrief-round2-api-vane.onrender.com/memory-up"
         },
@@ -122,6 +127,11 @@
       "routes": [
         {
           "type": "rewrite",
+          "source": "/memory-up-assets/*",
+          "destination": "https://oncobrief-round2-api-vane.onrender.com/memory-up-assets/*"
+        },
+        {
+          "type": "rewrite",
           "source": "/memory-up",
           "destination": "https://oncobrief-round2-api-vane.onrender.com/memory-up"
         },
@@ -222,6 +232,11 @@
         }
       ],
       "routes": [
+        {
+          "type": "rewrite",
+          "source": "/memory-up-assets/*",
+          "destination": "https://oncobrief-round2-api-vane.onrender.com/memory-up-assets/*"
+        },
         {
           "type": "rewrite",
           "source": "/memory-up",
