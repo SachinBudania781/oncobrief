@@ -191,8 +191,8 @@ export default function Wearables(props) {
   return <WearableWorkspace key={props.pid} {...props} />;
 }
 
-function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMetric = "steps", focusRevision = 0 }) {
-  const [days, setDays] = useState(30);
+function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMetric = "steps", focusRevision = 0, initialDays = 30, embedded = false }) {
+  const [days, setDays] = useState(initialDays);
   const resource = useResource("/v2/patients/" + encodeURIComponent(pid) + "/wearables?days=" + days, 30000);
   const deviceResource = useResource(
     ["patient", "caregiver"].includes(viewerRole)
@@ -207,6 +207,7 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
   const canReviewActivity = ["caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(viewerRole);
   const activityThreshold = resource.data?.activity_threshold_steps;
   const [metric, setMetric] = useState(viewerRole === "patient" ? "heart_rate" : "steps");
+  const [selectedReading, setSelectedReading] = useState(null);
   useEffect(() => {
     if (focusRevision && (!isPatient || !ACTIVITY_METRICS.has(focusMetric))) setMetric(focusMetric);
   }, [focusMetric, focusRevision, isPatient]);
@@ -523,8 +524,8 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
     <div className="ob-wearables">
       <header className="ob-wear-head">
         <div>
-          <p className="ob-wear-eyebrow">YOUR WELLBEING, OVER TIME</p>
-          <h1>Wearables & trends</h1>
+          <p className="ob-wear-eyebrow">{embedded ? "CLINICAL TREND REVIEW" : "YOUR WELLBEING, OVER TIME"}</p>
+          <h1>{embedded ? "Connected vitals & activity" : "Wearables & trends"}</h1>
           <p>{isPatient ? "Keep your supported health readings together to discuss with your care team." : "Bring supported health readings and daily activity together in one view."}</p>
         </div>
         <div className={"ob-wear-device-state " + (connected ? "is-connected" : "")}>
@@ -620,13 +621,13 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
         <div className="ob-wear-chart-tools">
           <label className="field">
             Measure
-            <select className="select" value={metric} onChange={(event) => setMetric(event.target.value)}>
+            <select className="select" value={metric} onChange={(event) => { setMetric(event.target.value); setSelectedReading(null); }}>
               {availableMetrics.map(([key, info]) => <option key={key} value={key}>{info.label}</option>)}
             </select>
           </label>
           <label className="field">
             Time range
-            <select className="select" value={days} onChange={(event) => setDays(Number(event.target.value))}>
+            <select className="select" value={days} onChange={(event) => { setDays(Number(event.target.value)); setSelectedReading(null); }}>
               {RANGE_OPTIONS.map((value) => <option key={value} value={value}>{value === 365 ? "1 year" : value + " days"}</option>)}
             </select>
           </label>
@@ -645,7 +646,7 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
         ) : chartRows.length ? (
           <div className="ob-wear-chart">
             <ResponsiveContainer width="100%" height={280}>
-              <AreaChart data={chartRows} margin={{ top: 12, right: 10, left: 0, bottom: 3 }}>
+              <AreaChart data={chartRows} margin={{ top: 12, right: 10, left: 0, bottom: 3 }} onClick={(event) => { const point = event?.activePayload?.[0]?.payload; if (point) setSelectedReading(point); }}>
                 <defs>
                   <linearGradient id="wearableTrendFill" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor={METRICS[metric].color} stopOpacity={0.22} />
@@ -701,13 +702,26 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
                   activeDot={false}
                   isAnimationActive={false}
                 />}
-                <Area type="monotone" dataKey="value" stroke={METRICS[metric].color} strokeWidth={2.5} fill="url(#wearableTrendFill)" activeDot={{ r: 5, strokeWidth: 0 }} dot={chartRows.length < 18 ? { r: 2.5, strokeWidth: 0 } : false} />
+                <Area
+                  type="monotone"
+                  dataKey="value"
+                  stroke={METRICS[metric].color}
+                  strokeWidth={2.5}
+                  fill="url(#wearableTrendFill)"
+                  activeDot={{ r: 5, strokeWidth: 0 }}
+                  dot={(point) => {
+                    const belowReviewLine = reviewLine != null && Number(point.payload.value) < Number(reviewLine);
+                    if (!belowReviewLine && chartRows.length >= 18) return null;
+                    return <circle cx={point.cx} cy={point.cy} r={belowReviewLine ? 5 : 2.5} fill={belowReviewLine ? "#c84f55" : METRICS[metric].color} stroke="white" strokeWidth={belowReviewLine ? 2 : 0} style={{ cursor: "pointer" }} onClick={() => setSelectedReading(point.payload)} />;
+                  }}
+                />
               </AreaChart>
             </ResponsiveContainer>
           </div>
         ) : (
           <div className="ob-wear-empty"><Activity size={24} /><b>No readings in this time range yet</b><span>Connect a supported sensor or enter daily activity below.</span></div>
         )}
+        {selectedReading && <div className="care-notice"><b>{METRICS[metric].label}: {Number(selectedReading.value).toLocaleString("en-IN")} {METRICS[metric].unit}</b><p>{new Date(selectedReading.observed_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })} · {selectedReading.aggregated ? `${selectedReading.sample_count} readings summarized` : (selectedReading.source || "recorded reading")}{selectedReading.device_name ? ` · ${selectedReading.device_name}` : ""}</p>{selectedReading.aggregated && <p className="small">Range in this interval: {selectedReading.min_value}–{selectedReading.max_value} {METRICS[metric].unit}.</p>}{reviewLine != null && Number(selectedReading.value) < Number(reviewLine) && <p className="small">Below the configured review line of {Number(reviewLine).toLocaleString("en-IN")} {METRICS[metric].unit}.</p>}</div>}
         {liveValues[metric] && <p className="ob-wear-live-line"><span className="ob-wear-live-pulse" />Live {METRICS[metric].label.toLowerCase()}: <b>{liveValues[metric].value} {liveValues[metric].unit}</b></p>}
       </Panel>
 
