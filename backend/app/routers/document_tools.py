@@ -13,6 +13,7 @@ from ..config import DATA_DIR, STORAGE_DIR
 from ..db import get_db
 from ..models import Document, Medication, Patient
 from ..round2_models import BulkImport, CareRecord, DocumentOwner
+from ..schemas import PatientDocumentExplanation, PatientGuidanceNote, PatientRedFlag, UrgentAction
 from ..security import append_audit, encrypt_file, identity, read_file, require_patient, roles
 from ..services.ocr import extract_text
 from ..services.uploads import check_identity, validate_file
@@ -22,6 +23,58 @@ from .documents import store_document
 from .round2 import patient_access, serial
 
 router = APIRouter(prefix="/api/v2", tags=["document intelligence"])
+
+
+def _patient_guidance_note(doc, result, language):
+    labels = {
+        "en": {
+            "meaning": "These are findings recorded on this report. They do not by themselves decide what treatment you need. Your oncology team can explain how they fit your care.",
+            "flags": [
+                ("Fever during cancer treatment", UrgentAction.ONCOLOGY_TEAM_NOW),
+                ("Severe difficulty breathing", UrgentAction.EMERGENCY_DEPARTMENT_NOW),
+                ("Severe chest pain", UrgentAction.EMERGENCY_DEPARTMENT_NOW),
+                ("Heavy or uncontrolled bleeding", UrgentAction.EMERGENCY_DEPARTMENT_NOW),
+            ],
+        },
+        "hi": {
+            "meaning": "ये इस रिपोर्ट में दर्ज निष्कर्ष हैं। इनसे अकेले यह तय नहीं होता कि आपको कौन-सा इलाज चाहिए। आपकी देखभाल टीम समझा सकती है कि ये आपकी देखभाल से कैसे जुड़े हैं।",
+            "flags": [
+                ("कैंसर के इलाज के दौरान बुखार", UrgentAction.ONCOLOGY_TEAM_NOW),
+                ("साँस लेने में गंभीर कठिनाई", UrgentAction.EMERGENCY_DEPARTMENT_NOW),
+                ("सीने में तेज़ दर्द", UrgentAction.EMERGENCY_DEPARTMENT_NOW),
+                ("बहुत अधिक या न रुकने वाला रक्तस्राव", UrgentAction.EMERGENCY_DEPARTMENT_NOW),
+            ],
+        },
+        "mr": {
+            "meaning": "हे या अहवालात नोंदवलेले निष्कर्ष आहेत. यावरून एकट्याने कोणता उपचार घ्यायचा हे ठरत नाही. हे तुमच्या उपचाराशी कसे संबंधित आहेत ते तुमचे उपचार पथक समजावू शकते.",
+            "flags": [
+                ("कर्करोगाच्या उपचारादरम्यान ताप", UrgentAction.ONCOLOGY_TEAM_NOW),
+                ("श्वास घेण्यास तीव्र त्रास", UrgentAction.EMERGENCY_DEPARTMENT_NOW),
+                ("छातीत तीव्र वेदना", UrgentAction.EMERGENCY_DEPARTMENT_NOW),
+                ("खूप जास्त किंवा न थांबणारा रक्तस्राव", UrgentAction.EMERGENCY_DEPARTMENT_NOW),
+            ],
+        },
+    }
+    words = labels[language]
+    paragraphs = [item.get("text", "").strip() for item in result.get("explanation", []) if item.get("text", "").strip()]
+    excerpt = " ".join(paragraphs) or "The uploaded report is available above. Please review the original with your care team."
+    summary = f"This {doc.category.lower()} report records: {excerpt}" if language == "en" else (
+        f"यह {doc.category} रिपोर्ट दर्ज करती है: {excerpt}" if language == "hi" else
+        f"या {doc.category} अहवालात नोंद आहे: {excerpt}")
+    note = PatientGuidanceNote.model_validate({
+        "audience": "patient_and_caregiver",
+        "language": language,
+        "simplified_diagnosis": summary[:4000],
+        "what_this_means": words["meaning"],
+        "what_to_ask_your_doctor": result.get("questions") or [
+            "What does this report mean for my care?",
+            "Is any part of this report unclear or missing?",
+            "What should I report to my care team?",
+        ],
+        "emergency_red_flags": [PatientRedFlag(symptom=symptom, action=action).model_dump(mode="json")
+                                for symptom, action in words["flags"]],
+    })
+    return note.model_dump(mode="json")
 
 
 @router.post("/patients/{patient_id}/voice-reminder")
@@ -113,8 +166,8 @@ async def medicine_scan(patient_id: str, request: Request, file: UploadFile = Fi
     return serial(row) | {"message": "Compare against the signed prescription. Record a dose only after you actually take it.", "auto_taken": False}
 
 
-@router.get("/documents/{document_id}/explain")
-@router.post("/documents/{document_id}/explain")
+@router.get("/documents/{document_id}/explain", response_model=PatientDocumentExplanation)
+@router.post("/documents/{document_id}/explain", response_model=PatientDocumentExplanation)
 def explain(document_id: int, request: Request, language: Literal["en", "hi", "mr"] = "en", db=Depends(get_db)):
     doc = db.get(Document, document_id)
     if not doc:
@@ -156,6 +209,7 @@ def explain(document_id: int, request: Request, language: Literal["en", "hi", "m
                     "hi": ["मेरी उपचार योजना में इस नतीजे का क्या अर्थ है?", "क्या जाँच दोबारा करानी है?", "कौन से लक्षण अपनी टीम को बताऊँ?"],
                     "mr": ["माझ्या उपचार योजनेसाठी या निकालाचा अर्थ काय आहे?", "ही तपासणी पुन्हा करावी लागेल का?", "कोणती लक्षणे उपचार पथकाला सांगावीत?"],
                 }[language]
+    result["patient_guidance"] = _patient_guidance_note(doc, result, result["language"])
     return result
 
 
@@ -260,3 +314,4 @@ def confirm_bulk(import_id: int, body: BulkConfirm, request: Request, db=Depends
     (DATA_DIR / row.file_path).unlink(missing_ok=True)
     append_audit(db, user, "confirm_bulk_filing", p.id, ",".join(map(str, saved)))
     return {"documents": saved, "status": "filed"}
+
