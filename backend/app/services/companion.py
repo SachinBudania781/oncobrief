@@ -3,7 +3,7 @@ from ..timeutil import utcnow
 import re
 from datetime import datetime, timedelta
 from sqlalchemy import select
-from ..schemas import RedFlagAssessment
+from ..schemas import PatientChatResult, PatientExplanationParagraph, RedFlagAssessment
 from ..models import Activity, Appointment, Document, LabValue, Medication, MedLog, Patient, SymptomReport
 from ..round2_models import AccessGrant, Alert, Approval, CareRecord, LibraryItem, Notification, User
 from .retrieval import question_documents
@@ -170,8 +170,8 @@ def living_summary(db, pid, include_notes=True, include_checkins=True, include_m
     return {"text": text, "sources": sources, "latest_labs": list(latest.values()), "updated_at": row.updated_at}
 
 
-def answer(db, pid, question, language="en", clinical_user=False, allow_notes=True,
-           conversation_id="", user_id=None, user_role="patient"):
+def _answer_unvalidated(db, pid, question, language="en", clinical_user=False, allow_notes=True,
+                        conversation_id="", user_id=None, user_role="patient"):
     p = db.get(Patient, pid)
     history = []
     if conversation_id and user_id is not None:
@@ -286,6 +286,80 @@ def answer(db, pid, question, language="en", clinical_user=False, allow_notes=Tr
     return {"level": 0, "answer": prefix + "\n\n" + "\n\n".join(lines), "sources": sources,
             "model": "records", "generation": "extractive", "language": "en",
             "translation": "Original report language. Use configured translation for a translated transcript." if language != "en" else None}
+
+
+
+def _validated_chat_result(raw, requested_language):
+    """Normalize every rule, retrieval, and AI branch to the strict chat contract."""
+    raw_language = raw.get("language")
+    language = raw_language if raw_language in {"en", "hi", "mr"} else requested_language
+    if language not in {"en", "hi", "mr"}:
+        language = "en"
+    answer_text = raw.get("answer", "")
+    if isinstance(answer_text, dict):
+        answer_text = answer_text.get(language) or answer_text.get("en") or next(iter(answer_text.values()), "")
+    answer_text = str(answer_text).strip()
+    if not answer_text:
+        answer_text = "I could not prepare an answer. Please contact your care team."
+
+    sources = []
+    for source in raw.get("sources") or []:
+        if isinstance(source, str):
+            source = {"tag": source, "title": source}
+        if not isinstance(source, dict):
+            continue
+        title = str(source.get("title") or source.get("tag") or "Care record").strip()
+        item = {"title": title[:1000]}
+        for key in ("tag", "id", "record_id", "url"):
+            value = source.get(key)
+            if value is not None and (key != "url" or isinstance(value, str)):
+                item[key] = value
+        sources.append(item)
+        if len(sources) == 20:
+            break
+
+    source_tags = {item.get("tag") for item in sources if item.get("tag")}
+    citations = []
+    for citation in raw.get("citations") or []:
+        if not isinstance(citation, dict):
+            continue
+        cited_tags = [tag for tag in (citation.get("sources") or [])
+                      if isinstance(tag, str) and tag in source_tags]
+        if not cited_tags:
+            continue
+        try:
+            parsed = PatientExplanationParagraph.model_validate({
+                "text": citation.get("text"),
+                "sources": list(dict.fromkeys(cited_tags)),
+            })
+        except Exception:
+            continue
+        citations.append(parsed.model_dump())
+        if len(citations) == 6:
+            break
+
+    payload = {
+        "language": language,
+        "level": raw.get("level", 0),
+        "answer": answer_text[:1800],
+        "sources": sources,
+        "citations": citations,
+        "generation": str(raw.get("generation") or "records")[:1000],
+    }
+    for key in ("model", "instruction", "alert_id", "request_id", "translation"):
+        if raw.get(key) is not None:
+            payload[key] = raw[key]
+    if payload["level"] == 3 and not payload.get("instruction"):
+        payload["instruction"] = payload["answer"]
+    return PatientChatResult.model_validate(payload).model_dump(exclude_none=True)
+
+
+def answer(db, pid, question, language="en", clinical_user=False, allow_notes=True,
+           conversation_id="", user_id=None, user_role="patient"):
+    """Return a stable Pydantic-validated response for every chat outcome."""
+    raw = _answer_unvalidated(db, pid, question, language, clinical_user, allow_notes,
+                              conversation_id, user_id, user_role)
+    return _validated_chat_result(raw, language)
 
 
 def command_centre(db, ids):
