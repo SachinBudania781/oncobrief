@@ -142,7 +142,7 @@ export function Journal({
   );
 }
 
-export function CareChat({ pid }) {
+export function CareChat({ pid, user }) {
   const resource = useResource(`/v2/patients/${pid}/chat`, 8000);
   const [text, setText] = useState(""),
     [error, setError] = useState(""),
@@ -153,29 +153,23 @@ export function CareChat({ pid }) {
     setInstruction("");
   }, [pid]);
   return (
-    <div className="care-columns">
-      <Panel
-        title="Your care circle chat"
-        hint="Patient, invited family and assigned care team share this conversation."
-      >
+    <div className="care-chat-shell">
+      <Panel title="Care circle" hint="Patient, invited family and assigned care team share this conversation.">
+        <div className="ob-chat-heading"><span className="ob-chat-avatar">♡</span><div><b>Care team conversation</b><small>Messages refresh automatically</small></div></div>
         <Load resource={resource}>
           {(d) => (
             <div className="care-chat-log">
               {d.messages.length ? (
                 d.messages.map((m) => (
-                  <article className="care-message" key={m.id}>
-                    <div className="row">
-                      <b>{m.author_name}</b>
-                      <Status value={m.author_role} />
-                      <span className="spacer" />
-                      <small className="muted">{dateTime(m.created_at)}</small>
-                    </div>
-                    <p className="care-pre">{m.data.text}</p>
+                  <article className={`ob-chat-row ${m.author_id === user?.id ? "own" : ""}`} key={m.id}>
+                    <div className="ob-chat-bubble">
+                      <b>{m.author_name} <small>{nice(m.author_role)}</small></b>
+                      <p>{m.data.text}</p>
+                      <time>{dateTime(m.created_at)}</time>
                     {m.data.urgency >= 2 && (
-                      <span className="care-status status-emergency">
-                        Flagged for triage
-                      </span>
+                      <span className="care-status status-emergency">Flagged for triage</span>
                     )}
+                    </div>
                   </article>
                 ))
               ) : (
@@ -185,7 +179,7 @@ export function CareChat({ pid }) {
           )}
         </Load>
         <form
-          className="stack"
+          className="ob-chat-composer"
           onSubmit={async (e) => {
             e.preventDefault();
             setBusy(true);
@@ -205,19 +199,16 @@ export function CareChat({ pid }) {
           }}
         >
           <label className="field">
-            Message
+            <span className="sr-only">Message</span>
             <textarea
               className="input"
-              rows={3}
+              rows={2}
               required
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
           </label>
-          <Voice onText={(v) => setText((t) => `${t} ${v}`)} />
-          <button className="btn primary" disabled={busy}>
-            Send to care circle
-          </button>
+          <div className="row wrap"><Voice onText={(v) => setText((t) => `${t} ${v}`)} /><button className="btn primary" disabled={busy || !text.trim()}>{busy ? "Sending…" : "Send message"}</button></div>
           <Error message={error} />
           {instruction && (
             <p className="care-emergency" role="alert">
@@ -1176,3 +1167,4 @@ function PrivacyRequests() {
     </Panel>
   );
 }
+
