@@ -50,6 +50,33 @@ export default function Brief({ data, onOpen }) {
         <span>Written by {data.model}</span>
       </div>
 
+      {data.synoptic && (
+        <section className="panel summary" aria-label="Structured tumor board synoptic brief">
+          <div className="panel-head"><h2>Structured tumor board brief</h2>
+            <span className={`chip ${data.synoptic.guideline_source_status === 'verified' ? 'ok' : 'warning'}`}>
+              {data.synoptic.guideline_source_status === 'verified' ? 'NCG source verified' : 'NCG source not loaded'}
+            </span>
+          </div>
+          <ol>{data.synoptic.clinical_summary.map((line, i) => <li key={i}>{line}</li>)}</ol>
+          <p>{data.synoptic.guideline_concordance}</p>
+          {data.synoptic.safety_alerts.length > 0 && <div className="stack">
+            <b>Safety checks for clinician review</b>
+            {data.synoptic.safety_alerts.map((alert, i) => <div className={`care-notice ${alert.severity}`} key={`${alert.parameter}-${i}`}>
+              <b>{alert.severity.toUpperCase()} · {alert.parameter}</b><p>{alert.observation}</p><p>{alert.guideline_action}</p>
+            </div>)}
+          </div>}
+          {data.synoptic.citations.length > 0 && <details>
+            <summary>NCG citations ({data.synoptic.citations.length})</summary>
+            {data.synoptic.citations.map((citation, i) => <blockquote key={i}>
+              <b>{citation.guideline_source} · {citation.guideline_version}</b>
+              <p>{citation.section_name} · page {citation.page_number}</p>
+              <p>“{citation.verbatim_text}”</p>
+            </blockquote>)}
+          </details>}
+          {!data.synoptic.citations.length && <p className="small muted">No NCG quote or page reference is shown because no authoritative guideline source is loaded.</p>}
+        </section>
+      )}
+
       <div className="brief-grid">
         <div className="stack">
           <section className="panel summary">
@@ -180,3 +207,4 @@ export default function Brief({ data, onOpen }) {
     </div>
   )
 }
+
