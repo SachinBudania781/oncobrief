@@ -7,7 +7,7 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  ReferenceArea,
+  ReferenceLine,
   Legend,
 } from "recharts";
 import {
@@ -143,6 +143,8 @@ export function PatientCheckInHistory({ pid }) {
     30000,
   );
   const symptoms = ["nausea", "pain", "fatigue", "appetite", "breathing"];
+  const [metric, setMetric] = useState("nausea");
+  const [selected, setSelected] = useState(null);
   return (
     <Panel
       title="Patient daily check-ins"
@@ -152,12 +154,32 @@ export function PatientCheckInHistory({ pid }) {
         {(items) => {
           const checkins = (Array.isArray(items) ? items : [])
             .filter((item) => item?.kind === "checkin" && item.data)
-            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+            .map((item) => ({ ...item, date: new Date(item.created_at).getTime(), value: Number(item.data[metric] ?? 0) }));
           if (!checkins.length)
             return <Empty>No patient check-ins have been submitted for this patient.</Empty>;
           return (
             <div className="stack">
-              {checkins.map((item) => (
+              <label className="field">
+                Graph measure
+                <select className="select" value={metric} onChange={(event) => { setMetric(event.target.value); setSelected(null); }}>
+                  {[...symptoms, "distress", "temperature"].map((key) => <option key={key} value={key}>{nice(key)}{key === "temperature" ? " (°C)" : key === "distress" ? " (0–10)" : " (0–4)"}</option>)}
+                </select>
+              </label>
+              <div className="care-chart">
+                <ResponsiveContainer width="100%" height={280}>
+                  <LineChart data={checkins} onClick={(event) => { const point = event?.activePayload?.[0]?.payload; if (point) setSelected(point); }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="date" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value) => new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} />
+                    <YAxis domain={metric === "temperature" ? [30, 45] : [0, metric === "distress" ? 10 : 4]} />
+                    <Tooltip labelFormatter={(value) => dateTime(new Date(value).toISOString())} formatter={(value) => [value + (metric === "temperature" ? " °C" : ""), nice(metric)]} />
+                    <Line type="monotone" dataKey="value" stroke="#4393a5" strokeWidth={3} connectNulls={false} dot={{ r: 4 }} activeDot={{ r: 7 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              {selected && <div className="care-notice"><b>{dateTime(selected.created_at)} · {nice(metric)} {selected.value}</b><p>{selected.data.text || "No written note on this check-in."}</p></div>}
+              <h3>Submitted check-ins</h3>
+              {[...checkins].reverse().map((item) => (
                 <article className="care-record" key={item.id}>
                   <div className="row wrap">
                     <b>{dateTime(item.created_at)}</b>
@@ -372,8 +394,11 @@ function ApprovalReview({ approval: a, onDone }) {
 
 export function ClinicalChart({ pid, onOpen, user }) {
   const resource = useResource(`/v2/patients/${pid}/clinical`),
-    labs = useResource(`/patients/${pid}/labs`);
+    labs = useResource(`/patients/${pid}/labs`),
+    wearable = useResource(user.role === "doctor" ? `/v2/patients/${encodeURIComponent(pid)}/wearables?days=365` : null, 30000);
   const [test, setTest] = useState("Haemoglobin"),
+    [vitalMetric, setVitalMetric] = useState("heart_rate"),
+    [selectedReading, setSelectedReading] = useState(null),
     [month, setMonth] = useState(100),
     [replay, setReplay] = useState(false);
   useEffect(() => {
@@ -392,6 +417,13 @@ export function ClinicalChart({ pid, onOpen, user }) {
     );
     return () => clearInterval(t);
   }, [replay]);
+  const vitalLabels = { heart_rate: "Heart rate", spo2: "SpO₂", systolic: "Systolic pressure", diastolic: "Diastolic pressure", temperature_c: "Temperature" };
+  const vitalRows = (wearable.data?.items || []).filter((row) => row.metric === vitalMetric);
+  const vitalThreshold = wearable.data?.vital_thresholds?.[vitalMetric];
+  const labRows = test === "tumour_mm"
+    ? d.measurements.map((row) => ({ date: row.data.date, value: row.data.size_mm, document_id: row.data.document_id }))
+    : labs.data?.[test] || [];
+  const labLimit = d.protocol?.[test]?.min;
   return (
     <Load resource={resource}>
       {(d) => (
@@ -469,7 +501,7 @@ export function ClinicalChart({ pid, onOpen, user }) {
                 {month}% through the recorded journey.
               </p>
             </Panel>
-            <Panel title="Response & lab trends" hint="Tap a sourced value to open its report. Confirmed tumour measurements are separate from raw extraction suggestions. Body sites and sizes require clinician confirmation.">
+            <Panel title="Report readings over time" hint="Thresholds are the patient-specific limits signed by the treating doctor. Red points are below the configured minimum; select a point for its source and value.">
               <select
                 className="select"
                 value={test}
@@ -482,17 +514,7 @@ export function ClinicalChart({ pid, onOpen, user }) {
               </select>
               <div className="care-chart">
                 <ResponsiveContainer width="100%" height={260}>
-                  <LineChart
-                    data={
-                      test === "tumour_mm"
-                        ? d.measurements.map((r) => ({
-                            date: r.data.date,
-                            value: r.data.size_mm,
-                            document_id: r.data.document_id,
-                          }))
-                        : labs.data?.[test] || []
-                    }
-                  >
+                  <LineChart data={labRows} onClick={(event) => { const point = event?.activePayload?.[0]?.payload; if (point) setSelectedReading({ ...point, metric: test, kind: "report" }); }}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis
                       dataKey="date"
@@ -503,6 +525,7 @@ export function ClinicalChart({ pid, onOpen, user }) {
                         })
                       }
                     />
+                    {Number.isFinite(Number(labLimit)) && <ReferenceLine y={labLimit} stroke="#c84f55" strokeDasharray="5 4" label="Signed minimum" />}
                     <YAxis />
                     <Tooltip />
                     <Line
@@ -511,18 +534,47 @@ export function ClinicalChart({ pid, onOpen, user }) {
                       stroke="#4393a5"
                       strokeWidth={3}
                       connectNulls={false}
-                      dot={{ r: 5 }}
-                      activeDot={{
-                        onClick: (_, d) =>
-                          d.payload?.document_id &&
-                          onOpen(d.payload.document_id),
-                      }}
+                      dot={(point) => <circle cx={point.cx} cy={point.cy} r={5} fill={Number.isFinite(Number(labLimit)) && point.payload.value < labLimit ? "#c84f55" : "#4393a5"} stroke="white" strokeWidth={2} style={{ cursor: "pointer" }} onClick={() => setSelectedReading({ ...point.payload, metric: test, kind: "report" })} />}
+                      activeDot={{ r: 7 }}
                     />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
+              {selectedReading?.kind === "report" && <div className="care-notice"><b>{selectedReading.metric}: {selectedReading.value} {selectedReading.unit || ""}</b><p>{selectedReading.date}{selectedReading.document_id ? ` · Source document D${selectedReading.document_id}` : " · Confirmed measurement"}</p>{selectedReading.document_id && <button className="src" onClick={() => onOpen(selectedReading.document_id)}>Open source report</button>}</div>}
+              {Number.isFinite(Number(labLimit)) && <p className="small muted">Signed review minimum: {labLimit} {labRows.find((row) => row.unit)?.unit || ""}. Red points fall below this limit.</p>}
             </Panel>
           </div>
+          {user.role === "doctor" && (
+            <Panel title="Connected vital trends" hint="Longitudinal Bluetooth and connected-device readings. Red points are below the clinician-signed limit; select a point to inspect its source and timestamp.">
+              <div className="row wrap">
+                <select className="select" value={vitalMetric} onChange={(event) => { setVitalMetric(event.target.value); setSelectedReading(null); }}>
+                  {Object.entries(vitalLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                </select>
+                {wearable.data?.vital_protocol?.approved_by && <span className="small muted">Limits signed by {wearable.data.vital_protocol.approved_by}</span>}
+              </div>
+              <Load resource={wearable}>
+                {(data) => {
+                  const rows = (data.items || []).filter((row) => row.metric === vitalMetric);
+                  if (!rows.length) return <Empty>No connected readings for this measure in the past year.</Empty>;
+                  return <>
+                    <div className="care-chart">
+                      <ResponsiveContainer width="100%" height={280}>
+                        <LineChart data={rows} onClick={(event) => { const point = event?.activePayload?.[0]?.payload; if (point) setSelectedReading({ ...point, kind: "vital" }); }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="observed_at" tickFormatter={(value) => new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} />
+                          <YAxis />
+                          {Number.isFinite(Number(vitalThreshold)) && <ReferenceLine y={vitalThreshold} stroke="#c84f55" strokeDasharray="5 4" label="Signed limit" />}
+                          <Tooltip labelFormatter={(value) => dateTime(value)} formatter={(value, name, props) => [`${value} ${props.payload.unit || ""}`, vitalLabels[vitalMetric]]} />
+                          <Line dataKey="value" type="monotone" stroke="#4393a5" strokeWidth={3} dot={(point) => <circle cx={point.cx} cy={point.cy} r={5} fill={Number.isFinite(Number(vitalThreshold)) && point.payload.value < vitalThreshold ? "#c84f55" : "#4393a5"} stroke="white" strokeWidth={2} style={{ cursor: "pointer" }} onClick={() => setSelectedReading({ ...point.payload, kind: "vital" })} />} activeDot={{ r: 7 }} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                    {selectedReading?.kind === "vital" && <div className="care-notice"><b>{vitalLabels[selectedReading.metric]}: {selectedReading.value} {selectedReading.unit}</b><p>{dateTime(selectedReading.observed_at)} · {nice(selectedReading.source)}{selectedReading.device_name ? ` · ${selectedReading.device_name}` : ""}</p>{Number.isFinite(Number(vitalThreshold)) && selectedReading.value < vitalThreshold && <p className="small">Below signed review limit of {vitalThreshold} {selectedReading.unit}.</p>}</div>}
+                  </>;
+                }}
+              </Load>
+            </Panel>
+          )}
           <Panel
             title="Pain map over time"
             hint="Patient-reported pain, filtered by the journey slider."
