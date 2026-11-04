@@ -182,12 +182,14 @@ function CareSpace() {
   };
   const nav = NAV.filter(
     (n) =>
-      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])) && (n[0] !== "wearables" || ["patient", "caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(user.role)) &&
+      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])) &&
+      (user.role !== "doctor" || !["day", "wellness", "wearables", "money", "privacy", "settings"].includes(n[0])) &&
+      (n[0] !== "wearables" || ["patient", "caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(user.role)) &&
       (n[0] !== "transport" || ["patient", "caregiver", "frontdesk", "navigator", "nurse", "admin"].includes(user.role)),
   );
   useEffect(() => {
     if (!nav.some((n) => n[0] === tab)) setTab("home");
-  }, [pid]);
+  }, [pid, tab]);
   useEffect(() => {
     const url = new URL(window.location.href);
     url.searchParams.set("patient_id", pid);
@@ -410,7 +412,7 @@ function CareSpace() {
               )}
               {tab === "checkin" && (
                 user.role === "doctor" ? (
-                  <PatientCheckInHistory pid={pid} />
+                  <PatientCheckInHistory pid={pid} canReviewActivity={can("activity")} />
                 ) : <div className="care-columns">
                   <CheckIn
                     pid={pid}
@@ -444,7 +446,10 @@ function CareSpace() {
                   />
               )}
               {tab === "clinical" && (
-                <ClinicalChart pid={pid} user={user} canReviewWearables={can("activity")} onOpen={setDocId} />
+                <div className="stack">
+                  <ClinicalChart pid={pid} user={user} onOpen={setDocId} />
+                  <Wearables pid={pid} demo={Boolean(user.demo)} viewerRole="doctor" initialDays={365} embedded />
+                </div>
               )}
               {tab === "clinic" && (
                 <ClinicDesk
@@ -465,7 +470,7 @@ function CareSpace() {
                 />
               )}
               {tab === "chat" && <CareChat pid={pid} user={user} />}
-              {tab === "day" && <DayPass pid={pid} user={user} />}
+      {tab === "day" && <DayPass pid={pid} user={user} />}
               {tab === "wellness" && (
                 <Wellness
                   pid={pid}
