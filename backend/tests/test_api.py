@@ -30,6 +30,10 @@ def test_brief_cites_only_this_patients_documents(client):
         b = client.post("/api/brief", json={"patient_id": pid, "visit_type": visit}).json()
         own = {d["tag"] for d in client.get(f"/api/patients/{pid}/documents").json()}
         c = b["content"]
+        synoptic = b["synoptic"]
+        assert len(synoptic["clinical_summary"]) == 3
+        assert synoptic["guideline_source_status"] == "not_loaded"
+        assert synoptic["citations"] == []  # do not invent NCG quotations or page numbers
         assert c["summary"], "brief must have a summary"
         for block in (c["summary"], c["key_findings"], c["alerts"]):
             for item in block:
@@ -168,3 +172,4 @@ def test_stats_use_hospital_day_and_exclude_cancelled_appointments(client, monke
 def test_search_reads_ocr_text(client):
     hits = client.get("/api/patients/OB-2026-0002/documents", params={"q": "EGFR"}).json()
     assert any("EGFR" in (h.get("snippet") or "") for h in hits)
+
