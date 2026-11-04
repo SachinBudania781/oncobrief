@@ -50,6 +50,10 @@ def test_explanation_is_explicit_and_language_bound(client, login, writer, langu
     assert data["generation"] == "ai" and data["language"] == language
     assert not data["translation_required"]
     assert all(x["sources"] == [f"D{doc['id']}"] for x in data["explanation"])
+    guidance = data["patient_guidance"]
+    assert guidance["language"] == language
+    assert len(guidance["what_to_ask_your_doctor"]) >= 3
+    assert guidance["emergency_red_flags"]
     assert writer[0]["requested_language"] == language
 
 
@@ -146,3 +150,17 @@ def test_notes_permission_and_draft_boundaries(server, writer):
         sent = json.dumps(writer[-1])
         assert "scopednote_marker" in sent
         assert "draftnote_marker" not in sent and "foreignnote_marker" not in sent
+
+
+@pytest.mark.parametrize("language", ["hi", "mr"])
+def test_chat_fallback_language_matches_answer_language(language):
+    from app.services.companion import _validated_chat_result
+
+    english = _validated_chat_result({"level": 2, "answer": "This passage needs your doctor's explanation.",
+                                      "sources": []}, language)
+    assert english["language"] == "en"
+    localized = _validated_chat_result({"level": 2, "answer": {
+        "en": "Please ask your care team.", "hi": "कृपया अपनी देखभाल टीम से पूछें।",
+        "mr": "कृपया तुमच्या उपचार पथकाला विचारा।"}, "sources": []}, language)
+    assert localized["language"] == language
+
