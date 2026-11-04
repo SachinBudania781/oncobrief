@@ -5,6 +5,9 @@ import re
 import unicodedata
 from decimal import Decimal
 
+from pydantic import ValidationError
+
+from ..schemas import PatientCompanionResponse, PatientExplanationResponse
 from . import llm
 from .deidentify import for_model
 
@@ -73,11 +76,13 @@ def explain_sources(patient, sources, question, language="en"):
     payload = json.dumps({"question": for_model(question, patient), "requested_language": language,
                           "SOURCES": context}, ensure_ascii=False, indent=2)
     result = llm.complete_json(SYSTEM + f"\nRespond in {LANGUAGES[language]} ({language}).", payload)
-    if not isinstance(result, dict) or result.get("language") != language:
+    try:
+        parsed = PatientExplanationResponse.model_validate(result)
+    except (ValidationError, TypeError):
         return _fallback("unavailable_or_language")
-    items = result.get("items")
-    if not isinstance(items, list) or not 1 <= len(items) <= 6:
-        return _fallback("response_shape")
+    if parsed.language != language:
+        return _fallback("unavailable_or_language")
+    items = [item.model_dump() for item in parsed.items]
     by_tag = {s["tag"]: s for s in context}
     clean = []
     for item in items:
@@ -113,9 +118,13 @@ def companion_reply(patient, question, sources, history=None, language="en"):
                           "requested_language": language, "RECENT_TURNS": turns,
                           "SOURCES": context}, ensure_ascii=False)
     result = llm.complete_json(CHAT_SYSTEM + f"\nRespond in {LANGUAGES[language]} ({language}).", payload)
-    if not isinstance(result, dict) or result.get("language") != language:
+    try:
+        parsed = PatientCompanionResponse.model_validate(result)
+    except (ValidationError, TypeError):
         return _fallback("companion_language_or_shape")
-    text, cited = result.get("answer"), result.get("sources", [])
+    if parsed.language != language:
+        return _fallback("companion_language_or_shape")
+    text, cited = parsed.answer, parsed.sources
     by_tag = {s["tag"]: s for s in context}
     if (not isinstance(text, str) or not text.strip() or len(text) > 1800
             or not isinstance(cited, list)
@@ -128,3 +137,4 @@ def companion_reply(patient, question, sources, history=None, language="en"):
     return {"answer": text.strip(), "sources": list(dict.fromkeys(cited)),
             "model": f"{llm.config.LLM_PROVIDER}:{llm.model_name()}",
             "generation": "ai", "language": language}
+

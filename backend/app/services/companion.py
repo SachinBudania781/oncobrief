@@ -3,6 +3,7 @@ from ..timeutil import utcnow
 import re
 from datetime import datetime, timedelta
 from sqlalchemy import select
+from ..schemas import RedFlagAssessment
 from ..models import Activity, Appointment, Document, LabValue, Medication, MedLog, Patient, SymptomReport
 from ..round2_models import AccessGrant, Alert, Approval, CareRecord, LibraryItem, Notification, User
 from .retrieval import question_documents
@@ -34,9 +35,11 @@ def red_flags(text="", symptoms=None, temperature=None, on_treatment=True):
     sy = symptoms or []
     fever = fever or (on_treatment and any(s.get("key") == "fever" and s.get("grade", 0) > 0 for s in sy))
     severe = any(s.get("grade", 0) >= 3 for s in sy)
-    return {"level": 3 if crisis or urgent or fever else (2 if severe else 0),
-            "reason": "Immediate human support needed" if crisis else "Breathing, bleeding or chest symptoms" if urgent else "Fever during cancer treatment" if fever else "Severe symptom reported" if severe else "",
-            "crisis": crisis}
+    return RedFlagAssessment.model_validate({
+        "level": 3 if crisis or urgent or fever else (2 if severe else 0),
+        "reason": "Immediate human support needed" if crisis else "Breathing, bleeding or chest symptoms" if urgent else "Fever during cancer treatment" if fever else "Severe symptom reported" if severe else "",
+        "crisis": crisis,
+    }).model_dump()
 
 
 def notify_team(db, pid, title, body):
@@ -334,3 +337,4 @@ def command_centre(db, ids):
                     "blocker": blocker,
                     "diagnosis_days": (now - p.diagnosis_date).days if p.diagnosis_date else None})
     return sorted(out, key=lambda r: r["score"], reverse=True)
+
