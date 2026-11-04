@@ -392,10 +392,10 @@ function ApprovalReview({ approval: a, onDone }) {
   );
 }
 
-export function ClinicalChart({ pid, onOpen, user }) {
+export function ClinicalChart({ pid, onOpen, user, canReviewWearables = false }) {
   const resource = useResource(`/v2/patients/${pid}/clinical`),
     labs = useResource(`/patients/${pid}/labs`),
-    wearable = useResource(user.role === "doctor" ? `/v2/patients/${encodeURIComponent(pid)}/wearables?days=365` : null, 30000);
+    wearable = useResource(user.role === "doctor" && canReviewWearables ? `/v2/patients/${encodeURIComponent(pid)}/wearables?days=365` : null, 30000);
   const [test, setTest] = useState("Haemoglobin"),
     [vitalMetric, setVitalMetric] = useState("heart_rate"),
     [selectedReading, setSelectedReading] = useState(null),
@@ -418,12 +418,11 @@ export function ClinicalChart({ pid, onOpen, user }) {
     return () => clearInterval(t);
   }, [replay]);
   const vitalLabels = { heart_rate: "Heart rate", spo2: "SpO₂", systolic: "Systolic pressure", diastolic: "Diastolic pressure", temperature_c: "Temperature" };
-  const vitalRows = (wearable.data?.items || []).filter((row) => row.metric === vitalMetric);
   const vitalThreshold = wearable.data?.vital_thresholds?.[vitalMetric];
   const labRows = test === "tumour_mm"
-    ? d.measurements.map((row) => ({ date: row.data.date, value: row.data.size_mm, document_id: row.data.document_id }))
+    ? (resource.data?.measurements || []).map((row) => ({ date: row.data.date, value: row.data.size_mm, document_id: row.data.document_id }))
     : labs.data?.[test] || [];
-  const labLimit = d.protocol?.[test]?.min;
+  const labLimit = resource.data?.protocol?.[test]?.min;
   return (
     <Load resource={resource}>
       {(d) => (
@@ -544,7 +543,7 @@ export function ClinicalChart({ pid, onOpen, user }) {
               {Number.isFinite(Number(labLimit)) && <p className="small muted">Signed review minimum: {labLimit} {labRows.find((row) => row.unit)?.unit || ""}. Red points fall below this limit.</p>}
             </Panel>
           </div>
-          {user.role === "doctor" && (
+          {user.role === "doctor" && canReviewWearables && (
             <Panel title="Connected vital trends" hint="Longitudinal Bluetooth and connected-device readings. Red points are below the clinician-signed limit; select a point to inspect its source and timestamp.">
               <div className="row wrap">
                 <select className="select" value={vitalMetric} onChange={(event) => { setVitalMetric(event.target.value); setSelectedReading(null); }}>
@@ -573,6 +572,11 @@ export function ClinicalChart({ pid, onOpen, user }) {
                   </>;
                 }}
               </Load>
+            </Panel>
+          )}
+          {user.role === "doctor" && !canReviewWearables && (
+            <Panel title="Connected vital trends" hint="Wearable readings stay protected by the patient's activity access permission.">
+              <Empty>Activity access is not enabled for this patient in your account. Ask the workspace administrator to grant activity access to view connected readings.</Empty>
             </Panel>
           )}
           <Panel
@@ -1026,4 +1030,3 @@ function JourneyReplay({ events, progress, onOpen }) {
     </div>
   );
 }
-
