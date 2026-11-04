@@ -18,6 +18,7 @@ from ..models import Activity, Appointment, Document, LabValue, Medication, MedL
 from ..round2_models import AccessGrant, Alert, Approval, CareRecord, LibraryItem, Notification, ShareLink, User, TreatingClinician
 from ..security import DEMO_MODE, append_audit, digest, identity, password_hash, require_patient, roles, verify_chain, visible_ids
 from ..services.companion import EMERGENCY, alert, answer, command_centre, living_summary, notify_team, records, red_flags, safe_text
+from ..schemas import PatientChatResult
 from ..services.integrations import deliver, status as integration_status
 from ..workflows import WORKFLOWS
 from ..services.scheduling import serial_schedule
@@ -318,7 +319,7 @@ class Question(BaseModel):
     language: Literal["en", "hi", "mr"] = "en"
 
 
-@router.post("/v2/patients/{patient_id}/companion")
+@router.post("/v2/patients/{patient_id}/companion", response_model=PatientChatResult)
 def companion(patient_id: str, body: Question, request: Request, db=Depends(get_db)):
     user = patient_access(db, request, patient_id, "documents")
     roles(user, "patient", "caregiver", "doctor", "nurse", "admin")
