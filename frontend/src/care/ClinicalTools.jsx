@@ -137,7 +137,7 @@ export function AlertConsole({ onSelect }) {
   );
 }
 
-export function PatientCheckInHistory({ pid }) {
+export function PatientCheckInHistory({ pid, canReviewActivity = false }) {
   const history = useResource(
     pid ? `/v2/patients/${encodeURIComponent(pid)}/records?kind=checkin` : null,
     30000,
@@ -146,11 +146,12 @@ export function PatientCheckInHistory({ pid }) {
   const [metric, setMetric] = useState("nausea");
   const [selected, setSelected] = useState(null);
   return (
-    <Panel
-      title="Patient daily check-ins"
-      hint="Review symptoms and notes submitted by the patient or caregiver. New check-ins appear automatically."
-    >
-      <Load resource={history}>
+    <div className="stack">
+      <Panel
+        title="Patient daily check-ins"
+        hint="Review symptoms and notes submitted by the patient or caregiver. New check-ins appear automatically."
+      >
+        <Load resource={history}>
         {(items) => {
           const checkins = (Array.isArray(items) ? items : [])
             .filter((item) => item?.kind === "checkin" && item.data)
@@ -214,7 +215,73 @@ export function PatientCheckInHistory({ pid }) {
             </div>
           );
         }}
-      </Load>
+        </Load>
+      </Panel>
+      <PatientActivityHistory pid={pid} enabled={canReviewActivity} />
+    </div>
+  );
+}
+
+function PatientActivityHistory({ pid, enabled }) {
+  const history = useResource(
+    enabled ? `/v2/patients/${encodeURIComponent(pid)}/wearables?days=365` : null,
+    30000,
+  );
+  const [metric, setMetric] = useState("steps");
+  const [selected, setSelected] = useState(null);
+  const measures = {
+    steps: { label: "Steps", unit: "steps" },
+    distance_km: { label: "Walking distance", unit: "km" },
+    active_minutes: { label: "Active time", unit: "min" },
+    sleep_hours: { label: "Sleep", unit: "h" },
+  };
+  return (
+    <Panel
+      title="Patient activity & steps"
+      hint="Daily activity saved from connected devices or patient-entered totals appears alongside check-ins."
+    >
+      {!enabled ? (
+        <Empty>Activity access is not enabled for this patient in your account, so step and activity history is hidden.</Empty>
+      ) : (
+        <Load resource={history}>
+          {(data) => {
+            const rows = (data?.items || [])
+              .filter((row) => row.metric === metric && Number.isFinite(Number(row.value)))
+              .sort((a, b) => new Date(a.observed_at) - new Date(b.observed_at))
+              .map((row) => ({ ...row, time: new Date(row.observed_at).getTime() }));
+            if (!rows.length) return <Empty>No activity readings have been recorded for this patient.</Empty>;
+            return (
+              <div className="stack">
+                <label className="field">
+                  Graph measure
+                  <select className="select" value={metric} onChange={(event) => { setMetric(event.target.value); setSelected(null); }}>
+                    {Object.entries(measures).map(([key, measure]) => <option key={key} value={key}>{measure.label}</option>)}
+                  </select>
+                </label>
+                <div className="care-chart">
+                  <ResponsiveContainer width="100%" height={260}>
+                    <LineChart data={rows} onClick={(event) => { const point = event?.activePayload?.[0]?.payload; if (point) setSelected(point); }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="time" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value) => new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} />
+                      <YAxis />
+                      <Tooltip labelFormatter={(value) => dateTime(new Date(value).toISOString())} formatter={(value) => [`${Number(value).toLocaleString("en-IN")} ${measures[metric].unit}`, measures[metric].label]} />
+                      <Line dataKey="value" type="monotone" stroke="#568461" strokeWidth={3} connectNulls={false} dot={{ r: 4 }} activeDot={{ r: 7 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                {selected && <div className="care-notice"><b>{measures[metric].label}: {Number(selected.value).toLocaleString("en-IN")} {measures[metric].unit}</b><p>{dateTime(selected.observed_at)} · {nice(selected.source)}{selected.device_name ? ` · ${selected.device_name}` : ""}</p></div>}
+                <h3>Recorded activity</h3>
+                {[...rows].reverse().slice(0, 10).map((row) => (
+                  <article className="care-record" key={row.id}>
+                    <div className="row wrap"><b>{Number(row.value).toLocaleString("en-IN")} {measures[metric].unit}</b><span className="spacer"/><span className="small muted">{dateTime(row.observed_at)} · {nice(row.source)}</span></div>
+                    {row.device_name && <p className="small muted">{row.device_name}</p>}
+                  </article>
+                ))}
+              </div>
+            );
+          }}
+        </Load>
+      )}
     </Panel>
   );
 }
@@ -392,12 +459,10 @@ function ApprovalReview({ approval: a, onDone }) {
   );
 }
 
-export function ClinicalChart({ pid, onOpen, user, canReviewWearables = false }) {
+export function ClinicalChart({ pid, onOpen, user }) {
   const resource = useResource(`/v2/patients/${pid}/clinical`),
-    labs = useResource(`/patients/${pid}/labs`),
-    wearable = useResource(user.role === "doctor" && canReviewWearables ? `/v2/patients/${encodeURIComponent(pid)}/wearables?days=365` : null, 30000);
+    labs = useResource(`/patients/${pid}/labs`);
   const [test, setTest] = useState("Haemoglobin"),
-    [vitalMetric, setVitalMetric] = useState("heart_rate"),
     [selectedReading, setSelectedReading] = useState(null),
     [month, setMonth] = useState(100),
     [replay, setReplay] = useState(false);
@@ -417,8 +482,6 @@ export function ClinicalChart({ pid, onOpen, user, canReviewWearables = false })
     );
     return () => clearInterval(t);
   }, [replay]);
-  const vitalLabels = { heart_rate: "Heart rate", spo2: "SpO₂", systolic: "Systolic pressure", diastolic: "Diastolic pressure", temperature_c: "Temperature" };
-  const vitalThreshold = wearable.data?.vital_thresholds?.[vitalMetric];
   const labRows = test === "tumour_mm"
     ? (resource.data?.measurements || []).map((row) => ({ date: row.data.date, value: row.data.size_mm, document_id: row.data.document_id }))
     : labs.data?.[test] || [];
@@ -543,42 +606,6 @@ export function ClinicalChart({ pid, onOpen, user, canReviewWearables = false })
               {Number.isFinite(Number(labLimit)) && <p className="small muted">Signed review minimum: {labLimit} {labRows.find((row) => row.unit)?.unit || ""}. Red points fall below this limit.</p>}
             </Panel>
           </div>
-          {user.role === "doctor" && canReviewWearables && (
-            <Panel title="Connected vital trends" hint="Longitudinal Bluetooth and connected-device readings. Red points are below the clinician-signed limit; select a point to inspect its source and timestamp.">
-              <div className="row wrap">
-                <select className="select" value={vitalMetric} onChange={(event) => { setVitalMetric(event.target.value); setSelectedReading(null); }}>
-                  {Object.entries(vitalLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-                </select>
-                {wearable.data?.vital_protocol?.approved_by && <span className="small muted">Limits signed by {wearable.data.vital_protocol.approved_by}</span>}
-              </div>
-              <Load resource={wearable}>
-                {(data) => {
-                  const rows = (data.items || []).filter((row) => row.metric === vitalMetric);
-                  if (!rows.length) return <Empty>No connected readings for this measure in the past year.</Empty>;
-                  return <>
-                    <div className="care-chart">
-                      <ResponsiveContainer width="100%" height={280}>
-                        <LineChart data={rows} onClick={(event) => { const point = event?.activePayload?.[0]?.payload; if (point) setSelectedReading({ ...point, kind: "vital" }); }}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="observed_at" tickFormatter={(value) => new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} />
-                          <YAxis />
-                          {Number.isFinite(Number(vitalThreshold)) && <ReferenceLine y={vitalThreshold} stroke="#c84f55" strokeDasharray="5 4" label="Signed limit" />}
-                          <Tooltip labelFormatter={(value) => dateTime(value)} formatter={(value, name, props) => [`${value} ${props.payload.unit || ""}`, vitalLabels[vitalMetric]]} />
-                          <Line dataKey="value" type="monotone" stroke="#4393a5" strokeWidth={3} dot={(point) => <circle cx={point.cx} cy={point.cy} r={5} fill={Number.isFinite(Number(vitalThreshold)) && point.payload.value < vitalThreshold ? "#c84f55" : "#4393a5"} stroke="white" strokeWidth={2} style={{ cursor: "pointer" }} onClick={() => setSelectedReading({ ...point.payload, kind: "vital" })} />} activeDot={{ r: 7 }} />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
-                    {selectedReading?.kind === "vital" && <div className="care-notice"><b>{vitalLabels[selectedReading.metric]}: {selectedReading.value} {selectedReading.unit}</b><p>{dateTime(selectedReading.observed_at)} · {nice(selectedReading.source)}{selectedReading.device_name ? ` · ${selectedReading.device_name}` : ""}</p>{Number.isFinite(Number(vitalThreshold)) && selectedReading.value < vitalThreshold && <p className="small">Below signed review limit of {vitalThreshold} {selectedReading.unit}.</p>}</div>}
-                  </>;
-                }}
-              </Load>
-            </Panel>
-          )}
-          {user.role === "doctor" && !canReviewWearables && (
-            <Panel title="Connected vital trends" hint="Wearable readings stay protected by the patient's activity access permission.">
-              <Empty>Activity access is not enabled for this patient in your account. Ask the workspace administrator to grant activity access to view connected readings.</Empty>
-            </Panel>
-          )}
           <Panel
             title="Pain map over time"
             hint="Patient-reported pain, filtered by the journey slider."
