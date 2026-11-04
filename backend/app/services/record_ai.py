@@ -5,6 +5,9 @@ import re
 import unicodedata
 from decimal import Decimal
 
+from pydantic import ValidationError
+
+from ..schemas import PatientExplanationResponse
 from . import llm
 from .deidentify import for_model
 
@@ -56,11 +59,13 @@ def explain_sources(patient, sources, question, language="en"):
     payload = json.dumps({"question": for_model(question, patient), "requested_language": language,
                           "SOURCES": context}, ensure_ascii=False, indent=2)
     result = llm.complete_json(SYSTEM + f"\nRespond in {LANGUAGES[language]} ({language}).", payload)
-    if not isinstance(result, dict) or result.get("language") != language:
+    try:
+        parsed = PatientExplanationResponse.model_validate(result)
+    except (ValidationError, TypeError):
         return _fallback("unavailable_or_language")
-    items = result.get("items")
-    if not isinstance(items, list) or not 1 <= len(items) <= 6:
-        return _fallback("response_shape")
+    if parsed.language != language:
+        return _fallback("unavailable_or_language")
+    items = [item.model_dump() for item in parsed.items]
     by_tag = {s["tag"]: s for s in context}
     clean = []
     for item in items:
