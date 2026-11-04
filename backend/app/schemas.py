@@ -153,3 +153,27 @@ class PatientCompanionResponse(StrictModel):
     sources: list[ShortText] = Field(max_length=20)
 
 
+class PatientChatSource(StrictModel):
+    """A source reference returned by the chat API for the interface to open."""
+
+    tag: ShortText | None = None
+    title: ShortText
+    id: Annotated[int, Field(strict=True, ge=1)] | None = None
+    record_id: Annotated[int, Field(strict=True, ge=1)] | None = None
+    url: Annotated[str, Field(strict=True, max_length=2048)] | None = None
+
+
+class PatientChatResult(StrictModel):
+    """Stable, validated transport shape for every patient/caregiver chat answer."""
+
+    language: Literal["en", "hi", "mr"]
+    level: Literal[0, 1, 2, 3]
+    answer: Text = Field(max_length=1800)
+    sources: list[PatientChatSource] = Field(default_factory=list, max_length=20)
+    citations: list[PatientExplanationParagraph] = Field(default_factory=list, max_length=6)
+    generation: ShortText = "records"
+    model: ShortText | None = None
+    instruction: Text | None = None
+    alert_id: Annotated[int, Field(strict=True, ge=1)] | None = None
+    request_id: Annotated[int, Field(strict=True, ge=1)] | None = None
+    translation: ShortText | None = None
