@@ -288,7 +288,6 @@ def _answer_unvalidated(db, pid, question, language="en", clinical_user=False, a
             "translation": "Original report language. Use configured translation for a translated transcript." if language != "en" else None}
 
 
-
 def _validated_chat_result(raw, requested_language):
     """Normalize every rule, retrieval, and AI branch to the strict chat contract."""
     raw_language = raw.get("language")
@@ -297,8 +296,17 @@ def _validated_chat_result(raw, requested_language):
         language = "en"
     answer_text = raw.get("answer", "")
     if isinstance(answer_text, dict):
-        answer_text = answer_text.get(language) or answer_text.get("en") or next(iter(answer_text.values()), "")
+        if language in answer_text:
+            answer_text = answer_text[language]
+        elif "en" in answer_text:
+            language, answer_text = "en", answer_text["en"]
+        else:
+            answer_text = next(iter(answer_text.values()), "")
     answer_text = str(answer_text).strip()
+    # Hindi and Marathi replies use Devanagari throughout the product. If a
+    # fallback is English-only, label it English so voice playback matches it.
+    if language in {"hi", "mr"} and not re.search(r"[\u0900-\u097f]", answer_text):
+        language = "en"
     if not answer_text:
         answer_text = "I could not prepare an answer. Please contact your care team."
 
