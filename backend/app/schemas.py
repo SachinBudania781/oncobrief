@@ -93,8 +93,11 @@ class TumorBoardSynopticBrief(StrictModel):
         description="Exactly three concise clinician-facing synoptic lines"
     )
     guideline_concordance: Text
+    guideline_source_status: Literal["verified", "not_loaded"] = Field(
+        description="Whether an authoritative NCG source was available to verify concordance"
+    )
     safety_alerts: list[SafetyAlert] = Field(default_factory=list, max_length=100)
-    citations: Annotated[list[GuidelineCitation], Field(min_length=1, max_length=100)]
+    citations: list[GuidelineCitation] = Field(default_factory=list, max_length=100)
 
 
 class UrgentAction(str, Enum):
@@ -121,6 +124,27 @@ class PatientGuidanceNote(StrictModel):
     what_this_means: Text = Field(description="Plain-language explanation of the documented stage or result")
     what_to_ask_your_doctor: Annotated[list[ShortText], Field(min_length=3, max_length=5)]
     emergency_red_flags: list[PatientRedFlag] = Field(default_factory=list, max_length=30)
+
+
+class PatientDocumentExplanationItem(StrictModel):
+    text: Text = Field(max_length=1400)
+    source: ShortText
+
+
+class PatientDocumentExplanation(StrictModel):
+    document_id: Annotated[int, Field(strict=True, ge=1)]
+    title: ShortText
+    language: Literal["en", "hi", "mr"]
+    requested_language: Literal["en", "hi", "mr"]
+    explanation: list[PatientDocumentExplanationItem] = Field(max_length=6)
+    original_excerpt: str = Field(strict=True, max_length=4000)
+    questions: Annotated[list[ShortText], Field(min_length=3, max_length=5)]
+    translation_required: bool
+    source: ShortText
+    model: ShortText
+    generation: ShortText
+    notice: Text = Field(max_length=1000)
+    patient_guidance: PatientGuidanceNote
 
 
 class CitedParagraph(StrictModel):
@@ -177,3 +201,5 @@ class PatientChatResult(StrictModel):
     alert_id: Annotated[int, Field(strict=True, ge=1)] | None = None
     request_id: Annotated[int, Field(strict=True, ge=1)] | None = None
     translation: ShortText | None = None
+
+
