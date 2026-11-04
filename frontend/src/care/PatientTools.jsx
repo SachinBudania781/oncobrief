@@ -369,6 +369,45 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
   );
 }
 
+export function DoctorMedicineSummary({ pid }) {
+  const meds = useResource(`/patients/${encodeURIComponent(pid)}/medications`, 30000);
+  const requests = useResource(`/v2/patients/${encodeURIComponent(pid)}/approvals`, 15000);
+  return (
+    <div className="care-columns">
+      <Panel title="Missed doses today" hint="A read-only summary of doses the patient marked as missed today.">
+        <Load resource={meds}>
+          {(items) => {
+            const missed = (items || []).flatMap((med) => (med.today || [])
+              .filter((dose) => dose.status === "missed")
+              .map((dose) => ({ ...dose, medicine: med.name, doseAmount: med.dose })));
+            return missed.length ? <div className="stack">{missed.map((dose, index) => (
+              <article className="care-record" key={`${dose.medicine}-${dose.time}-${index}`}>
+                <div className="row wrap"><b>{dose.medicine}</b><span className="care-pill">{dose.doseAmount}</span><span className="spacer"/><Status value="missed"/></div>
+                <p className="small muted">Scheduled today at {dose.time}</p>
+              </article>
+            ))}</div> : <Empty>No doses are marked missed today.</Empty>;
+          }}
+        </Load>
+      </Panel>
+      <Panel title="Patient medicine requests" hint="Requests submitted by the patient or caregiver, with their review status.">
+        <Load resource={requests}>
+          {(items) => {
+            const medicineRequests = (items || []).filter((item) => item.kind === "medicine");
+            return medicineRequests.length ? <div className="stack">{medicineRequests.map((item) => (
+              <article className="care-record" key={item.id}>
+                <div className="row wrap"><b>Request #{item.id}</b><span className="spacer"/><Status value={item.status}/></div>
+                <p>{item.request}</p>
+                <p className="small muted">Submitted by {item.requested_by || "patient"}{item.created_at ? ` · ${dateTime(item.created_at)}` : ""}</p>
+                {item.reason && <p className="small">{item.reason}</p>}
+              </article>
+            ))}</div> : <Empty>No medicine requests have been submitted.</Empty>;
+          }}
+        </Load>
+      </Panel>
+    </div>
+  );
+}
+
 export function Medicines({ pid, user, onUpdate }) {
   const meds = useResource(`/patients/${pid}/medications`);
   const approvals = useResource(`/v2/patients/${pid}/approvals`, 15000);
@@ -1044,3 +1083,4 @@ function EducationLibrary({ language }) {
     </Panel>
   );
 }
+
