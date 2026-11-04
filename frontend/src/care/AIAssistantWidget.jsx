@@ -94,7 +94,7 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, embedd
           await new Promise((resolve) => {
             window.speechSynthesis.cancel();
             const utterance = new SpeechSynthesisUtterance(responseText);
-            utterance.lang = { en: "en-IN", hi: "hi-IN", mr: "mr-IN" }[language] || "en-IN";
+            utterance.lang = { en: "en-IN", hi: "hi-IN", mr: "mr-IN" }[result.language || language] || "en-IN";
             utterance.onend = resolve;
             utterance.onerror = resolve;
             window.speechSynthesis.speak(utterance);
@@ -248,7 +248,7 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, embedd
                       <div className="care-ai-answer-foot">
                         <Status value={levelNames[message.result.level] || "inform"} />
                         <span>{message.result.generation === "ai" ? "AI-assisted" : "From your records"}</span>
-                        <button aria-label="Listen to answer" title="Listen to answer" onClick={() => { try { speak(message.result.answer, language); } catch (e) { setError(e.message); } }}><Volume2 size={15} /></button>
+                        <button aria-label="Listen to answer" title="Listen to answer" onClick={() => { try { speak(message.result.answer, message.result.language || language); } catch (e) { setError(e.message); } }}><Volume2 size={15} /></button>
                       </div>
                     </>}
                   </div>
