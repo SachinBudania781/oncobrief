@@ -43,13 +43,13 @@ import {
   SourceLinks,
   Voice,
 } from "./UI";
-import { CheckIn, DoseReminder, Medicines, Wellness } from "./PatientTools";
+import { CheckIn, DoctorMedicineSummary, DoseReminder, Medicines, Wellness } from "./PatientTools";
 import {
   AlertConsole,
   ApprovalQueue,
   ClinicalChart,
-  SmartInbox,
   PatientCheckInHistory,
+  SmartInbox,
 } from "./ClinicalTools";
 import {
   CareChat,
@@ -78,7 +78,6 @@ import "./interface.css";
 const NAV = [
   ["home", "Overview", Home, "profile"],
   ["checkin", "Daily check-in", HeartPulse, "checkin"],
-  ["patientCheckins", "Patient check-ins", ClipboardList, "doctor"],
   ["companion", "AI Chat", MessageCircle, "documents"],
   ["medicines", "Medicines & requests", Pill, "medicines"],
   ["clinical", "Care journey", Stethoscope, "documents"],
@@ -183,7 +182,7 @@ function CareSpace() {
   };
   const nav = NAV.filter(
     (n) =>
-      can(n[3]) && (user.role !== "doctor" || n[0] !== "checkin") && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])) && (n[0] !== "wearables" || ["patient", "caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(user.role)) &&
+      can(n[3]) && (!roleTabs[user.role] || roleTabs[user.role].includes(n[0])) && (n[0] !== "wearables" || ["patient", "caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(user.role)) &&
       (n[0] !== "transport" || ["patient", "caregiver", "frontdesk", "navigator", "nurse", "admin"].includes(user.role)),
   );
   useEffect(() => {
@@ -410,7 +409,9 @@ function CareSpace() {
                 />
               )}
               {tab === "checkin" && (
-                <div className="care-columns">
+                user.role === "doctor" ? (
+                  <PatientCheckInHistory pid={pid} />
+                ) : <div className="care-columns">
                   <CheckIn
                     pid={pid}
                     language={language}
@@ -425,9 +426,6 @@ function CareSpace() {
                   </div>
                 </div>
               )}
-              {tab === "patientCheckins" && user.role === "doctor" && (
-                <PatientCheckInHistory pid={pid} />
-              )}
               {tab === "companion" && (
                 <AIAssistantWidget
                   pid={pid}
@@ -438,11 +436,12 @@ function CareSpace() {
                 />
               )}
               {tab === "medicines" && (
-                <Medicines
-                  pid={pid}
-                  user={user}
-                  onUpdate={() => setRevision((v) => v + 1)}
-                />
+                user.role === "doctor" ? <DoctorMedicineSummary pid={pid} /> :
+                  <Medicines
+                    pid={pid}
+                    user={user}
+                    onUpdate={() => setRevision((v) => v + 1)}
+                  />
               )}
               {tab === "clinical" && (
                 <ClinicalChart pid={pid} user={user} onOpen={setDocId} />
@@ -465,7 +464,7 @@ function CareSpace() {
                   onClearFocus={() => setFocusedRecordId(null)}
                 />
               )}
-              {tab === "chat" && <CareChat pid={pid} />}
+              {tab === "chat" && <CareChat pid={pid} user={user} />}
               {tab === "day" && <DayPass pid={pid} user={user} />}
               {tab === "wellness" && (
                 <Wellness
