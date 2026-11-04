@@ -280,7 +280,7 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
                   </div>
                 )) : <><p className="care-pre">{m.answer}</p><SourceLinks sources={m.sources} onOpen={onOpen} /></>}
                 {m.generation && <span className="small muted">{m.generation === "ai" ? "AI-assisted" : "From your records"}</span>}
-                <Voice text={m.answer} language={language} />
+                <Voice text={m.answer} language={m.language || language} />
                 {m.translation && (
                   <p className="small muted">{m.translation}</p>
                 )}
