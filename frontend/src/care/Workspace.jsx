@@ -444,7 +444,7 @@ function CareSpace() {
                   />
               )}
               {tab === "clinical" && (
-                <ClinicalChart pid={pid} user={user} onOpen={setDocId} />
+                <ClinicalChart pid={pid} user={user} canReviewWearables={can("activity")} onOpen={setDocId} />
               )}
               {tab === "clinic" && (
                 <ClinicDesk
@@ -873,4 +873,3 @@ export function SharedCard() {
     </div>
   );
 }
-
