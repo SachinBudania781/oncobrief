@@ -287,3 +287,4 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, embedd
     </div>
   );
 }
+
