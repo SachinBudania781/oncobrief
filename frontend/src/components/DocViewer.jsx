@@ -4,6 +4,12 @@ import { api, fmtDate } from "../api";
 import { request } from "../care/client";
 import Modal from "../care/Modal";
 
+const GUIDANCE_LABELS = {
+  en: { questions: "Questions to ask your doctor", redFlags: "Urgent symptoms", actionTeam: "Contact your oncology team now.", actionEmergency: "Go to the nearest emergency department now.", redFlagHint: "Get urgent help for these symptoms. Follow the action shown and contact your care team." },
+  hi: { questions: "अपने डॉक्टर से पूछने के सवाल", redFlags: "तुरंत ध्यान देने वाले लक्षण", actionTeam: "अभी अपनी कैंसर देखभाल टीम से संपर्क करें।", actionEmergency: "अभी नज़दीकी आपातकालीन विभाग जाएँ।", redFlagHint: "इन लक्षणों पर तुरंत मदद लें। बताए गए कदम का पालन करें और अपनी देखभाल टीम से संपर्क करें।" },
+  mr: { questions: "डॉक्टरांना विचारायचे प्रश्न", redFlags: "तातडीने लक्ष देण्याची लक्षणे", actionTeam: "आत्ताच तुमच्या कर्करोग उपचार पथकाशी संपर्क साधा.", actionEmergency: "आत्ताच जवळच्या आपत्कालीन विभागात जा.", redFlagHint: "या लक्षणांसाठी तातडीने मदत घ्या. दिलेली कृती करा आणि उपचार पथकाशी संपर्क साधा." },
+};
+
 // Opens the ORIGINAL file next to its OCR text and tags — the brief is never the last word.
 export default function DocViewer({ docId, onClose }) {
   const [doc, setDoc] = useState(null);
@@ -11,6 +17,7 @@ export default function DocViewer({ docId, onClose }) {
   const [page, setPage] = useState(0);
   const [focus, setFocus] = useState("");
   const [explanation, setExplanation] = useState(null);
+  const [askedQuestions, setAskedQuestions] = useState({});
   const [explaining, setExplaining] = useState(false);
   const [language, setLanguage] = useState("en");
   const explanationRequest = useRef(0);
@@ -22,6 +29,7 @@ export default function DocViewer({ docId, onClose }) {
     setPage(0);
     setFocus("");
     setExplanation(null);
+    setAskedQuestions({});
     setExplaining(false);
     setLanguage("en");
     explanationRequest.current += 1;
@@ -189,10 +197,28 @@ export default function DocViewer({ docId, onClose }) {
                   {!explanation.explanation.length && (
                     <p>{explanation.original_excerpt}</p>
                   )}
-                  <b>Questions for your doctor</b>
-                  {explanation.questions.map((q) => (
-                    <p key={q}>{q}</p>
-                  ))}
+                  {explanation.patient_guidance && <>
+                    {(() => {
+                      const labels = GUIDANCE_LABELS[explanation.patient_guidance.language] || GUIDANCE_LABELS.en;
+                      return <>
+                    <p>{explanation.patient_guidance.what_this_means}</p>
+                    <b>{labels.questions}</b>
+                    {explanation.patient_guidance.what_to_ask_your_doctor.map((q, i) => (
+                      <label key={i} className="field" style={{ display: "flex", flexDirection: "row", alignItems: "flex-start", gap: 9, marginTop: 8 }}>
+                        <input type="checkbox" checked={Boolean(askedQuestions[i])} onChange={(event) => setAskedQuestions((old) => ({ ...old, [i]: event.target.checked }))} />
+                        <span>{q}</span>
+                      </label>
+                    ))}
+                    {explanation.patient_guidance.emergency_red_flags.length > 0 && <div className="care-emergency" role="alert" style={{ marginTop: 16 }}>
+                      <h2>{labels.redFlags}</h2>
+                      <p>{labels.redFlagHint}</p>
+                      <ul>{explanation.patient_guidance.emergency_red_flags.map((flag, i) => <li key={i}>
+                        <b>{flag.symptom}</b> — {flag.action === "contact the oncology team now" ? labels.actionTeam : labels.actionEmergency}
+                      </li>)}</ul>
+                    </div>}
+                      </>;
+                    })()}
+                  </>}
                 </div>
               )}
               {doc.lab_values?.length > 0 && (
@@ -240,3 +266,4 @@ export default function DocViewer({ docId, onClose }) {
     </Modal>
   );
 }
+
