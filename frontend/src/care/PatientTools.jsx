@@ -112,14 +112,41 @@ export function CheckIn({ pid, language, onUpdate, phoneDemo = false }) {
     distress: 0,
     text: "",
     temperature: "",
+    shivering: false,
+    days_post_chemo: "",
+    symptom_tags: [],
   });
   const [result, setResult] = useState(null),
     [error, setError] = useState(""),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [triage, setTriage] = useState(null),
+    [triageError, setTriageError] = useState("");
   const l = labels[language];
   useEffect(() => {
     setResult(null);
   }, [pid]);
+  useEffect(() => {
+    const tags = [...values.symptom_tags];
+    if (values.shivering) tags.push("shivering");
+    if (values.breathing >= 3) tags.push("severe_breathlessness");
+    const temperature = values.temperature === "" ? null : Number(values.temperature);
+    if (temperature != null && (!Number.isFinite(temperature) || temperature < 30 || temperature > 45)) return;
+    if (temperature == null && tags.length === 0) {
+      setTriage(null);
+      setTriageError("");
+      return;
+    }
+    let live = true;
+    const timer = setTimeout(() => {
+      request("/clinical/triage", "POST", {
+        temperature_c: temperature,
+        symptom_tags: tags,
+        days_post_chemo: values.days_post_chemo === "" ? null : Number(values.days_post_chemo),
+      }).then((value) => { if (live) { setTriage(value); setTriageError(""); } })
+        .catch((e) => { if (live) { setTriage(null); setTriageError(e.message); } });
+    }, 160);
+    return () => { live = false; clearTimeout(timer); };
+  }, [values.temperature, values.shivering, values.days_post_chemo, values.symptom_tags, values.breathing]);
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true);
@@ -130,6 +157,7 @@ export function CheckIn({ pid, language, onUpdate, phoneDemo = false }) {
         language,
         temperature:
           values.temperature === "" ? null : Number(values.temperature),
+        days_post_chemo: values.days_post_chemo === "" ? null : Number(values.days_post_chemo),
         source: phoneDemo ? "phone_demo" : "tap",
       });
       setResult(r);
@@ -150,6 +178,17 @@ export function CheckIn({ pid, language, onUpdate, phoneDemo = false }) {
       }
     >
       {result?.level === 3 && <Emergency result={result} />}
+      <section className="care-panel" aria-live={triage?.tier === "LEVEL_1_URGENT" ? "assertive" : "polite"}>
+        <div className="care-panel-head"><div><h2>Emergency at-home symptom checker</h2><p>Updates as you enter a temperature or select a symptom.</p></div></div>
+        {triage?.tier === "LEVEL_1_URGENT" ? <div className="care-emergency" role="alert">
+          <h2>🛑 Suspected febrile neutropenia or emergency symptom</h2>
+          <p>{triage.action}</p>
+          <p className="small">This is an urgent safety prompt, not a diagnosis. Do not wait for a reply in this app.</p>
+        </div> : triage?.tier === "LEVEL_2_PRIORITY" ? <div className="care-notice warning" role="status"><b>Priority assessment needed</b><p>{triage.action}</p></div>
+          : triage ? <div className="care-notice info" role="status"><b>No urgent trigger detected by this screen.</b><p>This does not confirm that symptoms are safe. Follow your care team's instructions and seek help if you feel worse.</p></div>
+            : <p className="small muted">Enter a temperature or choose any symptom below to check the emergency rules.</p>}
+        {triageError && <p className="small" role="status">Live checker unavailable: {triageError}. If this may be an emergency, seek urgent care now.</p>}
+      </section>
       <form className="stack" onSubmit={submit}>
         {["nausea", "pain", "fatigue", "appetite", "breathing"].map((key) => (
           <div className="care-symptom" key={key}>
@@ -200,6 +239,16 @@ export function CheckIn({ pid, language, onUpdate, phoneDemo = false }) {
                 setValues((v) => ({ ...v, distress: Number(e.target.value) }))
               }
             />
+          </label>
+        </div>
+        <div className="stack">
+          <label className="field"><input type="checkbox" checked={values.shivering} onChange={(e) => setValues((v) => ({ ...v, shivering: e.target.checked }))} /> Shivering or chills/rigors</label>
+          {["chest_pain", "severe_breathlessness", "severe_vomiting", "intractable_diarrhea", "dehydration"].map((tag) => <label className="field" key={tag}>
+            <input type="checkbox" checked={values.symptom_tags.includes(tag)} onChange={(e) => setValues((v) => ({ ...v, symptom_tags: e.target.checked ? [...v.symptom_tags, tag] : v.symptom_tags.filter((item) => item !== tag) }))} />
+            {{ chest_pain: "Chest pain", severe_breathlessness: "Severe difficulty breathing", severe_vomiting: "Severe vomiting", intractable_diarrhea: "Severe diarrhea", dehydration: "Possible dehydration" }[tag]}
+          </label>)}
+          <label className="field">Days since chemotherapy (if known)
+            <input className="input" type="number" min="0" max="90" value={values.days_post_chemo} onChange={(e) => setValues((v) => ({ ...v, days_post_chemo: e.target.value }))} />
           </label>
         </div>
         <label className="field">
@@ -1083,5 +1132,6 @@ function EducationLibrary({ language }) {
     </Panel>
   );
 }
+
 
 
