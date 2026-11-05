@@ -122,7 +122,7 @@ def patient_chat_insight(db, pid, question, language="en"):
             "window_days": 30}
 
 
-def _supportive_fallback(question):
+def _supportive_fallback(question, clinical_user=False):
     """Give a safe, input-specific response when the language model is unavailable."""
     clean = re.sub(r"\s+", " ", safe_text(question)).strip(" \t\r\n?.!…")
     if len(clean) > 180:
@@ -131,8 +131,9 @@ def _supportive_fallback(question):
         return (f"You’re asking about a visit: “{clean}”. I can help you prepare questions, but I can’t confirm a time unless it is listed in your appointments. "
                 "Open Appointments to check the saved details, or tell me what you want to discuss.")
     if re.search(r"\b(report|scan|test|lab|result|diagnosis|stage|pathology)\b", question, re.I):
-        return (f"You’re asking about a report or result: “{clean}”. I can explain text that is available in your care folder; I don’t see a matching passage for this question. "
-                "Try the report title or date, or ask your care team to review it with you.")
+        folder = "the patient’s care folder" if clinical_user else "your care folder"
+        return (f"You’re asking about a report or result: “{clean}”. I don’t see a matching passage in {folder}. "
+                "Try the report title or date, or ask the treating team to review it.")
     if re.search(r"\b(pain|nausea|vomit|diarr|constipat|rash|fever|symptom|breath|bleed|swelling)\w*\b", question, re.I):
         return (f"You’re asking about a symptom: “{clean}”. I can’t assess its cause from this chat. Note when it started and how it is changing, and contact your care team for guidance. "
                 "If you have severe breathing trouble, chest pain, heavy bleeding, or fever during treatment, seek urgent medical help now.")
@@ -264,7 +265,8 @@ def _answer_unvalidated(db, pid, question, language="en", clinical_user=False, a
                         "sources": [s for s in profile if s["tag"] in cited]}
             return {"level": 0, "answer": _supportive_fallback(question), "sources": [],
                     "generation": "supportive fallback", "language": "en"}
-        return {"level": 0, "answer": {"en": "I could not find that in your records. Please ask your care team or upload the relevant report.", "hi": "यह जानकारी आपके रिकॉर्ड में नहीं मिली। अपनी देखभाल टीम से पूछें या संबंधित रिपोर्ट जोड़ें।", "mr": "ही माहिती तुमच्या नोंदीत सापडली नाही. उपचार पथकाला विचारा किंवा संबंधित अहवाल जोडा."}.get(language, "Not found in your records."), "sources": []}
+        return {"level": 0, "answer": _supportive_fallback(question, clinical_user), "sources": [],
+                "generation": "supportive fallback", "language": "en"}
     lines, sources, context = [], [], []
     for _,r,text in note_hits[:2]:
         lines.append(f"{r.kind.replace('_',' ')} [R{r.id}] ({r.approved_by or r.author_name}):\n{safe_text(text)[:700]}")
