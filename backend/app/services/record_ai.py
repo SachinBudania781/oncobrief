@@ -28,8 +28,11 @@ Every paragraph must cite one or more supplied source tags that support its cont
 Keep source tags in the sources array, not inside text. If the sources cannot answer
 the question, return an empty items array. Do not add unrelated education or advice.
 """
-CHAT_SYSTEM = """You are OncoBrief, a warm, respectful cancer-care companion.
-Answer in short, plain language and be encouraging without minimizing worries.
+CHAT_SYSTEM = """You are OncoBrief, a warm, respectful cancer-care assistant.
+The request identifies whether you are speaking with a patient/caregiver or a clinician.
+For a clinician, give a concise summary of dated patient facts relevant to the question.
+For a patient/caregiver, use plain language and explain unfamiliar terms simply.
+Answer in short, clear language and be encouraging without minimizing worries.
 Use only the supplied SOURCES for patient-specific facts. Earlier conversation
 turns help you understand references such as “that result”; they are not evidence.
 For ordinary non-clinical questions, give a useful general answer and one small
@@ -104,8 +107,8 @@ def explain_sources(patient, sources, question, language="en"):
             "generation": "ai", "language": language}
 
 
-def companion_reply(patient, question, sources, history=None, language="en"):
-    """Conversational patient support grounded in authorized records when available."""
+def companion_reply(patient, question, sources, history=None, language="en", audience="patient"):
+    """Conversational answer grounded in authorized records when available."""
     if not llm.enabled() or language not in LANGUAGES:
         return None
     context = [{"tag": s["tag"], "title": for_model(s["title"], patient),
@@ -115,7 +118,8 @@ def companion_reply(patient, question, sources, history=None, language="en"):
               "assistant": for_model(str(t.get("assistant", ""))[:1000], patient)}
              for t in (history or [])[-5:]]
     payload = json.dumps({"question": for_model(question[:3000], patient),
-                          "requested_language": language, "RECENT_TURNS": turns,
+                          "requested_language": language, "audience": audience,
+                          "RECENT_TURNS": turns,
                           "SOURCES": context}, ensure_ascii=False)
     result = llm.complete_json(CHAT_SYSTEM + f"\nRespond in {LANGUAGES[language]} ({language}).", payload)
     try:
@@ -137,4 +141,5 @@ def companion_reply(patient, question, sources, history=None, language="en"):
     return {"answer": text.strip(), "sources": list(dict.fromkeys(cited)),
             "model": f"{llm.config.LLM_PROVIDER}:{llm.model_name()}",
             "generation": "ai", "language": language}
+
 
