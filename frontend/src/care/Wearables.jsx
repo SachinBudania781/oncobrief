@@ -203,7 +203,7 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
   const readings = resource.data?.items || [];
   const canCapture = ["patient", "caregiver"].includes(viewerRole);
   const isPatient = viewerRole === "patient";
-  const canEnterActivity = viewerRole === "caregiver";
+  const canEnterActivity = ["patient", "caregiver"].includes(viewerRole);
   const canReviewActivity = ["caregiver", "doctor", "nurse", "navigator", "frontdesk", "admin"].includes(viewerRole);
   const activityThreshold = resource.data?.activity_threshold_steps;
   const [metric, setMetric] = useState(viewerRole === "patient" ? "heart_rate" : "steps");
@@ -244,7 +244,7 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
     });
   }, [demo, demoForMetric, readings]);
 
-  const availableMetrics = Object.entries(METRICS).filter(([key]) => !isPatient || !ACTIVITY_METRICS.has(key));
+  const availableMetrics = Object.entries(METRICS);
   const chartRows = useMemo(() => effectiveReadings
     .filter((row) => row.metric === metric)
     .map((row) => ({
@@ -519,7 +519,7 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
     { label: "Latest steps", point: steps, unit: "steps", icon: Footprints },
     { label: "Walking distance", point: distance, unit: "km", icon: Footprints },
     { label: "Active time", point: activeMinutes, unit: "min", icon: Activity },
-  ].filter((item) => !isPatient || !["Latest steps", "Walking distance", "Active time"].includes(item.label));
+  ];
   return (
     <div className="ob-wearables">
       <header className="ob-wear-head">
@@ -604,7 +604,7 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
         />
       )}
 
-      <section className="ob-wear-stats" aria-label={isPatient ? "Latest health readings" : "Latest health and activity readings"}>
+      <section className="ob-wear-stats" aria-label="Latest health and activity readings">
         {stats.map(({ label, point, unit, icon: Icon, value }) => (
           <article className="ob-wear-stat" key={label}>
             <span className="ob-wear-stat-icon"><Icon size={18} /></span>
