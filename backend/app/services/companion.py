@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timedelta
 from sqlalchemy import select
 from ..schemas import PatientChatResult, PatientExplanationParagraph, RedFlagAssessment
-from ..models import Activity, Appointment, Document, LabValue, Medication, MedLog, Patient, SymptomReport
+from ..models import Activity, Appointment, Document, LabValue, Medication, MedLog, Patient, SymptomReport, WearableReading
 from ..round2_models import AccessGrant, Alert, Approval, CareRecord, LibraryItem, Notification, User
 from .retrieval import question_documents
 
@@ -122,6 +122,18 @@ def patient_chat_insight(db, pid, question, language="en"):
             "window_days": 30}
 
 
+def patient_profile_context(patient):
+    facts = []
+    if patient.cancer_type:
+        facts.append("Recorded diagnosis: " + safe_text(patient.cancer_type))
+    if patient.stage:
+        facts.append("Recorded stage: " + safe_text(patient.stage))
+    if patient.current_regimen:
+        facts.append("Recorded treatment plan: " + safe_text(patient.current_regimen))
+    return ([{"tag": "P1", "title": "Care profile", "text": "\n".join(facts)}]
+            if facts else [])
+
+
 def _supportive_fallback(question, clinical_user=False):
     """Give a safe, input-specific response when the language model is unavailable."""
     clean = re.sub(r"\s+", " ", safe_text(question)).strip(" \t\r\n?.!…")
@@ -146,16 +158,137 @@ def _supportive_fallback(question, clinical_user=False):
             "I can look for a saved report if you name it, or help you prepare a question for your care team.")
 
 
-def patient_profile_context(patient):
-    facts = []
-    if patient.cancer_type:
-        facts.append("Recorded diagnosis: " + safe_text(patient.cancer_type))
-    if patient.stage:
-        facts.append("Recorded stage: " + safe_text(patient.stage))
-    if patient.current_regimen:
-        facts.append("Recorded treatment plan: " + safe_text(patient.current_regimen))
-    return ([{"tag": "P1", "title": "Care profile", "text": "\n".join(facts)}]
-            if facts else [])
+PATIENT_STATUS_QUESTION = re.compile(
+    r"\b(?:how is (?:the )?patient (?:doing|feeling)|how has (?:the )?patient been|"
+    r"patient status|overall status|overall condition|how are they doing|"
+    r"how is (?:she|he|they) doing|how has (?:she|he|they) been)\b", re.I
+)
+
+
+def _clinician_model_unavailable(question):
+    clean = re.sub(r"\s+", " ", safe_text(question)).strip()
+    if len(clean) > 180:
+        clean = clean[:177].rsplit(" ", 1)[0] + "…"
+    return (f"I can’t generate an open-ended answer to “{clean}” because the approved AI answer service "
+            "is not configured. I won’t substitute an unrelated report excerpt. You can still review the "
+            "patient’s dated records in the relevant sections of the chart.")
+
+
+def clinician_chat_context(db, patient, pid, allow_checkins=False, allow_medicines=False,
+                           allow_alerts=False, allow_activity=False, allow_appointments=False,
+                           allow_documents=True):
+    """Build small, dated, permission-scoped facts for conversational responses."""
+    sources = patient_profile_context(patient)
+    checkins = records(db, pid, "checkin")[:3] if allow_checkins else []
+    if checkins:
+        lines = []
+        for row in checkins:
+            data = row.data
+            ratings = ", ".join(f"{key} {data.get(key, 0)}/4" for key in
+                                 ("nausea", "pain", "fatigue", "appetite", "breathing"))
+            details = [f"patient-reported ratings (0–4; not CTCAE grades): {ratings}"]
+            if data.get("temperature") is not None:
+                details.append(f"reported temperature {data['temperature']} °C")
+            if data.get("shivering"):
+                details.append("reported shivering")
+            if data.get("symptom_tags"):
+                details.append("reported tags: " + ", ".join(map(str, data["symptom_tags"][:10])))
+            if data.get("text"):
+                details.append("patient note: " + safe_text(str(data["text"]))[:500])
+            lines.append(f"{row.created_at:%Y-%m-%d}: " + "; ".join(details))
+        sources.append({"tag": f"R{checkins[0].id}", "title": "Recent patient check-ins",
+                        "text": "\n".join(lines)})
+    elif allow_checkins:
+        sources.append({"tag": "C0", "title": "Patient check-ins", "text": "No patient check-ins are recorded."})
+
+    if allow_documents:
+        labs = db.scalars(select(LabValue).where(
+            LabValue.patient_id == pid
+        ).order_by(LabValue.measured_at.desc())).all()
+        latest_labs = {}
+        for lab in labs:
+            latest_labs.setdefault(lab.test, lab)
+        if latest_labs:
+            detail = [f"{lab.test}: {lab.value} {lab.unit}"
+                      f"{f' ({lab.flag})' if lab.flag else ''} on {lab.measured_at:%Y-%m-%d}"
+                      for _, lab in sorted(latest_labs.items())]
+            sources.append({"tag": "L1", "title": "Latest structured lab results", "text": "\n".join(detail)})
+
+    if allow_medicines:
+        active = db.scalars(select(Medication).where(
+            Medication.patient_id == pid, Medication.active.is_(True)
+        ).order_by(Medication.name)).all()
+        since = utcnow() - timedelta(days=7)
+        logs = db.scalars(select(MedLog).where(
+            MedLog.patient_id == pid, MedLog.logged_at >= since
+        )).all()
+        if active or logs:
+            meds = [f"{m.name} {m.dose}; {m.frequency}" for m in active]
+            status_counts = {status: sum(log.status == status for log in logs)
+                             for status in ("taken", "missed")}
+            summary = "Active prescriptions: " + ("; ".join(meds) if meds else "none recorded")
+            summary += f". Medication logs in the last 7 days: {status_counts['taken']} taken, {status_counts['missed']} missed."
+            sources.append({"tag": "M1", "title": "Current medicines and recent logs", "text": summary})
+
+    if allow_alerts:
+        alerts = db.scalars(select(Alert).where(
+            Alert.patient_id == pid, Alert.status != "resolved"
+        ).order_by(Alert.created_at.desc()).limit(5)).all()
+        detail = [f"{a.created_at:%Y-%m-%d}: {a.severity} — {safe_text(a.reason)[:300]}" for a in alerts]
+        sources.append({"tag": "A1", "title": "Open care alerts",
+                        "text": "\n".join(detail) if detail else "No open care alerts are recorded."})
+
+    if allow_activity:
+        readings = db.scalars(select(WearableReading).where(
+            WearableReading.patient_id == pid,
+            WearableReading.observed_at >= utcnow() - timedelta(days=7),
+        ).order_by(WearableReading.observed_at.desc()).limit(100)).all()
+        latest = {}
+        for reading in readings:
+            latest.setdefault(reading.metric, reading)
+        activities = db.scalars(select(Activity).where(
+            Activity.patient_id == pid,
+            Activity.date >= utcnow() - timedelta(days=7),
+        ).order_by(Activity.date.desc()).limit(14)).all()
+        for activity in activities:
+            latest.setdefault("steps", activity)
+            latest.setdefault("sleep_hours", activity)
+            latest.setdefault("resting_hr", activity)
+        if latest:
+            detail = []
+            for metric, row in sorted(latest.items()):
+                if isinstance(row, WearableReading):
+                    detail.append(f"{metric}: {row.value} {row.unit} on {row.observed_at:%Y-%m-%d} ({row.source})")
+                else:
+                    value = {"steps": row.steps, "sleep_hours": row.sleep_hours,
+                             "resting_hr": row.resting_hr}[metric]
+                    unit = {"steps": "steps", "sleep_hours": "h", "resting_hr": "bpm"}[metric]
+                    detail.append(f"{metric}: {value} {unit} on {row.date:%Y-%m-%d} (daily activity entry)")
+            sources.append({"tag": "W1", "title": "Recent wearable readings", "text": "\n".join(detail)})
+
+    if allow_appointments:
+        upcoming = db.scalars(select(Appointment).where(
+            Appointment.patient_id == pid, Appointment.status == "booked",
+            Appointment.start >= utcnow(),
+        ).order_by(Appointment.start).limit(3)).all()
+        detail = [f"{a.start:%Y-%m-%d %H:%M}: {a.department}, {a.visit_type} with {a.clinician}"
+                  for a in upcoming]
+        sources.append({"tag": "V1", "title": "Upcoming appointments",
+                        "text": "\n".join(detail) if detail else "No upcoming booked appointments are recorded."})
+    return sources
+
+
+def deterministic_patient_status(patient, sources, language="en"):
+    """Accurate status snapshot when no approved conversational model is available."""
+    lines = [f"Recorded diagnosis: {patient.cancer_type or 'not recorded'}; stage: {patient.stage or 'not recorded'}.",
+             f"Recorded treatment plan: {patient.current_regimen or 'none recorded'}."]
+    for source in sources:
+        if source["tag"] != "P1":
+            lines.append(f"{source['title']}: {source['text']}")
+    lines.append("This is a summary of recorded information, not a clinical assessment. The AI answer service is not configured for open-ended replies right now.")
+    return {"level": 0, "answer": "\n\n".join(lines),
+            "sources": [{"tag": source["tag"], "title": source["title"]} for source in sources],
+            "generation": "records summary", "language": "en"}
 
 
 def living_summary(db, pid, include_notes=True, include_checkins=True, include_medicines=True):
@@ -195,7 +328,9 @@ def living_summary(db, pid, include_notes=True, include_checkins=True, include_m
 
 
 def _answer_unvalidated(db, pid, question, language="en", clinical_user=False, allow_notes=True,
-                        conversation_id="", user_id=None, user_role="patient"):
+                        conversation_id="", user_id=None, user_role="patient", allow_checkins=False,
+                        allow_medicines=False, allow_alerts=False, allow_activity=False,
+                        allow_appointments=False):
     p = db.get(Patient, pid)
     history = []
     if conversation_id and user_id is not None:
@@ -226,14 +361,11 @@ def _answer_unvalidated(db, pid, question, language="en", clinical_user=False, a
         db.commit()
         notify_team(db, pid, "Clinical question awaiting review", "A patient question needs the treating doctor.")
         return {"level": 2, "answer": {"en": "Your question has been sent to your treating doctor. Continue only your current signed plan until your doctor advises you.", "hi": "आपका प्रश्न डॉक्टर को भेज दिया गया है। डॉक्टर की सलाह तक अपनी हस्ताक्षरित योजना का पालन करें।", "mr": "तुमचा प्रश्न डॉक्टरांकडे पाठवला आहे. डॉक्टरांचा सल्ला येईपर्यंत सध्याच्या स्वाक्षरी केलेल्या योजनेचे पालन करा."}.get(language, "Sent to your treating doctor."), "sources": [], "request_id": req.id}
-    if any(w in low for w in ["lonely", "scared", "worried", "sad", "anxious", "डर", "चिंता", "भीती"]):
-        return {"level": 0, "answer": {"en": "That sounds difficult. What has felt hardest today? I can listen and help you ask your care team for support. I am a support companion, not a therapist.", "hi": "यह मुश्किल लग रहा है। आज सबसे कठिन क्या लगा? मैं आपकी बात सुन सकता हूँ और टीम से सहायता माँगने में मदद कर सकता हूँ। मैं चिकित्सक नहीं हूँ।", "mr": "हे कठीण वाटत आहे. आज सर्वात अवघड काय वाटले? मी ऐकू शकतो आणि पथकाची मदत मागण्यास सहाय्य करू शकतो. मी थेरपिस्ट नाही."}.get(language, "I can listen and help contact your care team."), "sources": [{"title": "NCI: Emotions and Cancer", "url": "https://www.cancer.gov/about-cancer/coping/feelings"}]}
-    guide_key = "meals" if any(w in low for w in ["food", "meal", "diet", "खाना", "जेवण"]) else "activity" if any(w in low for w in ["walk", "exercise", "yoga", "व्यायाम", "चाल"]) else None
-    if guide_key:
-        g = db.scalar(select(LibraryItem).where(LibraryItem.key == guide_key, LibraryItem.approved_by.is_not(None)))
-        if g:
-            return {"level": 1, "answer": g.content.get(language, g.content.get("en", "Ask your care team for approved guidance.")),
-                    "sources": [{"title": g.title, "url": g.source_url}], "library_approved_by": g.approved_by}
+    chat_context = clinician_chat_context(
+        db, p, pid, allow_checkins, allow_medicines, allow_alerts, allow_activity,
+        allow_appointments, allow_documents=True,
+    )
+    status_question = bool(clinical_user and PATIENT_STATUS_QUESTION.search(question))
     translated_query=question
     for local,english in {"सीबीसी":"CBC","हीमोग्लोबिन":"haemoglobin","खून की रिपोर्ट":"CBC","रक्त तपासणी":"CBC","स्कैन":"scan","रिपोर्ट":"report","अहवाल":"report","मतली":"nausea","मळमळ":"nausea","थकान":"fatigue","थकवा":"fatigue"}.items():
         translated_query=translated_query.replace(local,english)
@@ -243,6 +375,8 @@ def _answer_unvalidated(db, pid, question, language="en", clinical_user=False, a
     if allow_notes:
         terms=set(re.findall(r"\w{3,}",translated_query.lower()))-{"the","what","was","were","show","find","last"}
         for r in records(db,pid):
+            if r.kind == "checkin" and not allow_checkins:
+                continue
             if r.kind in {"takeaway","scribe","board_decision","roadmap","survivorship"} and r.status=="approved":
                 text=" ".join(str(r.data.get(k,"")) for k in ("text","assessment","plan"))
             elif r.kind=="checkin":
@@ -255,16 +389,23 @@ def _answer_unvalidated(db, pid, question, language="en", clinical_user=False, a
         note_hits.sort(key=lambda x:(x[0],x[1].id),reverse=True)
     if not hits and not note_hits:
         asks_records = bool(re.search(r"\b(record|report|result|scan|test|cbc|lab|prescription|diagnosis|stage|history)\b|रिपोर्ट|अहवाल|सीबीसी", low, re.I))
-        if not asks_records and not clinical_user:
+        if not asks_records:
             from .record_ai import companion_reply
-            profile = patient_profile_context(p)
-            generated = companion_reply(p, question, profile, history, language)
+            generated = companion_reply(p, question, chat_context, history, language,
+                                        "clinician" if clinical_user else "patient")
             if generated:
                 cited = set(generated["sources"])
                 return {"level": 0, **generated,
-                        "sources": [s for s in profile if s["tag"] in cited]}
+                        "sources": [s for s in chat_context if s["tag"] in cited]}
+            if status_question:
+                return deterministic_patient_status(p, chat_context, language)
+            if clinical_user:
+                return {"level": 0, "answer": _clinician_model_unavailable(question),
+                        "sources": [], "generation": "supportive fallback", "language": "en"}
             return {"level": 0, "answer": _supportive_fallback(question), "sources": [],
                     "generation": "supportive fallback", "language": "en"}
+        if status_question:
+            return deterministic_patient_status(p, chat_context, language)
         return {"level": 0, "answer": _supportive_fallback(question, clinical_user), "sources": [],
                 "generation": "supportive fallback", "language": "en"}
     lines, sources, context = [], [], []
@@ -284,20 +425,26 @@ def _answer_unvalidated(db, pid, question, language="en", clinical_user=False, a
         sources.append({"tag": f"D{d.id}", "title": d.title, "id": d.id})
         context.append({"tag": f"D{d.id}", "title": d.title,
                         "text": f"Report date: {d.record_date:%Y-%m-%d}\n{clean}"})
-    if not clinical_user:
-        for item in patient_profile_context(p):
+    for item in chat_context:
+        if item["tag"] not in {source.get("tag") for source in sources}:
             context.append(item)
             sources.append({"tag": item["tag"], "title": item["title"]})
     prefix = {"en": "These are excerpts from your reports, not a new clinical recommendation:", "hi": "ये आपकी रिपोर्ट के अंश हैं, नई चिकित्सीय सलाह नहीं। मूल रिपोर्ट का पाठ:", "mr": "हे तुमच्या अहवालातील उतारे आहेत, नवीन वैद्यकीय सल्ला नाही. मूळ अहवालाचा मजकूर:"}.get(language, "From your records:")
     if not lines:
         return {"level": 2, "answer": "This passage needs your doctor's explanation. Please open your original record and ask your treating team.", "sources": []}
     from .record_ai import companion_reply, explain_sources
-    if not clinical_user:
-        generated_chat = companion_reply(p, question, context, history, language)
-        if generated_chat:
-            cited = set(generated_chat["sources"])
-            return {"level": 0, **generated_chat,
-                    "sources": [s for s in sources if s["tag"] in cited]}
+    generated_chat = companion_reply(p, question, context, history, language,
+                                     "clinician" if clinical_user else "patient")
+    if generated_chat:
+        cited = set(generated_chat["sources"])
+        return {"level": 0, **generated_chat,
+                "sources": [s for s in sources if s["tag"] in cited]}
+    if status_question:
+        return deterministic_patient_status(p, chat_context, language)
+    asks_records = bool(re.search(r"\b(record|report|result|scan|test|cbc|lab|prescription|diagnosis|stage|history)\b|रिपोर्ट|अहवाल|सीबीसी", low, re.I))
+    if clinical_user and not asks_records:
+        return {"level": 0, "answer": _clinician_model_unavailable(question),
+                "sources": [], "generation": "supportive fallback", "language": "en"}
     generated = explain_sources(p, context, question, language)
     if generated:
         cited = {tag for item in generated["items"] for tag in item["sources"]}
@@ -385,10 +532,12 @@ def _validated_chat_result(raw, requested_language):
 
 
 def answer(db, pid, question, language="en", clinical_user=False, allow_notes=True,
-           conversation_id="", user_id=None, user_role="patient"):
+           conversation_id="", user_id=None, user_role="patient", allow_checkins=False,
+           allow_medicines=False, allow_alerts=False, allow_activity=False, allow_appointments=False):
     """Return a stable Pydantic-validated response for every chat outcome."""
     raw = _answer_unvalidated(db, pid, question, language, clinical_user, allow_notes,
-                              conversation_id, user_id, user_role)
+                              conversation_id, user_id, user_role, allow_checkins,
+                              allow_medicines, allow_alerts, allow_activity, allow_appointments)
     return _validated_chat_result(raw, language)
 
 
@@ -441,4 +590,5 @@ def command_centre(db, ids):
                     "blocker": blocker,
                     "diagnosis_days": (now - p.diagnosis_date).days if p.diagnosis_date else None})
     return sorted(out, key=lambda r: r["score"], reverse=True)
+
 
