@@ -937,14 +937,30 @@ def wearable_history(patient_id: str, request: Request, days: int = 30, db=Depen
     user = patient_access(db, request, patient_id, "activity")
     days = min(365, max(1, days))
     since = utcnow() - timedelta(days=days)
+    since_naive = since.astimezone(timezone.utc).replace(tzinfo=None)
     statement = select(WearableReading).where(
-        WearableReading.patient_id == patient_id, WearableReading.observed_at >= since
+        WearableReading.patient_id == patient_id, WearableReading.observed_at >= since_naive
     )
-    if user.role == "patient":
-        statement = statement.where(WearableReading.metric.notin_(ACTIVITY_METRICS))
     rows = db.scalars(statement.order_by(WearableReading.observed_at.desc()).limit(5000)).all()
     rows.reverse()
-    payload = {"days": days, "items": [serial(row) for row in rows]}
+    items = [serial(row) for row in rows]
+    # Older daily check-ins predate WearableReading. Include those saved Activity
+    # records so patient-entered history remains visible in the same trend charts.
+    activity_rows = db.scalars(select(Activity).where(
+        Activity.patient_id == patient_id, Activity.date >= since_naive
+    ).order_by(Activity.date.asc(), Activity.id.asc())).all()
+    for activity in activity_rows:
+        observed_at = activity.date.isoformat() + ("Z" if activity.date.tzinfo is None else "")
+        for metric, value, unit in (
+            ("steps", activity.steps, "steps"),
+            ("sleep_hours", activity.sleep_hours, "h"),
+            ("heart_rate", activity.resting_hr, "bpm"),
+        ):
+            items.append({"id": f"activity-{activity.id}-{metric}", "patient_id": patient_id,
+                          "metric": metric, "value": value, "unit": unit,
+                          "observed_at": observed_at, "source": "manual", "device_name": "Daily activity entry"})
+    items.sort(key=lambda item: item["observed_at"])
+    payload = {"days": days, "items": items[-5000:]}
     if user.role != "patient":
         payload["activity_threshold_steps"] = low_activity_steps_threshold()
         protocol = current_vital_alert_protocol(db, patient_id)
