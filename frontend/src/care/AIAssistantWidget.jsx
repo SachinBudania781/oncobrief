@@ -247,7 +247,7 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, embedd
                       )) : <><p>{message.result.answer}</p><SourceLinks sources={message.result.sources} onOpen={onOpen} /></>}
                       <div className="care-ai-answer-foot">
                         <Status value={levelNames[message.result.level] || "inform"} />
-                        <span>{message.result.generation === "ai" ? "AI-assisted" : "From your records"}</span>
+                        <span>{message.result.generation === "ai" ? "AI-assisted" : message.result.generation === "supportive fallback" ? "Support guidance" : message.result.generation === "extractive" ? "From your records" : "Care assistant"}</span>
                         <button aria-label="Listen to answer" title="Listen to answer" onClick={() => { try { speak(message.result.answer, message.result.language || language); } catch (e) { setError(e.message); } }}><Volume2 size={15} /></button>
                       </div>
                     </>}
