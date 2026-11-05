@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -7,6 +7,7 @@ from ..db import get_db
 from ..models import Brief, Patient
 from ..schemas import AlertSeverity, SafetyAlert, TumorBoardSynopticBrief
 from ..services import llm
+from ..services import clinical_engine
 from ..services.brief import generate_brief
 from .common import Actor, audit, get_actor, load_patient
 from .patients import patient_dict
@@ -17,6 +18,77 @@ router = APIRouter(prefix="/api", tags=["brief"])
 class BriefIn(BaseModel):
     patient_id: str
     visit_type: str = "follow_up"     # follow_up | new | transfer
+
+
+class ClinicalStageIn(BaseModel):
+    site: str = Field(min_length=1, max_length=100)
+    t: str = Field(min_length=1, max_length=20)
+    n: str = Field(min_length=1, max_length=20)
+    m: str = Field(min_length=1, max_length=20)
+
+
+class ClinicalDosingIn(BaseModel):
+    age_years: int = Field(ge=18, le=120)
+    weight_kg: float = Field(gt=0, le=400)
+    height_cm: float = Field(gt=0, le=250)
+    serum_creatinine_mg_dl: float = Field(gt=0, le=50)
+    is_female: bool
+    regimen: str = Field(default="", max_length=200)
+    anc_per_ul: float | None = Field(default=None, ge=0)
+    lvef_percent: float | None = Field(default=None, ge=0, le=100)
+    platelets_per_ul: float | None = Field(default=None, ge=0)
+    bilirubin_mg_dl: float | None = Field(default=None, ge=0)
+
+
+class ClinicalTriageIn(BaseModel):
+    temperature_c: float | None = Field(default=None, ge=25, le=45)
+    symptom_tags: list[str] = Field(default_factory=list, max_length=20)
+    days_post_chemo: int | None = Field(default=None, ge=0, le=90)
+
+
+def _require_role(actor: Actor, *allowed: str) -> None:
+    if actor.role not in allowed:
+        raise HTTPException(403, "This clinical tool is not available to your role")
+
+
+@router.post("/clinical/stage")
+def deterministic_stage(body: ClinicalStageIn, actor: Actor = Depends(get_actor)):
+    _require_role(actor, "doctor", "admin")
+    return {"stage": clinical_engine.compute_tnm_stage(body.site, body.t, body.n, body.m),
+            "basis": "AJCC 8 anatomical stage group; confirm edition, staging context, and source TNM with the oncology team."}
+
+
+@router.post("/clinical/dosing")
+def deterministic_dosing(body: ClinicalDosingIn, actor: Actor = Depends(get_actor)):
+    _require_role(actor, "doctor", "admin")
+    try:
+        metrics = clinical_engine.calculate_patient_dosing_metrics(
+            body.age_years, body.weight_kg, body.height_cm,
+            body.serum_creatinine_mg_dl, body.is_female,
+        )
+        alerts = clinical_engine.run_organ_safety_screening(
+            body.regimen, metrics.crcl_ml_min, body.anc_per_ul,
+            body.lvef_percent, body.platelets_per_ul, body.bilirubin_mg_dl,
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {
+        "metrics": metrics.model_dump(),
+        "alerts": [alert.model_dump() for alert in alerts],
+        "notice": ("Calculated estimates for clinician review. Confirm the dosing weight, renal metric, "
+                   "and current regimen-specific protocol before any treatment decision."),
+    }
+
+
+@router.post("/clinical/triage")
+def deterministic_triage(body: ClinicalTriageIn, actor: Actor = Depends(get_actor)):
+    _require_role(actor, "patient", "caregiver", "doctor", "nurse", "admin")
+    try:
+        return clinical_engine.triage_patient_symptom(
+            body.temperature_c, body.symptom_tags, body.days_post_chemo
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 class BriefResponse(BaseModel):
@@ -89,4 +161,5 @@ def past_briefs(patient: Patient = Depends(load_patient), db: Session = Depends(
 def ai_status():
     return {"llm_enabled": llm.enabled(), "provider": llm.config.LLM_PROVIDER if llm.enabled() else None,
             "model": llm.model_name() if llm.enabled() else "deterministic writer"}
+
 
