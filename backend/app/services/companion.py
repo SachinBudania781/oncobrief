@@ -122,6 +122,29 @@ def patient_chat_insight(db, pid, question, language="en"):
             "window_days": 30}
 
 
+def _supportive_fallback(question):
+    """Give a safe, input-specific response when the language model is unavailable."""
+    clean = re.sub(r"\s+", " ", safe_text(question)).strip(" \t\r\n?.!…")
+    if len(clean) > 180:
+        clean = clean[:177].rsplit(" ", 1)[0] + "…"
+    if re.search(r"\b(appointment|visit|schedule|clinic|meet|doctor)\b", question, re.I):
+        return (f"You’re asking about a visit: “{clean}”. I can help you prepare questions, but I can’t confirm a time unless it is listed in your appointments. "
+                "Open Appointments to check the saved details, or tell me what you want to discuss.")
+    if re.search(r"\b(report|scan|test|lab|result|diagnosis|stage|pathology)\b", question, re.I):
+        return (f"You’re asking about a report or result: “{clean}”. I can explain text that is available in your care folder; I don’t see a matching passage for this question. "
+                "Try the report title or date, or ask your care team to review it with you.")
+    if re.search(r"\b(pain|nausea|vomit|diarr|constipat|rash|fever|symptom|breath|bleed|swelling)\w*\b", question, re.I):
+        return (f"You’re asking about a symptom: “{clean}”. I can’t assess its cause from this chat. Note when it started and how it is changing, and contact your care team for guidance. "
+                "If you have severe breathing trouble, chest pain, heavy bleeding, or fever during treatment, seek urgent medical help now.")
+    if re.search(r"\b(food|meal|diet|eat|drink|nutrition|exercise|walk|yoga|activity)\w*\b", question, re.I):
+        return (f"You’re asking about daily routines: “{clean}”. What is appropriate can depend on your treatment and current symptoms, so I can’t recommend a personal diet or activity change. "
+                "I can help you write a focused question for your oncology team.")
+    if re.search(r"\b(hello|hi|hey|thanks|thank you|good morning|good evening)\b", question, re.I):
+        return "Hello. I’m here to help with a care-folder question or to prepare something to discuss with your team. What would be useful right now?"
+    return (f"I heard your question: “{clean}”. I don’t have a verified care instruction for that specific topic. "
+            "I can look for a saved report if you name it, or help you prepare a question for your care team.")
+
+
 def patient_profile_context(patient):
     facts = []
     if patient.cancer_type:
@@ -239,11 +262,8 @@ def _answer_unvalidated(db, pid, question, language="en", clinical_user=False, a
                 cited = set(generated["sources"])
                 return {"level": 0, **generated,
                         "sources": [s for s in profile if s["tag"] in cited]}
-            return {"level": 0, "answer": {
-                "en": "I’m here with you. I can help with everyday planning and questions. I don’t have a verified care instruction for that specific topic, so tell me a little more and I can help you prepare a question for your team.",
-                "hi": "मैं आपके साथ हूँ। मैं रोज़मर्रा की योजना और सवालों में मदद कर सकता हूँ। इस विषय पर मेरे पास आपकी देखभाल टीम का सत्यापित निर्देश नहीं है; थोड़ा और बताइए, मैं टीम से पूछने के लिए सवाल तैयार करने में मदद करूँगा।",
-                "mr": "मी तुमच्यासोबत आहे. दैनंदिन नियोजन आणि प्रश्नांमध्ये मदत करू शकतो. या विषयासाठी तुमच्या उपचार पथकाची पडताळलेली सूचना माझ्याकडे नाही; थोडे अधिक सांगा, पथकाला विचारण्यासाठी प्रश्न तयार करू.",
-            }.get(language, "I’m here with you. I can help with everyday planning, but I don’t have a verified care instruction for this topic."), "sources": [], "generation": "supportive fallback"}
+            return {"level": 0, "answer": _supportive_fallback(question), "sources": [],
+                    "generation": "supportive fallback", "language": "en"}
         return {"level": 0, "answer": {"en": "I could not find that in your records. Please ask your care team or upload the relevant report.", "hi": "यह जानकारी आपके रिकॉर्ड में नहीं मिली। अपनी देखभाल टीम से पूछें या संबंधित रिपोर्ट जोड़ें।", "mr": "ही माहिती तुमच्या नोंदीत सापडली नाही. उपचार पथकाला विचारा किंवा संबंधित अहवाल जोडा."}.get(language, "Not found in your records."), "sources": []}
     lines, sources, context = [], [], []
     for _,r,text in note_hits[:2]:
