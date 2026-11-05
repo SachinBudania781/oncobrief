@@ -208,6 +208,12 @@ function DeterministicClinicalPanel({ patient }) {
   const field = (key, label, min, max, step = "any") => <label className="field" key={key}>{label}
     <input className="input" type="number" min={min} max={max} step={step} value={values[key]} onChange={(event) => update(key, event.target.value)} />
   </label>;
+  const metricCards = dosing?.metrics ? [
+    { name: "BSA", value: `${dosing.metrics.bsa_m2} m²` },
+    { name: "CrCl", value: `${dosing.metrics.crcl_ml_min} mL/min` },
+    { name: "Carboplatin AUC 5", value: `${dosing.metrics.carboplatin_auc5_mg} mg` },
+    { name: "Carboplatin AUC 6", value: `${dosing.metrics.carboplatin_auc6_mg} mg` },
+  ] : [];
 
   return <section className="care-clinical-tools">
     <Panel title="Deterministic staging" hint="AJCC 8 anatomical stage grouping from clinician-selected source TNM. It does not infer TNM from the report.">
@@ -234,7 +240,7 @@ function DeterministicClinicalPanel({ patient }) {
       </div>
       {dosingBusy && <p className="small muted">Recalculating…</p>}
       {dosing?.metrics && <div className="grid2" style={{ marginTop: 14 }}>
-        {[["BSA", `${dosing.metrics.bsa_m2} m²"], ["CrCl", `${dosing.metrics.crcl_ml_min} mL/min`], ["Carboplatin AUC 5", `${dosing.metrics.carboplatin_auc5_mg} mg`], ["Carboplatin AUC 6", `${dosing.metrics.carboplatin_auc6_mg} mg`]].map(([name,value]) => <div className="care-notice info" key={name}><small>{name}</small><div style={{ fontSize: 20, fontWeight: 700 }}>{value}</div></div>)}
+        {metricCards.map(({ name, value }) => <div className="care-notice info" key={name}><small>{name}</small><div style={{ fontSize: 20, fontWeight: 700 }}>{value}</div></div>)}
       </div>}
       {dosing?.metrics?.gfr_capped && <p className="care-notice warning">Carboplatin calculation capped the GFR input at 125 mL/min.</p>}
       {dosing?.alerts?.map((alert, index) => <div className={alert.severity === "CRITICAL" ? "care-emergency" : "care-notice warning"} role={alert.severity === "CRITICAL" ? "alert" : "status"} key={`${alert.parameter}-${index}`}><b>{alert.severity}: {alert.parameter}</b><p>{alert.observation}</p><p>{alert.guideline_action}</p></div>)}
