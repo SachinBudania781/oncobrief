@@ -837,6 +837,16 @@
 .care-bodymap > div {
   flex: 1;
 }
+.care-bodymap-findings { display: grid; gap: 10px; align-content: center; }
+.care-bodymap-finding { display: flex; align-items: flex-start; gap: 11px; padding: 12px 14px; border: 1px solid #e2ece8; border-radius: 14px; background: linear-gradient(135deg,#fff,#f6faf8); }
+.care-bodymap-number { display: grid; place-items: center; flex: 0 0 27px; width: 27px; height: 27px; color: #fff; background: #c86979; border-radius: 50%; font-size: 12px; font-weight: 750; }
+.care-bodymap-finding > div { display: grid; gap: 3px; }
+.care-bodymap-finding b { color: #294a43; font-size: 13px; }
+.care-bodymap-value { color: #496c66; font-size: 12px; }
+.care-bodymap-finding small { color: #8ba09b; font-size: 10px; }
+.care-bodymap-empty { display: grid; justify-items: start; gap: 7px; padding: 17px; color: #6b8781; border: 1px dashed #cfdfdb; border-radius: 15px; background: #f8fbfa; }
+.care-bodymap-empty b { color: #42625c; font-size: 13px; }
+.care-bodymap-empty span { color: #849994; font-size: 11px; line-height: 1.5; }
 .care-bodymap g[role="button"] {
   cursor: pointer;
 }
@@ -1327,3 +1337,4 @@
     overflow: visible !important;
   }
 }
+

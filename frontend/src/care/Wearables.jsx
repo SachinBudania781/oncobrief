@@ -16,8 +16,10 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
+  Legend,
   ResponsiveContainer,
   ReferenceLine,
+  Line,
   Tooltip as ChartTooltip,
   XAxis,
   YAxis,
@@ -52,6 +54,37 @@ const METRICS = {
 };
 const ACTIVITY_METRICS = new Set(["steps", "distance_km", "active_minutes", "sleep_hours"]);
 const RANGE_OPTIONS = [7, 30, 90, 365];
+
+function combinedTrendRows(readings, days) {
+  const cutoff = Date.now() - days * 86400000;
+  const groups = new Map();
+  for (const row of readings) {
+    const time = new Date(row.observed_at).getTime();
+    if (!METRICS[row.metric] || !Number.isFinite(time) || time < cutoff || !Number.isFinite(Number(row.value))) continue;
+    const day = new Date(time).toISOString().slice(0, 10);
+    if (!groups.has(day)) groups.set(day, { day, time: new Date(`${day}T12:00:00`).getTime(), values: {}, sourceByMetric: {} });
+    const point = groups.get(day);
+    // Keep the latest point for each measure on each day.
+    if (!point.sourceByMetric[row.metric] || time >= new Date(point.sourceByMetric[row.metric].observed_at).getTime()) {
+      point.values[row.metric] = Number(row.value);
+      point.sourceByMetric[row.metric] = row;
+    }
+  }
+  const rows = [...groups.values()].sort((a, b) => a.time - b.time);
+  const maxima = Object.fromEntries(Object.keys(METRICS).map((key) => [key, Math.max(0, ...rows.map((row) => row.values[key] ?? 0))]));
+  return rows.map((row) => ({
+    ...row,
+    ...Object.fromEntries(Object.keys(METRICS).map((key) => [key, row.values[key] == null ? null : (maxima[key] ? row.values[key] / maxima[key] * 100 : 0)])),
+  }));
+}
+
+function CombinedTrendTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0].payload;
+  const readings = Object.keys(METRICS).filter((key) => row.values[key] != null);
+  if (!readings.length) return null;
+  return <div className="ob-wear-tooltip"><b>{shortDate(row.day)}</b>{readings.map((key) => <div key={key} style={{ color: METRICS[key].color }}>{METRICS[key].label}: {Number(row.values[key]).toLocaleString("en-IN")} {METRICS[key].unit}</div>)}</div>;
+}
 
 function sfloat(view, offset = 0) {
   if (offset + 2 > view.byteLength) return NaN;
@@ -255,6 +288,7 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
     }))
     .filter((row) => Number.isFinite(row.time) && row.time >= Date.now() - days * 86400000)
     .slice(-1500), [days, effectiveReadings, metric]);
+  const combinedRows = useMemo(() => combinedTrendRows(effectiveReadings, days), [days, effectiveReadings]);
   const hasAggregatedRows = chartRows.some((row) => row.aggregated);
   const chartMin = chartRows.length
     ? Math.min(...chartRows.map((row) => Math.min(Number(row.value), Number(row.min_value ?? row.value))))
@@ -594,7 +628,7 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
         {deviceResource.error && <p className="care-error" role="alert">{deviceResource.error}</p>}
       </Panel>}
 
-      {viewerRole === "doctor" && (
+      {viewerRole === "doctor" && !embedded && (
         <VitalAlertProtocolEditor
           key={pid + ":" + (resource.data?.vital_protocol?.approved_at || "none")}
           pid={pid}
@@ -604,7 +638,7 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
         />
       )}
 
-      <section className="ob-wear-stats" aria-label="Latest health and activity readings">
+      {!embedded && <section className="ob-wear-stats" aria-label="Latest health and activity readings">
         {stats.map(({ label, point, unit, icon: Icon, value }) => (
           <article className="ob-wear-stat" key={label}>
             <span className="ob-wear-stat-icon"><Icon size={18} /></span>
@@ -613,11 +647,32 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
             <span className="ob-wear-stat-source">{["bluetooth", "android_ble"].includes(point?.source) ? "From connected device" : point?.source === "manual" ? "Manual entry" : point?.source === "demo" ? "Illustrative demo" : "No readings"}</span>
           </article>
         ))}
-      </section>
+      </section>}
 
-      <Panel title="Longitudinal trends" hint={canReviewActivity && activityThreshold != null
-        ? "Review saved readings over time. The dashed steps line is the " + activityThreshold.toLocaleString("en-IN") + " daily-step review threshold; low-activity notices go to assigned care team members only."
-        : "Review readings over time. The chart uses saved patient data when available."}>
+      <Panel title="Longitudinal trends" hint={embedded
+        ? "All available vital and activity measures are shown together. Each colored line is scaled independently for trend visibility; hover to see the recorded value and unit."
+        : canReviewActivity && activityThreshold != null
+          ? "Review saved readings over time. The dashed steps line is the " + activityThreshold.toLocaleString("en-IN") + " daily-step review threshold; low-activity notices go to assigned care team members only."
+          : "Review readings over time. The chart uses saved patient data when available."}>
+        {embedded ? (
+          chartRows.length || combinedRows.length ? <div className="ob-wear-chart">
+            <ResponsiveContainer width="100%" height={340}>
+              <LineChart data={combinedRows} margin={{ top: 10, right: 10, left: 0, bottom: 10 }} onClick={(event) => {
+                const point = event?.activePayload?.find((item) => item?.dataKey && METRICS[item.dataKey]);
+                const source = point?.payload?.sourceByMetric?.[point.dataKey];
+                if (source) setSelectedReading(source);
+              }}>
+                <CartesianGrid strokeDasharray="3 5" vertical={false} stroke="#e6ece8" />
+                <XAxis dataKey="time" type="number" domain={["dataMin", "dataMax"]} tickFormatter={shortDate} tickCount={6} axisLine={false} tickLine={false} fontSize={11} />
+                <YAxis domain={[0, 100]} tickFormatter={(value) => `${value}%`} axisLine={false} tickLine={false} fontSize={11} />
+                <ChartTooltip content={<CombinedTrendTooltip />} />
+                <Legend formatter={(key) => METRICS[key]?.label || key} />
+                {Object.entries(METRICS).map(([key, info]) => <Line key={key} dataKey={key} name={key} type="monotone" stroke={info.color} strokeWidth={2.5} connectNulls={false} dot={{ r: 3 }} activeDot={{ r: 6 }} isAnimationActive={false} />)}
+              </LineChart>
+            </ResponsiveContainer>
+          </div> : <div className="ob-wear-empty"><Activity size={24} /><b>No readings in this time range yet</b><span>When activity or vital readings are saved, the lines will appear here.</span></div>
+        ) : (
+        <>
         <div className="ob-wear-chart-tools">
           <label className="field">
             Measure
@@ -721,7 +776,9 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
         ) : (
           <div className="ob-wear-empty"><Activity size={24} /><b>No readings in this time range yet</b><span>Connect a supported sensor or enter daily activity below.</span></div>
         )}
-        {selectedReading && <div className="care-notice"><b>{METRICS[metric].label}: {Number(selectedReading.value).toLocaleString("en-IN")} {METRICS[metric].unit}</b><p>{new Date(selectedReading.observed_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })} · {selectedReading.aggregated ? `${selectedReading.sample_count} readings summarized` : (selectedReading.source || "recorded reading")}{selectedReading.device_name ? ` · ${selectedReading.device_name}` : ""}</p>{selectedReading.aggregated && <p className="small">Range in this interval: {selectedReading.min_value}–{selectedReading.max_value} {METRICS[metric].unit}.</p>}{reviewLine != null && Number(selectedReading.value) < Number(reviewLine) && <p className="small">Below the configured review line of {Number(reviewLine).toLocaleString("en-IN")} {METRICS[metric].unit}.</p>}</div>}
+        </>
+        )}
+        {selectedReading && <div className="care-notice"><b>{METRICS[selectedReading.metric || metric]?.label || METRICS[metric].label}: {Number(selectedReading.value).toLocaleString("en-IN")} {selectedReading.unit || METRICS[selectedReading.metric || metric]?.unit}</b><p>{new Date(selectedReading.observed_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })} · {selectedReading.aggregated ? `${selectedReading.sample_count} readings summarized` : (selectedReading.source || "recorded reading")}{selectedReading.device_name ? ` · ${selectedReading.device_name}` : ""}</p>{selectedReading.aggregated && <p className="small">Range in this interval: {selectedReading.min_value}–{selectedReading.max_value} {METRICS[metric].unit}.</p>}{!embedded && reviewLine != null && Number(selectedReading.value) < Number(reviewLine) && <p className="small">Below the configured review line of {Number(reviewLine).toLocaleString("en-IN")} {METRICS[metric].unit}.</p>}</div>}
         {liveValues[metric] && <p className="ob-wear-live-line"><span className="ob-wear-live-pulse" />Live {METRICS[metric].label.toLowerCase()}: <b>{liveValues[metric].value} {liveValues[metric].unit}</b></p>}
       </Panel>
 
@@ -742,11 +799,12 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
         </form>
       </Panel>}
 
-      <div className="ob-wear-compat">
+      {!embedded && <div className="ob-wear-compat">
         <div><Bluetooth size={19} /><p><b>Bluetooth standards</b><span>BLE devices exposing the standard heart-rate, blood-pressure, pulse-oximeter or thermometer service can stream while connected.</span></p></div>
         <div><Watch size={19} /><p><b>WHOOP & smart watches</b><span>WHOOP can broadcast heart rate when its HR broadcast mode is enabled. Historical recovery, sleep and workout summaries need its OAuth account connection; step counts depend on a separate vendor or phone-health feed.</span></p></div>
         <div><ShieldCheck size={19} /><p><b>Private by design</b><span>Only approved patient/caregiver accounts can write these readings. Each saved point is timestamped and attributed to Bluetooth or manual entry.</span></p></div>
-      </div>
+      </div>}
     </div>
   );
 }
+

@@ -7,7 +7,6 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  ReferenceLine,
   Legend,
 } from "recharts";
 import {
@@ -19,6 +18,7 @@ import {
   Volume2,
 } from "lucide-react";
 import { request, useResource, dateTime, nice, speak } from "./client";
+import Wearables from "./Wearables";
 import {
   Action,
   Empty,
@@ -137,13 +137,13 @@ export function AlertConsole({ onSelect }) {
   );
 }
 
-export function PatientCheckInHistory({ pid, canReviewActivity = false }) {
+export function PatientCheckInHistory({ pid, canReviewActivity = false, onOpen, demo = false }) {
   const history = useResource(
     pid ? `/v2/patients/${encodeURIComponent(pid)}/records?kind=checkin` : null,
     30000,
   );
   const symptoms = ["nausea", "pain", "fatigue", "appetite", "breathing"];
-  const [metric, setMetric] = useState("nausea");
+  const symptomColors = ["#287f8f", "#d47b54", "#6c77b5", "#4f936e", "#a66187"];
   const [selected, setSelected] = useState(null);
   return (
     <div className="stack">
@@ -156,29 +156,26 @@ export function PatientCheckInHistory({ pid, canReviewActivity = false }) {
           const checkins = (Array.isArray(items) ? items : [])
             .filter((item) => item?.kind === "checkin" && item.data)
             .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-            .map((item) => ({ ...item, date: new Date(item.created_at).getTime(), value: Number(item.data[metric] ?? 0) }));
+            .map((item) => ({ ...item, date: new Date(item.created_at).getTime() }));
           if (!checkins.length)
             return <Empty>No patient check-ins have been submitted for this patient.</Empty>;
           return (
             <div className="stack">
-              <label className="field">
-                Graph measure
-                <select className="select" value={metric} onChange={(event) => { setMetric(event.target.value); setSelected(null); }}>
-                  {[...symptoms, "distress", "temperature"].map((key) => <option key={key} value={key}>{nice(key)}{key === "temperature" ? " (°C)" : key === "distress" ? " (0–10)" : " (0–4)"}</option>)}
-                </select>
-              </label>
+              <p className="small muted">Symptom scores are shown together on the same 0–4 scale. Select a point to read the check-in note.</p>
               <div className="care-chart">
                 <ResponsiveContainer width="100%" height={280}>
                   <LineChart data={checkins} onClick={(event) => { const point = event?.activePayload?.[0]?.payload; if (point) setSelected(point); }}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="date" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value) => new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} />
-                    <YAxis domain={metric === "temperature" ? [30, 45] : [0, metric === "distress" ? 10 : 4]} />
-                    <Tooltip labelFormatter={(value) => dateTime(new Date(value).toISOString())} formatter={(value) => [value + (metric === "temperature" ? " °C" : ""), nice(metric)]} />
-                    <Line type="monotone" dataKey="value" stroke="#4393a5" strokeWidth={3} connectNulls={false} dot={{ r: 4 }} activeDot={{ r: 7 }} />
+                    <YAxis domain={[0, 4]} />
+                    <Tooltip labelFormatter={(value) => dateTime(new Date(value).toISOString())} formatter={(value, name) => [`${value ?? "—"}/4`, nice(name)]} />
+                    <Legend />
+                    {symptoms.map((key, index) => <Line key={key} type="monotone" dataKey={(row) => row.data[key] == null ? null : Number(row.data[key])} name={key} stroke={symptomColors[index]} strokeWidth={2.5} connectNulls={false} dot={{ r: 3 }} activeDot={{ r: 6 }} />)}
                   </LineChart>
                 </ResponsiveContainer>
               </div>
-              {selected && <div className="care-notice"><b>{dateTime(selected.created_at)} · {nice(metric)} {selected.value}</b><p>{selected.data.text || "No written note on this check-in."}</p></div>}
+              {selected && <div className="care-notice"><b>{dateTime(selected.created_at)}</b><p>{symptoms.map((key) => `${nice(key)} ${selected.data[key] ?? "—"}/4`).join(" · ")}</p><p>{selected.data.text || "No written note on this check-in."}</p></div>}
+              <div className="care-metrics"><span>Distress <b>{checkins.at(-1)?.data.distress ?? "—"}/10</b></span><span>Temperature <b>{checkins.at(-1)?.data.temperature != null ? `${checkins.at(-1).data.temperature} °C` : "—"}</b></span></div>
               <h3>Submitted check-ins</h3>
               {[...checkins].reverse().map((item) => (
                 <article className="care-record" key={item.id}>
@@ -217,73 +214,38 @@ export function PatientCheckInHistory({ pid, canReviewActivity = false }) {
         }}
         </Load>
       </Panel>
-      <PatientActivityHistory pid={pid} enabled={canReviewActivity} />
+      {canReviewActivity && <Wearables pid={pid} demo={demo} viewerRole="doctor" initialDays={365} embedded />}
+      <PatientReportTrends pid={pid} enabled={canReviewActivity} onOpen={onOpen} />
     </div>
   );
 }
 
-function PatientActivityHistory({ pid, enabled }) {
-  const history = useResource(
-    enabled ? `/v2/patients/${encodeURIComponent(pid)}/wearables?days=365` : null,
-    30000,
-  );
-  const [metric, setMetric] = useState("steps");
+function PatientReportTrends({ pid, enabled, onOpen }) {
+  const clinical = useResource(enabled ? `/v2/patients/${encodeURIComponent(pid)}/clinical` : null, 30000);
+  const labs = useResource(enabled ? `/patients/${encodeURIComponent(pid)}/labs` : null, 30000);
+  const [test, setTest] = useState("Haemoglobin");
   const [selected, setSelected] = useState(null);
-  const measures = {
-    steps: { label: "Steps", unit: "steps" },
-    distance_km: { label: "Walking distance", unit: "km" },
-    active_minutes: { label: "Active time", unit: "min" },
-    sleep_hours: { label: "Sleep", unit: "h" },
-  };
-  return (
-    <Panel
-      title="Patient activity & steps"
-      hint="Daily activity saved from connected devices or patient-entered totals appears alongside check-ins."
-    >
-      {!enabled ? (
-        <Empty>Activity access is not enabled for this patient in your account, so step and activity history is hidden.</Empty>
-      ) : (
-        <Load resource={history}>
-          {(data) => {
-            const rows = (data?.items || [])
-              .filter((row) => row.metric === metric && Number.isFinite(Number(row.value)))
-              .sort((a, b) => new Date(a.observed_at) - new Date(b.observed_at))
-              .map((row) => ({ ...row, time: new Date(row.observed_at).getTime() }));
-            if (!rows.length) return <Empty>No activity readings have been recorded for this patient.</Empty>;
-            return (
-              <div className="stack">
-                <label className="field">
-                  Graph measure
-                  <select className="select" value={metric} onChange={(event) => { setMetric(event.target.value); setSelected(null); }}>
-                    {Object.entries(measures).map(([key, measure]) => <option key={key} value={key}>{measure.label}</option>)}
-                  </select>
-                </label>
-                <div className="care-chart">
-                  <ResponsiveContainer width="100%" height={260}>
-                    <LineChart data={rows} onClick={(event) => { const point = event?.activePayload?.[0]?.payload; if (point) setSelected(point); }}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="time" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value) => new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} />
-                      <YAxis />
-                      <Tooltip labelFormatter={(value) => dateTime(new Date(value).toISOString())} formatter={(value) => [`${Number(value).toLocaleString("en-IN")} ${measures[metric].unit}`, measures[metric].label]} />
-                      <Line dataKey="value" type="monotone" stroke="#568461" strokeWidth={3} connectNulls={false} dot={{ r: 4 }} activeDot={{ r: 7 }} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-                {selected && <div className="care-notice"><b>{measures[metric].label}: {Number(selected.value).toLocaleString("en-IN")} {measures[metric].unit}</b><p>{dateTime(selected.observed_at)} · {nice(selected.source)}{selected.device_name ? ` · ${selected.device_name}` : ""}</p></div>}
-                <h3>Recorded activity</h3>
-                {[...rows].reverse().slice(0, 10).map((row) => (
-                  <article className="care-record" key={row.id}>
-                    <div className="row wrap"><b>{Number(row.value).toLocaleString("en-IN")} {measures[metric].unit}</b><span className="spacer"/><span className="small muted">{dateTime(row.observed_at)} · {nice(row.source)}</span></div>
-                    {row.device_name && <p className="small muted">{row.device_name}</p>}
-                  </article>
-                ))}
-              </div>
-            );
-          }}
-        </Load>
-      )}
-    </Panel>
-  );
+  if (!enabled) return null;
+  return <Load resource={clinical}>{(record) => <Load resource={labs}>{(labData) => {
+    const names = Object.keys(labData || {});
+    const selectedTest = names.includes(test) ? test : (names[0] || "tumour_mm");
+    const rows = selectedTest === "tumour_mm"
+      ? (record.measurements || []).map((row) => ({ date: row.data.date, value: row.data.size_mm, document_id: row.data.document_id })).filter((row) => row.value != null)
+      : (labData?.[selectedTest] || []);
+    return <div className="stack">
+      <Panel title="Report readings over time" hint="Choose a report measure to see its dated values. Different tests use different units, so each is plotted separately.">
+        <label className="field">Report measure<select className="select" value={selectedTest} onChange={(event) => { setTest(event.target.value); setSelected(null); }}>
+          {names.map((name) => <option key={name} value={name}>{name}</option>)}
+          <option value="tumour_mm">Confirmed tumour size (mm)</option>
+        </select></label>
+        {rows.length ? <div className="care-chart"><ResponsiveContainer width="100%" height={280}><LineChart data={rows} onClick={(event) => { const point = event?.activePayload?.[0]?.payload; if (point) setSelected({ ...point, metric: selectedTest }); }}>
+          <CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="date" tickFormatter={(value) => new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} /><YAxis /><Tooltip formatter={(value, name, item) => [`${value} ${item?.payload?.unit || ""}`, selectedTest]} /><Line dataKey="value" name={selectedTest} type="monotone" stroke="#438fa5" strokeWidth={3} connectNulls={false} dot={{ r: 4 }} activeDot={{ r: 7 }} />
+        </LineChart></ResponsiveContainer></div> : <Empty>No dated readings are available for this measure.</Empty>}
+        {selected && <div className="care-notice"><b>{selected.metric}: {selected.value} {selected.unit || ""}</b><p>{selected.date}{selected.document_id ? ` · Source document D${selected.document_id}` : " · Confirmed measurement"}</p>{selected.document_id && <button className="src" onClick={() => onOpen?.(selected.document_id)}>Open source report</button>}</div>}
+      </Panel>
+      <Panel title="What changed since the previous report">{record.changes?.length ? record.changes.map((change) => <details key={change.subtype}><summary>{change.subtype} · {change.from} → {change.to}</summary><pre className="care-diff">{change.lines.map((line, index) => <div key={index} className={line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : ""}>{line}</div>)}</pre></details>) : <Empty>No report-to-report changes are available.</Empty>}</Panel>
+    </div>;
+  }}</Load>}</Load>;
 }
 
 export function ApprovalQueue({ pid, onUpdate }) {
@@ -460,11 +422,8 @@ function ApprovalReview({ approval: a, onDone }) {
 }
 
 export function ClinicalChart({ pid, onOpen, user }) {
-  const resource = useResource(`/v2/patients/${pid}/clinical`),
-    labs = useResource(`/patients/${pid}/labs`);
-  const [test, setTest] = useState("Haemoglobin"),
-    [selectedReading, setSelectedReading] = useState(null),
-    [month, setMonth] = useState(100),
+  const resource = useResource(`/v2/patients/${pid}/clinical`);
+  const [month, setMonth] = useState(100),
     [replay, setReplay] = useState(false);
   useEffect(() => {
     if (!replay) return;
@@ -482,10 +441,6 @@ export function ClinicalChart({ pid, onOpen, user }) {
     );
     return () => clearInterval(t);
   }, [replay]);
-  const labRows = test === "tumour_mm"
-    ? (resource.data?.measurements || []).map((row) => ({ date: row.data.date, value: row.data.size_mm, document_id: row.data.document_id }))
-    : labs.data?.[test] || [];
-  const labLimit = resource.data?.protocol?.[test]?.min;
   return (
     <Load resource={resource}>
       {(d) => (
@@ -562,48 +517,6 @@ export function ClinicalChart({ pid, onOpen, user }) {
               <p className="small muted">
                 {month}% through the recorded journey.
               </p>
-            </Panel>
-            <Panel title="Report readings over time" hint="Thresholds are the patient-specific limits signed by the treating doctor. Red points are below the configured minimum; select a point for its source and value.">
-              <select
-                className="select"
-                value={test}
-                onChange={(e) => setTest(e.target.value)}
-              >
-                {Object.keys(labs.data || {}).map((t) => (
-                  <option key={t}>{t}</option>
-                ))}
-                <option value="tumour_mm">Confirmed tumour size (mm)</option>
-              </select>
-              <div className="care-chart">
-                <ResponsiveContainer width="100%" height={260}>
-                  <LineChart data={labRows} onClick={(event) => { const point = event?.activePayload?.[0]?.payload; if (point) setSelectedReading({ ...point, metric: test, kind: "report" }); }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis
-                      dataKey="date"
-                      tickFormatter={(x) =>
-                        new Date(x).toLocaleDateString("en-IN", {
-                          day: "numeric",
-                          month: "short",
-                        })
-                      }
-                    />
-                    {Number.isFinite(Number(labLimit)) && <ReferenceLine y={labLimit} stroke="#c84f55" strokeDasharray="5 4" label="Signed minimum" />}
-                    <YAxis />
-                    <Tooltip />
-                    <Line
-                      type="monotone"
-                      dataKey="value"
-                      stroke="#4393a5"
-                      strokeWidth={3}
-                      connectNulls={false}
-                      dot={(point) => <circle cx={point.cx} cy={point.cy} r={5} fill={Number.isFinite(Number(labLimit)) && point.payload.value < labLimit ? "#c84f55" : "#4393a5"} stroke="white" strokeWidth={2} style={{ cursor: "pointer" }} onClick={() => setSelectedReading({ ...point.payload, metric: test, kind: "report" })} />}
-                      activeDot={{ r: 7 }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-              {selectedReading?.kind === "report" && <div className="care-notice"><b>{selectedReading.metric}: {selectedReading.value} {selectedReading.unit || ""}</b><p>{selectedReading.date}{selectedReading.document_id ? ` · Source document D${selectedReading.document_id}` : " · Confirmed measurement"}</p>{selectedReading.document_id && <button className="src" onClick={() => onOpen(selectedReading.document_id)}>Open source report</button>}</div>}
-              {Number.isFinite(Number(labLimit)) && <p className="small muted">Signed review minimum: {labLimit} {labRows.find((row) => row.unit)?.unit || ""}. Red points fall below this limit.</p>}
             </Panel>
           </div>
           <Panel
@@ -758,31 +671,6 @@ export function ClinicalChart({ pid, onOpen, user }) {
                   </Empty>
                 )}
               </Panel>
-              <Panel title="What changed since the previous report">
-                {d.changes.map((c) => (
-                  <details key={c.subtype}>
-                    <summary>
-                      {c.subtype} · {c.from} → {c.to}
-                    </summary>
-                    <pre className="care-diff">
-                      {c.lines.map((l, i) => (
-                        <div
-                          key={i}
-                          className={
-                            l.startsWith("+")
-                              ? "added"
-                              : l.startsWith("-")
-                                ? "removed"
-                                : ""
-                          }
-                        >
-                          {l}
-                        </div>
-                      ))}
-                    </pre>
-                  </details>
-                ))}
-              </Panel>
               <Panel title="Evidence behind suggestions" hint="Drafts stay in Doctor approvals until the treating clinician reviews and signs them. Linked guidelines provide context for the treating team; demo outcomes are never used as evidence.">
                 <Action
                   className="btn primary"
@@ -845,7 +733,7 @@ export function BodyMap({ measurements = [], month = 100, onSite }) {
   const latest = Object.fromEntries(visible.map((r) => [r.data.site, r]));
   return (
     <div className="care-bodymap">
-      <svg viewBox="0 0 200 350" role="img" aria-label="Body map">
+      <svg viewBox="0 0 200 350" role="img" aria-label="Body map showing recorded patient findings">
         <circle cx="100" cy="35" r="25" fill="#e9f4f6" stroke="#a5cad2" />
         <path
           d="M74 70 Q100 58 126 70 L151 143 Q156 159 146 165 L126 111 L128 195 L143 319 Q141 337 128 330 L104 224 L96 224 L72 330 Q58 337 57 319 L72 195 L74 111 L54 165 Q43 159 49 143Z"
@@ -853,7 +741,7 @@ export function BodyMap({ measurements = [], month = 100, onSite }) {
           stroke="#a5cad2"
           strokeWidth="2"
         />
-        {Object.entries(sites).map(([site, [x, y]]) => (
+        {Object.entries(sites).map(([site, [x, y]], index) => (
           <g
             key={site}
             role={onSite ? "button" : undefined}
@@ -892,25 +780,18 @@ export function BodyMap({ measurements = [], month = 100, onSite }) {
                   : `Pain ${latest[site].data.score}/10`
                 : "Tap to record"}
             </title>
+            {latest[site] && <text x={x} y={y + 4} textAnchor="middle" fontSize="9" fontWeight="700" fill="#fff">{index + 1}</text>}
           </g>
         ))}
       </svg>
-      <div>
-        {Object.values(latest).map((r) => (
-          <p className="small" key={r.id}>
-            <b>{nice(r.data.site)}</b> ·{" "}
-            {r.data.size_mm != null
-              ? `${r.data.size_mm} mm`
-              : `pain ${r.data.score}/10`}
-            <br />
-            <span className="muted">
-              {r.data.date || dateTime(r.created_at)}
-            </span>
-          </p>
+      <div className="care-bodymap-findings">
+        {Object.values(latest).map((record, index) => (
+          <article className="care-bodymap-finding" key={record.id}>
+            <span className="care-bodymap-number">{index + 1}</span>
+            <div><b>{nice(record.data.site)}</b><span className="care-bodymap-value">{record.data.size_mm != null ? `${record.data.size_mm} mm measured` : `Pain score ${record.data.score}/10`}</span><small>{record.data.date || dateTime(record.created_at)}</small></div>
+          </article>
         ))}
-        {!visible.length && (
-          <p className="small muted">No findings at this point.</p>
-        )}
+        {!visible.length && <div className="care-bodymap-empty"><Activity size={24} /><b>No recorded findings yet</b><span>New confirmed measurements and pain reports will be marked on the body map.</span></div>}
       </div>
     </div>
   );
@@ -1057,3 +938,4 @@ function JourneyReplay({ events, progress, onOpen }) {
     </div>
   );
 }
+

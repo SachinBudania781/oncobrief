@@ -717,6 +717,8 @@ button:not(:disabled):active { transform: scale(.975); }
 .ob-wear-stat b { color: #2b4338; font-size: 22px; letter-spacing: -.035em; }
 .ob-wear-stat b small { color: #85928a; font-size: 10px; font-weight: 550; letter-spacing: 0; }
 .ob-wear-stat-source { color: #9aa59e; font-size: 9px; }
+.ob-wear-tooltip { display: grid; gap: 5px; min-width: 150px; padding: 11px 13px; color: #31463d; background: #fff; border: 1px solid #e4ebe6; border-radius: 12px; box-shadow: 0 10px 28px #1e372d16; font-size: 11px; }
+.ob-wear-tooltip b { margin-bottom: 2px; color: #5d7469; }
 .ob-wear-chart-tools { display: grid; grid-template-columns: minmax(170px, 1fr) minmax(130px, .7fr) auto; align-items: end; gap: 12px; margin: 1px 0 16px; }
 .ob-wear-chart-tools .field { margin: 0; }
 .ob-wear-chart-tools .select { min-height: 40px; }

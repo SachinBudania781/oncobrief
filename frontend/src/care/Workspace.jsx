@@ -412,7 +412,7 @@ function CareSpace() {
               )}
               {tab === "checkin" && (
                 user.role === "doctor" ? (
-                  <PatientCheckInHistory pid={pid} canReviewActivity={can("activity")} />
+                  <PatientCheckInHistory pid={pid} canReviewActivity={can("activity")} onOpen={setDocId} demo={Boolean(user.demo)} />
                 ) : <div className="care-columns">
                   <CheckIn
                     pid={pid}
@@ -447,10 +447,7 @@ function CareSpace() {
                   />
               )}
               {tab === "clinical" && (
-                <div className="stack">
-                  <ClinicalChart pid={pid} user={user} onOpen={setDocId} />
-                  <Wearables pid={pid} demo={Boolean(user.demo)} viewerRole="doctor" initialDays={365} embedded />
-                </div>
+                <ClinicalChart pid={pid} user={user} onOpen={setDocId} />
               )}
               {tab === "clinic" && (
                 <ClinicDesk
