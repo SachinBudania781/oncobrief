@@ -318,12 +318,14 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   const activeRequest = useRef(0);
+  const conversationId = useRef(window.crypto?.randomUUID?.() || `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   useEffect(() => {
     activeRequest.current += 1;
     setMessages([]);
     setText("");
     setBusy(false);
     setError("");
+    conversationId.current = window.crypto?.randomUUID?.() || `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     return () => { activeRequest.current += 1; };
   }, [pid]);
   const send = async (e) => {
@@ -337,6 +339,7 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
       const r = await request(`/v2/patients/${pid}/companion`, "POST", {
         text: question,
         language,
+        conversation_id: conversationId.current,
       });
       if (current === activeRequest.current) {
         setMessages((m) => [...m, { question, ...r }]);
