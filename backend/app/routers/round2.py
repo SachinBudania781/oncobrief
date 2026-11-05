@@ -375,7 +375,12 @@ def companion(patient_id: str, body: Question, request: Request, db=Depends(get_
     user = patient_access(db, request, patient_id, "documents")
     roles(user, "patient", "caregiver", "doctor", "nurse", "admin")
     result = answer(db, patient_id, body.text, body.language, user.role in CLINICIANS,
-                    patient_id in visible_ids(db,user,"notes"), body.conversation_id, user.id, user.role)
+                    patient_id in visible_ids(db,user,"notes"), body.conversation_id, user.id, user.role,
+                    allow_checkins=patient_id in visible_ids(db, user, "checkin"),
+                    allow_medicines=patient_id in visible_ids(db, user, "medicines"),
+                    allow_alerts=patient_id in visible_ids(db, user, "alerts"),
+                    allow_activity=patient_id in visible_ids(db, user, "activity"),
+                    allow_appointments=patient_id in visible_ids(db, user, "appointments"))
     db.add(CareRecord(patient_id=patient_id, kind="companion", author_id=user.id, author_name=user.name,
                       author_role=user.role, data={"question": body.text, "conversation_id": body.conversation_id, **result}, status="recorded"))
     db.commit()
