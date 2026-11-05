@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  ArrowLeft,
   Bot,
   MessageCircle,
   Mic,
@@ -19,7 +20,7 @@ function newConversationId() {
   return window.crypto?.randomUUID?.() || `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export default function AIAssistantWidget({ pid, language = "en", onOpen, embedded = false, userRole = "patient" }) {
+export default function AIAssistantWidget({ pid, language = "en", onOpen, onExit, embedded = false, userRole = "patient" }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState("type");
   const [draft, setDraft] = useState("");
@@ -66,8 +67,8 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, embedd
   }, []);
 
   useEffect(() => {
-    if (open && mode === "type") inputRef.current?.focus();
-  }, [open, mode]);
+    if ((embedded || open) && mode === "type") inputRef.current?.focus();
+  }, [embedded, open, mode]);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -188,10 +189,11 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, embedd
   };
   const visible = embedded || open;
   return (
-    <div className={"care-ai-assistant " + (embedded ? "care-ai-embedded" : "")}>
+    <div className={"care-ai-assistant " + (embedded ? "care-ai-embedded care-ai-fullscreen" : "")}>
       {visible && (
-        <section className={"care-ai-window " + (embedded ? "care-ai-window-embedded" : "")} role="region" aria-label="OncoBrief AI chat">
+        <section className={"care-ai-window " + (embedded ? "care-ai-window-embedded care-ai-window-fullscreen" : "")} role="region" aria-label="OncoBrief AI chat">
           <header className="care-ai-head">
+            {embedded && <button className="care-ai-back" aria-label="Back to workspace" title="Back to workspace" onClick={onExit}><ArrowLeft size={20} /></button>}
             <div className="care-ai-identity">
               <span className="care-ai-avatar"><Sparkles size={19} /></span>
               <span><b>AI Chat</b><small><i /> {userRole === "doctor" ? "Care-folder answers · patient-shared insights" : "Your care folder · here to help"}</small></span>
@@ -287,5 +289,6 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, embedd
     </div>
   );
 }
+
 
 

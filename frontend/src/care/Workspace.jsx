@@ -433,6 +433,7 @@ function CareSpace() {
                   pid={pid}
                   language={language}
                   onOpen={setDocId}
+                  onExit={() => change("home")}
                   embedded
                   userRole={user.role}
                 />
@@ -878,3 +879,4 @@ export function SharedCard() {
     </div>
   );
 }
+
