@@ -6,7 +6,7 @@ export default function MemoryUpLink({ pid, appointmentId }) {
   const query = new URLSearchParams();
   if (pid) query.set("patient_id", pid);
   if (appointmentId) query.set("appointment_id", appointmentId);
-  return <a className="btn" href={`/memory-up?${query}`}>
+  return <a className="btn" href={`/memory-up/?${query}`}>
     Memory Up · appointment advice
   </a>;
 }
