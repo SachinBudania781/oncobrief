@@ -117,13 +117,27 @@ def _normalize_cancer_site(value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("cancer_site must be explicitly provided")
     key = re.sub(r"\s+", " ", value.strip().lower())
-    try:
+    if key in _SITE_ALIASES:
         return _SITE_ALIASES[key]
-    except KeyError as exc:
-        raise ValueError(
-            "Unsupported or ambiguous cancer site. Use a specific supported site; "
-            "generic 'lung' is ambiguous between NSCLC and SCLC."
-        ) from exc
+
+    # Patient records can include histology, laterality, and biomarkers in the
+    # same field. Normalize only when exactly one supported primary site is
+    # named; generic lung and multi-site labels remain intentionally ambiguous.
+    patterns = {
+        "breast": r"\bbreast\b",
+        "lung_nsclc": r"\bnsclc\b|\bnon[- ]small cell(?: lung)?\b",
+        "lung_sclc": r"\bsclc\b|\bsmall cell(?: lung)?\b",
+        "colorectal": r"\bcolorectal\b|\bcolon\b|\brect(?:al|um)\b",
+        "head_neck": r"\bhead[- ]and[- ]neck\b|\bhead and neck\b",
+        "prostate": r"\bprostate\b",
+    }
+    matches = [site for site, pattern in patterns.items() if re.search(pattern, key)]
+    if len(matches) == 1:
+        return matches[0]
+    detail = "generic 'lung' is ambiguous between NSCLC and SCLC" if re.search(r"\blung\b", key) else "the site is unsupported or ambiguous"
+    raise ValueError(
+        f"Cannot safely normalize cancer site: {detail}. Use one explicit supported site."
+    )
 
 
 def _normalize_stage_group(value: str) -> str:
