@@ -201,7 +201,7 @@ def explain(document_id: int, request: Request, language: Literal["en", "hi", "m
                 "Explain this report's recorded findings in plain language. State what is missing or unclear. "
                 "Do not infer conclusions from unreadable text or propose a treatment plan.", language)
             if generated:
-                result.update({"explanation": [{**item, "source": f"D{doc.id}"} for item in generated["items"]],
+                result.update({"explanation": [{"text": item["text"], "source": f"D{doc.id}"} for item in generated["items"]],
                                "language": language, "translation_required": False,
                                "model": generated["model"], "generation": generated["generation"]})
                 result["questions"] = {
