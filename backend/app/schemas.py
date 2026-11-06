@@ -129,6 +129,7 @@ class PatientGuidanceNote(StrictModel):
 class PatientDocumentExplanationItem(StrictModel):
     text: Text = Field(max_length=1400)
     source: ShortText
+    sources: list[ShortText] = Field(default_factory=list, max_length=20)
 
 
 class PatientDocumentExplanation(StrictModel):
