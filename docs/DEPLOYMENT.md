@@ -1,90 +1,30 @@
-# Independent development deployments
+# Deployment
 
-Deploy six resources: the patient, doctor and staff websites, a role-selection hub, the FastAPI backend, and PostgreSQL. The hub lists all three roles and links to both the Round 2 workspace and the original Round 1 screen for each role. The individual role websites remain available. All four websites use the same backend and records, and can install on Android and iPhone as home-screen web apps.
+The existing deployment has three static apps, one FastAPI Docker service and PostgreSQL in Singapore. `render.yaml` is the canonical configuration. The backend starts with `app.main:app`; it includes every integrated route, including Memory Up.
 
-The current live deployment remains on `deploy/round2-independent`. This feature branch adds the hub and restores links to the retained Round 1 screens in source; it does not update that live branch or its services.
+## Existing resources
 
-| Resource | Address |
-| --- | --- |
-| Patient app | https://oncobrief-round2-patient.onrender.com |
-| Doctor app | https://oncobrief-round2-doctor.onrender.com |
-| Staff app | https://oncobrief-round2-staff.onrender.com |
-| Role hub | Created as `oncobrief-round2-hub` when the updated frontend Blueprint is applied |
-| Backend and API docs | https://oncobrief-round2-api.onrender.com/docs |
-| PostgreSQL dashboard | https://dashboard.render.com/d/dpg-dbbmsqrbc2fs73bnhvb0-a |
+- Patient: https://oncobrief-round2-patient.onrender.com
+- Doctor: https://oncobrief-round2-doctor.onrender.com
+- Staff: https://oncobrief-round2-staff.onrender.com
+- API readiness/monitor: https://oncobrief-round2-api.onrender.com/api/health (GET and HEAD)
 
-Resource IDs are recorded in `deploy/resources.json`; it contains no passwords or connection strings. The database expires on **19 November 2026**.
+The existing Render services are linked to `deploy/round2-independent`. During this release, that deployment branch and `main` receive the same verified commit. Keep them aligned until the service branch settings are changed deliberately. The canonical Blueprint uses `main` for future infrastructure synchronization; this release does not create replacement services or change their URLs.
 
-## Free hosting limits
+## Release procedure
 
-This setup uses fabricated demo records and published demo accounts. Render's free backend sleeps when idle, and waking it can take a minute. Free PostgreSQL expires 30 days after creation. Free backend storage is temporary: uploaded files disappear on restart or redeploy even while their database records remain. The generated encryption and file-signing secrets must stay unchanged in the backend environment.
+1. Develop on an isolated branch. Run the complete CI checks, including PostgreSQL and browser journeys.
+2. Preserve the current deployed commit and retain its keys. Never reset or replace the live database during an app release.
+3. Fast-forward the release/deployment branches only after checks pass. Render rebuilds the API and each app independently.
+4. Wait for `/api/health` to report the release commit and for each static app's `/release.json` to report the same commit and correct target.
+5. Verify sign-in through each app's own origin, protected report access, appointment advice assets, and one controlled AI request. Avoid real outbound invitations or SMS during a smoke test.
 
-Keep this environment for integration development and demos. For retained uploads, add persistent file storage. For a longer-lived free database, replace `DATABASE_URL` with a free external PostgreSQL service before the Render database expires. These are separate follow-up changes.
+The API image is `deploy/api.Dockerfile`. The static builds are `npm run build:patient`, `npm run build:doctor`, and `npm run build:staff` in `frontend`; outputs are `frontend/dist/<role>`. Same-origin `/api/*` rewrites forward requests to the shared API while retaining each app's session boundary.
 
-The backend recreates missing fabricated sample documents after a restart while keeping their database rows and original dates. It cannot recreate uploaded files. This recovery runs only in demo mode and only for the known sample records.
+## Data and provider configuration
 
-Current provider limits: [Render free services](https://render.com/docs/free), [static site routing](https://render.com/docs/redirects-rewrites), and [Blueprint configuration](https://render.com/docs/blueprint-spec).
+Uploaded files are encrypted and stored with database records. Keep `DATA_ENCRYPTION_KEY`, `FILE_SIGNING_KEY` and `DATABASE_URL` stable. Free-host filesystem loss is supported; database expiry and loss of encryption keys are not recoverable without backups. Download database backups before the free database's expiry date in Render.
 
-## Backend and database
+Preserve the existing Gemini settings. See [API setup](API_SETUP.md) for Calendar credentials and optional provider adapters. Source files under `deploy/legacy` and contributor audit documents are historical references, not the release deployment configuration. Do not apply them to this deployment.
 
-`deploy/render.api-free.yaml` describes a free Docker backend and a separate free PostgreSQL 16 database in Singapore. This is a development region, not an India-residency claim. The API-only image is `deploy/api.Dockerfile` and includes Tesseract plus self-hosted Swagger documentation.
-
-Create these resources from the deployment branch using a Blueprint, or create equivalent resources in the dashboard. Reuse existing resources with the same names. Keep the database's external IP allowlist empty. Link the backend's `DATABASE_URL` to the database's internal connection string through Render. Set `DEMO_MODE=true`, `COOKIE_SECURE=true`, and `LLM_PROVIDER=none`. Generate stable `DATA_ENCRYPTION_KEY` (a Fernet key) and `FILE_SIGNING_KEY` in the hosting environment. The Blueprint generates both; never commit their values.
-
-Run one backend instance and one Uvicorn worker. Verify the actual backend URL at `/api/health` and `/docs`.
-
-## Role websites and hub
-
-After Render assigns the backend's actual HTTPS URL, generate the frontend Blueprint:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\configure_frontends.py --api-url https://YOUR-ACTUAL-API.onrender.com
-```
-
-This writes `deploy/render.frontends-free.yaml`. It contains three independently deployable static sites with these settings:
-
-| Site | Build command, from repository root | Publish directory |
-| --- | --- | --- |
-| Patient | `cd frontend && npm ci && npm run build:patient` | `frontend/dist/patient` |
-| Doctor | `cd frontend && npm ci && npm run build:doctor` | `frontend/dist/doctor` |
-| Staff | `cd frontend && npm ci && npm run build:staff` | `frontend/dist/staff` |
-| Hub | `cd frontend && npm ci && npm run build:hub` | `frontend/dist/hub` |
-
-Use Node 24. Each site needs the generated rewrite rules, in order: `/api/*` to the backend's `/api/*`, `/docs` to backend `/docs`, `/openapi.json` to backend `/openapi.json`, then `/*` to `/index.html`. Swagger assets are included in each static build. Importing the generated Blueprint sets the rules and headers. If creating services with an API that cannot set routes, finish them in the dashboard before treating the deployment as usable.
-
-The browser calls each website's own `/api` path. This preserves HTTP-only secure sessions and relative report/image/PDF URLs without depending on third-party cookies. Verify POST forwarding and cookie round-trips on the real provider before declaring completion.
-
-Once all four actual frontend URLs are known, set backend `ALLOWED_ORIGINS` to those four HTTPS origins, separated by commas. Set `PUBLIC_BASE_URL` to the patient website's origin so QR and shared-card links open the patient frontend. Redeploy the backend after updating its environment.
-
-App targeting chooses the starting screen, title, manifest, portal accent and sign-in methods. Patient, doctor and staff IDs are checked against the selected portal by the backend. Doctor/staff phone sign-in uses a password and retains production TOTP; phone OTP remains patient-only. Each frontend shares the care-workspace source, so fixes can reach all three without copying code.
-
-Desktop uses a persistent navigation sidebar and tables; mobile uses a floating navigation dock, a feature sheet, report cards and tabbed document viewing. Motion respects the device's reduced-motion preference. Workspace provenance and feature guidance are available in information dialogs. Urgent clinical alerts remain visible in their workflows.
-
-## Install on phones
-
-On Android, open the desired site's HTTPS URL in Chrome and choose **Install app** or **Add to Home screen**. On iPhone, open it in Safari, choose **Share**, then **Add to Home Screen**. Repeat for any other role app you need. These are installable web apps; native store packages are not generated.
-
-An internet connection is required. The service worker does not cache patient records, API responses, documents, or signed links. Device installation must be checked on a real Android/iPhone; a successful web build alone does not verify it. See [web app installation](https://web.dev/learn/pwa/installation).
-
-## Verification and integration work
-
-```powershell
-# Build the three role apps locally.
-cd frontend
-npm run build:apps
-cd ..
-# The hub is an optional all-role build with the app selector at its homepage.
-cd frontend
-npm run build:hub
-cd ..
-# Use the three actual deployed URLs.
-.\.venv\Scripts\python.exe scripts\check_deployment.py --patient https://PATIENT.onrender.com --doctor https://DOCTOR.onrender.com --staff https://STAFF.onrender.com
-```
-
-The smoke check verifies branding, phone manifests and icons, API GET/POST forwarding, secure session cookies, an authenticated patient list, and logout for the three role websites. It deliberately refuses non-demo environments. Confirm the hub opens, lists all three roles, and preserves the requested Round 1 URL through sign-in before publishing it.
-
-Use backend `/docs` for API integration. Configure provider keys and adapter endpoints on the backend only; `docs/INTEGRATIONS.md` lists their contracts. Never put API secrets in frontend build variables.
-
-Google Meet scheduling is optional and uses a hospital-owned Google Calendar OAuth account. Set the backend-only Calendar secrets described in `docs/GOOGLE_MEET.md` on the new feature deployment; without them, staff can attach a Meet link created in the hospital calendar. Never add OAuth secrets to the frontend or GitHub.
-
-For the existing live setup, keep using its current branch and service configuration. To preview the hub integration, create the new services from the feature branch and leave `deploy/round2-independent` unchanged. Render's current GitHub connection does not include this repository; public-repository deployments do not receive automatic push triggers. Check each service's deployed commit before handing out its URL.
+For a new environment, validate `render.yaml` with the Render CLI and review its plan before applying it. Generate a valid Fernet encryption key for `DATA_ENCRYPTION_KEY`; arbitrary random text is not a Fernet key. Set all secrets in the deployment dashboard.

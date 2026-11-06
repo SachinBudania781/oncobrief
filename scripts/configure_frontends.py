@@ -1,4 +1,4 @@
-"""Generate a Render frontend Blueprint using the API's verified public URL."""
+"""Generate an optional frontend-only Blueprint; render.yaml is the release source of truth."""
 import argparse
 import json
 from pathlib import Path
@@ -49,7 +49,7 @@ def blueprint(api_origin):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-url", required=True, type=https_origin)
-    parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parents[1] / "deploy" / "render.frontends-free.yaml")
+    parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parents[1] / "deploy" / "generated-frontends.yaml")
     args = parser.parse_args()
     # JSON is valid YAML; keep this helper dependency-free.
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -27,7 +27,7 @@ Validation results and deployed commit are recorded below after the release chec
 
 ## Local validation
 
-- 223 backend tests passed; one OCR test skipped because the local Windows host lacks Tesseract. Linux CI installs Tesseract and runs that test.
+- 223 backend tests passed before the final added site-normalization regression; one OCR test skipped because the local Windows host lacks Tesseract. Linux CI installs Tesseract and runs that test.
 - Backend and frontend dependency audits reported no known vulnerabilities.
 - Transport and Memory Up component browser regressions passed.
 - Portal browser journeys check every accessible navigation screen for uncaught errors and API server errors, with layouts exercised at 320, 390, 540, 768, 1024 and 1440 pixel widths.
@@ -35,3 +35,5 @@ Validation results and deployed commit are recorded below after the release chec
 ## Branch reconciliation
 
 The integrated release supersedes the partial direct-to-main AI changes. Its stricter schemas, role-aware conversation generation, source validation and hospital time helpers are retained and repaired here. The older Copilot branch's broken imports are not copied. The omitted consistency-audit fixes for dense history, cancelled visits and the hospital-local activity day are applied with regressions; hospital-local seeding already exists in the integrated baseline. Old branch tips remain recoverable in Git history and a local Git bundle.
+
+The final added normalization regression also passes locally. The final release requires all three CI jobs to pass at its exact commit. Historical deployment variants are archived under `deploy/legacy`; they do not change or delete their old external services.
