@@ -37,3 +37,9 @@ Validation results and deployed commit are recorded below after the release chec
 The integrated release supersedes the partial direct-to-main AI changes. Its stricter schemas, role-aware conversation generation, source validation and hospital time helpers are retained and repaired here. The older Copilot branch's broken imports are not copied. The omitted consistency-audit fixes for dense history, cancelled visits and the hospital-local activity day are applied with regressions; hospital-local seeding already exists in the integrated baseline. Old branch tips remain recoverable in Git history and a local Git bundle.
 
 The final added normalization regression also passes locally. The final release requires all three CI jobs to pass at its exact commit. Historical deployment variants are archived under `deploy/legacy`; they do not change or delete their old external services.
+
+## Verified release results
+
+GitHub Actions run 42218211974 passed all jobs: 225 API tests on SQLite, 225 on PostgreSQL, all three portal browser journeys, sensor packet tests, transport/advice component regressions, all app builds and both dependency audits. Run 42218517025 and 42218517057 also passed after main and the deployment branch advanced.
+
+Rollout is pending restored Render access. Public checks still reported the previous 2.0.0 backend after the push. Do not treat a branch push as a completed deployment. Preserve the rollback tags under `archive/pre-final-*-2026-11-06`. The source now uses automatic text detection to avoid marking historical CRLF files as user edits when checking out on Windows.
