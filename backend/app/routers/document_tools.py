@@ -71,7 +71,7 @@ def _patient_guidance_note(doc, result, language):
             "Is any part of this report unclear or missing?",
             "What should I report to my care team?",
         ],
-        "emergency_red_flags": [PatientRedFlag(symptom=symptom, action=action).model_dump(mode="json")
+        "emergency_red_flags": [PatientRedFlag(symptom=symptom, action=action).model_dump(mode="python")
                                 for symptom, action in words["flags"]],
     })
     return note.model_dump(mode="json")

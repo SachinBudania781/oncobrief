@@ -64,7 +64,7 @@ def _guideline_citations(patient: Patient) -> list[dict]:
             section_name=str(metadata["section"]),
             page_number=int(metadata["page"]),
             verbatim_text=str(item["verbatim_text"]),
-        ).model_dump(mode="json"))
+        ).model_dump(mode="python"))
     return citations
 
 
