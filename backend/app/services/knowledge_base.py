@@ -92,6 +92,54 @@ _REFERENCE_GUIDELINES: tuple[dict[str, Any], ...] = (
             "verification_status": "verified_excerpt",
         },
     },
+    {
+        "id": "ncg_breast_2019_her2_adjuvant_p14",
+        "text": "Adjuvant Trastuzumab for 1 year is the standard practice",
+        "metadata": {
+            "cancer_site": "breast",
+            "stage": "stage_ii_iii",
+            "cancer_type": "breast",
+            "stage_category": "stage_ii_iii",
+            "doc": "NCG Breast Cancer Management Guidelines 2019",
+            "source": "NCG Breast Cancer Management Guidelines 2019",
+            "page": 14,
+            "section": "Targeted therapy — HER2-positive invasive cancer",
+            "source_url": "https://www.ncgindia.org/assets/ncg-guidelines-2019/ncg-guidelines-for-breast-cancer-2019.pdf",
+            "verification_status": "verified_excerpt",
+        },
+    },
+    {
+        "id": "ncg_thoracic_2019_adjuvant_p4",
+        "text": "Stage II and III A, T > 4 cm; node positive",
+        "metadata": {
+            "cancer_site": "lung_nsclc",
+            "stage": "stage_ii_iii",
+            "cancer_type": "lung",
+            "stage_category": "stage_ii_iii",
+            "doc": "NCG Thoracic Malignancies Management Guidelines 2019",
+            "source": "NCG Thoracic Malignancies Management Guidelines 2019",
+            "page": 4,
+            "section": "Management of Non-Small Cell Lung Cancer — Adjuvant chemotherapy",
+            "source_url": "https://www.ncgindia.org/assets/ncg-guidelines-2019/ncg-guidelines-for-thoracic-cancer-2019.pdf",
+            "verification_status": "verified_excerpt",
+        },
+    },
+    {
+        "id": "ncg_thoracic_2019_cisplatin_alternative_p9",
+        "text": "Patients Not Able to Tolerate Cisplatin: Carboplatin AUC 5-6 day 1 + Paclitaxel",
+        "metadata": {
+            "cancer_site": "lung_nsclc",
+            "stage": "stage_ii_iii",
+            "cancer_type": "lung",
+            "stage_category": "stage_ii_iii",
+            "doc": "NCG Thoracic Malignancies Management Guidelines 2019",
+            "source": "NCG Thoracic Malignancies Management Guidelines 2019",
+            "page": 9,
+            "section": "Chemotherapy regimens for patients unable to tolerate cisplatin",
+            "source_url": "https://www.ncgindia.org/assets/ncg-guidelines-2019/ncg-guidelines-for-thoracic-cancer-2019.pdf",
+            "verification_status": "verified_excerpt",
+        },
+    }
 )
 
 _SITE_ALIASES = {
