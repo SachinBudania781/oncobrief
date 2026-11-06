@@ -109,10 +109,12 @@ def test_integrated_dependency_pin_preserves_original_manifest():
                 if line and not line.startswith("#")}
     original = pins("requirements.txt")
     integrated = pins("requirements-pantheon-integrated.txt")
-    assert original["pypdf"] == "6.21.2"
+    assert original["pypdf"] == "6.21.4"
     assert integrated["pypdf"] == "6.21.4"
+    assert "chromadb" not in original
+    assert integrated["chromadb"] == "1.0.20"
     assert {key: value for key, value in original.items() if key != "pypdf"} == {
-        key: value for key, value in integrated.items() if key != "pypdf"}
+        key: value for key, value in integrated.items() if key not in {"pypdf", "chromadb"}}
 
 
 def test_slot_adapter_still_requires_session_patient_and_consent(client, login):
