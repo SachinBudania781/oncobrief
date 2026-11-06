@@ -168,3 +168,14 @@ def test_source_reference_lookup_never_crosses_cancer_site_or_stage():
     assert lookup.query_guideline_with_provenance("therapy", "breast", "II")
     assert not lookup.query_guideline_with_provenance("breast therapy", "colon", "II")
     assert not lookup.query_guideline_with_provenance("breast therapy", "breast", "unknown")
+
+
+def test_site_labels_preserve_nsclc_and_reject_multiple_sites():
+    import pytest
+    from app.services.knowledge_base import _normalize_cancer_site
+    assert _normalize_cancer_site("Invasive ductal carcinoma, left breast") == "breast"
+    assert _normalize_cancer_site("Non-small cell lung carcinoma") == "lung_nsclc"
+    assert _normalize_cancer_site("Small cell lung carcinoma") == "lung_sclc"
+    for label in ["lung cancer", "breast and colorectal cancer", "unknown primary"]:
+        with pytest.raises(ValueError):
+            _normalize_cancer_site(label)

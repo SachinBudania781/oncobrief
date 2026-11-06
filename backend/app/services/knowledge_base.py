@@ -109,13 +109,24 @@ def _normalize_cancer_site(value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("cancer_site must be explicitly provided")
     key = re.sub(r"\s+", " ", value.strip().lower())
-    try:
+    if key in _SITE_ALIASES:
         return _SITE_ALIASES[key]
-    except KeyError as exc:
-        raise ValueError(
-            "Unsupported or ambiguous cancer site. Use a specific supported site; "
-            "generic 'lung' is ambiguous between NSCLC and SCLC."
-        ) from exc
+    patterns = {
+        "breast": r"\bbreast\b",
+        "lung_nsclc": r"\bnsclc\b|\bnon[- ]small cell(?: lung)?\b",
+        "colorectal": r"\bcolorectal\b|\bcolon\b|\brect(?:al|um)\b",
+        "head_neck": r"\bhead[- ]and[- ]neck\b",
+        "prostate": r"\bprostate\b",
+    }
+    matches = [site for site, pattern in patterns.items() if re.search(pattern, key)]
+    # Do not let "non-small cell" also match the small-cell subtype.
+    remainder = re.sub(patterns["lung_nsclc"], "", key)
+    if re.search(r"\bsclc\b|\bsmall cell(?: lung)?\b", remainder):
+        matches.append("lung_sclc")
+    if len(matches) == 1:
+        return matches[0]
+    raise ValueError("Unsupported or ambiguous cancer site; use one explicit supported primary site.")
+
 
 
 def _normalize_stage_group(value: str) -> str:
