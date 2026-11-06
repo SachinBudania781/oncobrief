@@ -168,6 +168,25 @@ def _normalize_cancer_site(value: str) -> str:
     try:
         return _SITE_ALIASES[key]
     except KeyError as exc:
+        # Patient records sometimes store histology and biomarkers together with
+        # the primary site. Extract only a site named explicitly in that field.
+        detected: set[str] = set()
+        if re.search(r"\\b(?:breast|mammary)\\b", key):
+            detected.add("breast")
+        if re.search(r"\\b(?:nsclc|non[- ]small[ -]cell)\\b", key):
+            detected.add("lung_nsclc")
+        elif re.search(r"\\b(?:sclc|small[ -]cell)\\b", key):
+            detected.add("lung_sclc")
+        elif re.search(r"\\blung\\b", key):
+            detected.add("lung")
+        if re.search(r"\\b(?:colorectal|colon|rectal|rectum|sigmoid)\\b", key):
+            detected.add("colorectal")
+        if re.search(r"\\bhead[ -]*(?:and|&)\\s*neck\\b", key):
+            detected.add("head_neck")
+        if re.search(r"\\bprostate\\b", key):
+            detected.add("prostate")
+        if len(detected) == 1 and "lung" not in detected:
+            return next(iter(detected))
         raise ValueError(
             "Unsupported or ambiguous cancer site. Use a specific supported site; "
             "generic 'lung' is ambiguous between NSCLC and SCLC."
