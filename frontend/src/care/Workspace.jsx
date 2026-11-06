@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 10166)
+Total output lines: 881
+
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
@@ -412,7 +415,7 @@ function CareSpace() {
               )}
               {tab === "checkin" && (
                 user.role === "doctor" ? (
-                  <PatientCheckInHistory pid={pid} canReviewActivity={can("activity")} onOpen={setDocId} demo={Boolean(user.demo)} />
+                  <PatientCheckInHistory pid={pid} canReviewActivity={can("activity")} />
                 ) : <div className="care-columns">
                   <CheckIn
                     pid={pid}
@@ -447,7 +450,10 @@ function CareSpace() {
                   />
               )}
               {tab === "clinical" && (
-                <ClinicalChart pid={pid} user={user} onOpen={setDocId} />
+                <div className="stack">
+                  <ClinicalChart pid={pid} user={user} onOpen={setDocId} />
+                  <Wearables pid={pid} demo={Boolean(user.demo)} viewerRole="doctor" initialDays={365} embedded />
+                </div>
               )}
               {tab === "clinic" && (
                 <ClinicDesk
@@ -477,19 +483,7 @@ function CareSpace() {
                   viewerRole={user.role}
                 />
               )}
-              {(tab === "transport" || transportOpened) && <Transport pid={pid} user={user} active={tab === "transport"} />}
-              {tab === "wearables" && <Wearables pid={pid} demo={Boolean(user.demo)} viewerRole={user.role} focusMetric={wearableFocus.metric} focusRevision={wearableFocus.revision} />}
-              {tab === "records" && (
-                <RecordsDesk pid={pid} user={user} onOpen={setDocId} />
-              )}
-              {tab === "money" && (
-                <MoneyNavigator pid={pid} patient={patient} />
-              )}
-              {tab === "circle" && <CareCircle pid={pid} />}
-              {tab === "share" && <ShareTools pid={pid} />}
-              {tab === "triage" && (
-                <AlertConsole
-                  onSelect={(id) => {
+              {(tab === "transport" || transportOpened) && <Transport pid={pid} user={user} active={t…166 tokens truncated…        onSelect={(id) => {
                     setPid(id);
                     change("clinical");
                   }}
@@ -876,4 +870,3 @@ export function SharedCard() {
     </div>
   );
 }
-

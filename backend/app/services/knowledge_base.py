@@ -92,54 +92,6 @@ _REFERENCE_GUIDELINES: tuple[dict[str, Any], ...] = (
             "verification_status": "verified_excerpt",
         },
     },
-    {
-        "id": "ncg_breast_2019_her2_adjuvant_p14",
-        "text": "Adjuvant Trastuzumab for 1 year is the standard practice",
-        "metadata": {
-            "cancer_site": "breast",
-            "stage": "stage_ii_iii",
-            "cancer_type": "breast",
-            "stage_category": "stage_ii_iii",
-            "doc": "NCG Breast Cancer Management Guidelines 2019",
-            "source": "NCG Breast Cancer Management Guidelines 2019",
-            "page": 14,
-            "section": "Targeted therapy — HER2-positive invasive cancer",
-            "source_url": "https://www.ncgindia.org/assets/ncg-guidelines-2019/ncg-guidelines-for-breast-cancer-2019.pdf",
-            "verification_status": "verified_excerpt",
-        },
-    },
-    {
-        "id": "ncg_thoracic_2019_adjuvant_p4",
-        "text": "Stage II and III A, T > 4 cm; node positive",
-        "metadata": {
-            "cancer_site": "lung_nsclc",
-            "stage": "stage_ii_iii",
-            "cancer_type": "lung",
-            "stage_category": "stage_ii_iii",
-            "doc": "NCG Thoracic Malignancies Management Guidelines 2019",
-            "source": "NCG Thoracic Malignancies Management Guidelines 2019",
-            "page": 4,
-            "section": "Management of Non-Small Cell Lung Cancer — Adjuvant chemotherapy",
-            "source_url": "https://www.ncgindia.org/assets/ncg-guidelines-2019/ncg-guidelines-for-thoracic-cancer-2019.pdf",
-            "verification_status": "verified_excerpt",
-        },
-    },
-    {
-        "id": "ncg_thoracic_2019_cisplatin_alternative_p9",
-        "text": "Patients Not Able to Tolerate Cisplatin: Carboplatin AUC 5-6 day 1 + Paclitaxel",
-        "metadata": {
-            "cancer_site": "lung_nsclc",
-            "stage": "stage_ii_iii",
-            "cancer_type": "lung",
-            "stage_category": "stage_ii_iii",
-            "doc": "NCG Thoracic Malignancies Management Guidelines 2019",
-            "source": "NCG Thoracic Malignancies Management Guidelines 2019",
-            "page": 9,
-            "section": "Chemotherapy regimens for patients unable to tolerate cisplatin",
-            "source_url": "https://www.ncgindia.org/assets/ncg-guidelines-2019/ncg-guidelines-for-thoracic-cancer-2019.pdf",
-            "verification_status": "verified_excerpt",
-        },
-    }
 )
 
 _SITE_ALIASES = {
@@ -168,25 +120,6 @@ def _normalize_cancer_site(value: str) -> str:
     try:
         return _SITE_ALIASES[key]
     except KeyError as exc:
-        # Patient records sometimes store histology and biomarkers together with
-        # the primary site. Extract only a site named explicitly in that field.
-        detected: set[str] = set()
-        if re.search(r"\b(?:breast|mammary)\b", key):
-            detected.add("breast")
-        if re.search(r"\b(?:nsclc|non[- ]small[ -]cell)\b", key):
-            detected.add("lung_nsclc")
-        elif re.search(r"\b(?:sclc|small[ -]cell)\b", key):
-            detected.add("lung_sclc")
-        elif re.search(r"\blung\b", key):
-            detected.add("lung")
-        if re.search(r"\b(?:colorectal|colon|rectal|rectum|sigmoid)\b", key):
-            detected.add("colorectal")
-        if re.search(r"\bhead[ -]*(?:and|&)\s*neck\b", key):
-            detected.add("head_neck")
-        if re.search(r"\bprostate\b", key):
-            detected.add("prostate")
-        if len(detected) == 1 and "lung" not in detected:
-            return next(iter(detected))
         raise ValueError(
             "Unsupported or ambiguous cancer site. Use a specific supported site; "
             "generic 'lung' is ambiguous between NSCLC and SCLC."
@@ -433,4 +366,3 @@ class ClinicalChromaRetriever:
                 "is_high_confidence": result["is_high_confidence"],
             })
         return formatted
-

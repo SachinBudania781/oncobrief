@@ -152,3 +152,34 @@ label.field > span { display: block; font-size: 13px; font-weight: 500; color: v
   color: var(--plum-dark);
   border-bottom-color: var(--plum);
 }
+
+.guideline-verification-drawer {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+}
+.guideline-verification-drawer > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  font-weight: 600;
+  list-style-position: inside;
+}
+.guideline-verification-body { padding: 0 14px 14px; }
+.guideline-citation { padding: 12px 0; border-top: 1px solid var(--line); }
+.guideline-citation-heading { align-items: center; margin-bottom: 7px; }
+.guideline-citation p { margin: 6px 0; }
+.guideline-citation blockquote {
+  margin: 9px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--plum);
+  background: var(--surface);
+  color: var(--ink-2);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.guideline-citation a { font-size: 13px; font-weight: 600; }

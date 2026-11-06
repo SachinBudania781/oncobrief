@@ -78,6 +78,11 @@ class GuidelineCitation(StrictModel):
     page_number: PageNumber
     verbatim_text: Text = Field(description="Exact quotation copied from the cited guideline")
     evidence_category: ShortText | None = None
+    source_url: str | None = Field(default=None, max_length=2000, description="Official source document URL")
+    cancer_site: ShortText | None = None
+    stage: ShortText | None = None
+    similarity: float | None = None
+    is_high_confidence: bool | None = None
 
 
 class SafetyAlert(StrictModel):
@@ -129,7 +134,6 @@ class PatientGuidanceNote(StrictModel):
 class PatientDocumentExplanationItem(StrictModel):
     text: Text = Field(max_length=1400)
     source: ShortText
-    sources: list[ShortText] = Field(default_factory=list, max_length=20)
 
 
 class PatientDocumentExplanation(StrictModel):

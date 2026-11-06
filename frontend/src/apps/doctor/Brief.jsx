@@ -14,6 +14,52 @@ export function Sources({ ids, onOpen }) {
 const ALERT_ICON = { critical: AlertOctagon, warning: AlertTriangle, info: Info }
 const LAB_ORDER = ['Haemoglobin', 'ANC', 'Platelets', 'WBC', 'CEA', 'CA 15-3', 'ALT', 'Creatinine']
 
+function GuidelineVerificationDrawer({ synoptic }) {
+  const citations = synoptic.citations || []
+  const verified = synoptic.guideline_source_status === 'verified' && citations.length > 0
+  const lowConfidence = citations.some((citation) => citation.is_high_confidence === false)
+
+  return (
+    <details className="guideline-verification-drawer">
+      <summary>
+        <span>📚 Guideline Source Verification</span>
+        <span className={`chip ${verified ? 'ok' : 'warning'}`}>
+          {verified ? `${citations.length} verified excerpt${citations.length === 1 ? '' : 's'}` : 'No verified source'}
+        </span>
+      </summary>
+      <div className="guideline-verification-body">
+        {lowConfidence && <p className="care-notice warning" role="status">
+          Low guideline similarity: check the stage, disease subtype, and biomarker status before relying on these retrieved passages.
+        </p>}
+        {!citations.length && <p className="small muted">
+          No source-verified passage matched the recorded cancer site and stage. No guideline quote is being inferred.
+        </p>}
+        {citations.map((citation, index) => {
+          const officialUrl = typeof citation.source_url === 'string'
+            && citation.source_url.startsWith('https://www.ncgindia.org/')
+            ? citation.source_url
+            : null
+          return (
+            <article className="guideline-citation" key={`${citation.guideline_source}-${citation.page_number}-${index}`}>
+              <div className="row wrap guideline-citation-heading">
+                <b>Reference #{index + 1}: {citation.guideline_source}</b>
+                <span className="chip">{citation.guideline_version}</span>
+              </div>
+              <p className="small"><b>Section:</b> {citation.section_name} · <b>Page:</b> {citation.page_number}</p>
+              <p className="small"><b>Indexed scope:</b> {citation.cancer_site || 'as recorded'} · {citation.stage || 'stage recorded in source filter'}</p>
+              {Number.isFinite(citation.similarity) && <p className="small"><b>Match score:</b> {citation.similarity.toFixed(3)}</p>}
+              <blockquote>{citation.verbatim_text}</blockquote>
+              {citation.evidence_category && <p className="tiny muted">{citation.evidence_category}</p>}
+              {officialUrl && <a href={officialUrl} target="_blank" rel="noreferrer">Open official NCG source</a>}
+            </article>
+          )
+        })}
+        <p className="tiny muted">Retrieved passages support source review; they do not establish treatment concordance or replace clinician verification.</p>
+      </div>
+    </details>
+  )
+}
+
 function Grade({ g }) {
   return <span className={`grade ${g >= 3 ? 'g3' : ''}`} aria-label={`grade ${g}`}>{[1, 2, 3].map((i) => <i key={i} className={i <= g ? 'on' : ''} />)}</span>
 }
@@ -65,15 +111,7 @@ export default function Brief({ data, onOpen }) {
               <b>{alert.severity.toUpperCase()} · {alert.parameter}</b><p>{alert.observation}</p><p>{alert.guideline_action}</p>
             </div>)}
           </div>}
-          {data.synoptic.citations.length > 0 && <details>
-            <summary>NCG citations ({data.synoptic.citations.length})</summary>
-            {data.synoptic.citations.map((citation, i) => <blockquote key={i}>
-              <b>{citation.guideline_source} · {citation.guideline_version}</b>
-              <p>{citation.section_name} · page {citation.page_number}</p>
-              <p>“{citation.verbatim_text}”</p>
-            </blockquote>)}
-          </details>}
-          {!data.synoptic.citations.length && <p className="small muted">No NCG quote or page reference is shown because no authoritative guideline source is loaded.</p>}
+          <GuidelineVerificationDrawer synoptic={data.synoptic} />
         </section>
       )}
 
