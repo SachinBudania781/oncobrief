@@ -201,7 +201,7 @@ def brief_dict(b: Brief, p: Patient, db: Session) -> dict:
         "guideline_source_status": guideline_source_status,
         "safety_alerts": safety_alerts,
         "citations": citations,
-    }).model_dump(mode="json")
+    })
     return {"id": b.id, "patient": patient_dict(p, db), "visit_type": b.visit_type,
             "created_at": b.created_at.isoformat(), "model": b.model, "latency_ms": b.latency_ms,
             "content": b.content, "sources": b.sources, "synoptic": synoptic}
