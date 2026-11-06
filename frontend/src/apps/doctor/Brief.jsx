@@ -2,6 +2,7 @@ import { AlertOctagon, AlertTriangle, Info, Clock, Footprints, CalendarClock, Me
 import { fmtDate, fmtShort, fmtTime, LANG_LABEL } from '../../api'
 import LabChart from '../../components/LabChart'
 import Journey from './Journey'
+import ClinicalDecisionSupport from './ClinicalDecisionSupport'
 
 export function Sources({ ids, onOpen }) {
   return (ids || []).map((s) =>
@@ -112,6 +113,7 @@ export default function Brief({ data, onOpen }) {
             </div>)}
           </div>}
           <GuidelineVerificationDrawer synoptic={data.synoptic} />
+          <ClinicalDecisionSupport patient={p} />
         </section>
       )}
 

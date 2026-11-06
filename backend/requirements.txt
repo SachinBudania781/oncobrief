@@ -16,3 +16,4 @@ pypdf==6.21.4
 psycopg[binary]==3.3.4
 uharfbuzz==0.56.3
 python-dotenv==1.2.4
+chromadb>=1.5.9,<2
