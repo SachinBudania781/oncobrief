@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { ArrowUpRight, FileText, Search } from "lucide-react";
+import { ArrowUpRight, FileText, Search, SlidersHorizontal } from "lucide-react";
 import { api, fmtDate, CATEGORY_COLORS } from "../../api";
+import Modal from "../../care/Modal";
 
 function highlight(text, q) {
   if (!q || !text) return text;
@@ -18,6 +19,7 @@ function highlight(text, q) {
 // Pull any specific report by type, date range, or words inside it (OCR text is searchable too).
 export default function Records({ patientId, taxonomy, onOpen }) {
   const [q, setQ] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [category, setCategory] = useState("");
   const [subtype, setSubtype] = useState("");
   const [from, setFrom] = useState("");
@@ -62,9 +64,9 @@ export default function Records({ patientId, taxonomy, onOpen }) {
           {error}
         </p>
       )}
-      <div className="records-filters">
+      <div className="records-toolbar">
         <label className="field">
-          <span>Words in the report</span>
+          <span>Search your reports</span>
           <div style={{ position: "relative" }}>
             <Search
               size={16}
@@ -80,10 +82,13 @@ export default function Records({ patientId, taxonomy, onOpen }) {
               style={{ paddingLeft: 32 }}
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="e.g. neutrophil, EGFR, impression"
+              placeholder="Search reports or results"
             />
           </div>
         </label>
+        <button className="btn records-filter-trigger" aria-haspopup="dialog" aria-expanded={filtersOpen} onClick={() => setFiltersOpen(true)}><SlidersHorizontal size={17} />Filters{[category, subtype, from, to].filter(Boolean).length > 0 && <span>{[category, subtype, from, to].filter(Boolean).length}</span>}</button>
+      </div>
+      {filtersOpen && <Modal title="Filter reports" onClose={() => setFiltersOpen(false)}><div className="records-filter-fields">
         <label className="field">
           <span>Type</span>
           <select
@@ -133,7 +138,9 @@ export default function Records({ patientId, taxonomy, onOpen }) {
             onChange={(e) => setTo(e.target.value)}
           />
         </label>
-      </div>
+      </div><div className="records-filter-actions"><button className="btn" onClick={() => { setCategory(""); setSubtype(""); setFrom(""); setTo(""); }}>Reset filters</button><button className="btn primary" onClick={() => setFiltersOpen(false)}>Show reports</button></div></Modal>}
+      <div className="records-results-meta"><span role="status">{loading ? "Finding reports…" : `${rows.length} ${rows.length === 1 ? "report" : "reports"}`}</span>{(category || subtype || from || to) && <button onClick={() => { setCategory(""); setSubtype(""); setFrom(""); setTo(""); }}>Clear filters</button>}</div>
+
       <div className="records-mobile-list" aria-label="Patient reports">{rows.map(d => <button className="records-mobile-card" key={d.id} onClick={() => onOpen(d.tag)}><span className="records-mobile-icon"><FileText size={21} /></span><span className="records-mobile-copy"><small>{d.subtype} <span>· {fmtDate(d.record_date)}</span></small><b>{d.title}</b>{d.snippet && <span className="records-mobile-snippet">{highlight(d.snippet,q)}</span>}<em>{d.external_hospital || (d.source === "patient" ? "Patient app" : "This hospital")}</em></span><ArrowUpRight size={16} /></button>)}{loading && <p className="care-loading" role="status">Loading reports…</p>}{!loading && !rows.length && <div className="care-empty">No matching reports.</div>}</div>
       <div className="panel records-desktop-table" style={{ padding: 0, overflowX: "auto" }}>
         <table className="list">

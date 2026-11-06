@@ -4,6 +4,7 @@ import { useAuth } from "./Auth";
 import { request } from "./client";
 import { APP_TARGET } from "../deployment";
 import Modal from "./Modal";
+import CareMotif from "./CareMotif";
 
 const portals = {
   patient: { label: "Patient", eyebrow: "YOUR CARE, CONNECTED", title: <>A little clarity.<br />A better day.</>, description: "Your care team, records and next steps. All a little closer.", heading: "Your care starts here.", sub: "Sign in to your personal care space.", id: "Patient or caregiver ID", placeholder: "OB-2026-0001", phone: "Patient phone number", icon: HeartPulse, roles: ["patient", "caregiver"] },
@@ -42,7 +43,7 @@ export default function Login() {
     <section className="login-story">
       <div className="care-logo"><span className="care-brand-mark"><HeartPulse size={23} /></span>OncoBrief<span className="care-brand-edition">{p.label}</span></div>
       <div className="login-story-main"><p className="eyebrow">{p.eyebrow}</p><h1>{p.title}</h1><p>{p.description}</p>
-        <div className="login-orbit" aria-hidden="true"><div className="orbit-ring orbit-one" /><div className="orbit-ring orbit-two" /><div className="orbit-core"><Icon size={52} strokeWidth={1.3} /></div><div className="orbit-label"><span className="care-connection-dot" />Care that stays connected</div><div className="orbit-chip"><ShieldCheck size={17} />One connected story</div></div>
+        <CareMotif portal={portal} />
       </div>
       <div className="login-story-foot"><span>Connected cancer care</span><span>Designed around you <ArrowUpRight size={15} /></span></div>
     </section>
@@ -64,7 +65,7 @@ export default function Login() {
           <button className="btn primary lg login-submit" disabled={busy || !config}>{busy ? "Connecting…" : portal === "patient" && mode === "phone" && !challenge ? "Send verification code" : `Enter ${p.label.toLowerCase()} workspace`}<ArrowRight size={18} /></button>
         </form>
         <div className="login-secure"><LockKeyhole size={14} /><span>Your space. Your information.</span></div>
-        {config?.demo && <button className="login-demo-link" onClick={() => setAbout(true)}>Use a hackathon test account <ArrowUpRight size={14} /></button>}
+        {config?.demo && <button className="login-demo-link" onClick={() => setAbout(true)}>Sign-in help <ArrowUpRight size={14} /></button>}
       </div>
       <footer className="login-footer">OncoBrief <span>Thoughtful care, every day.</span></footer>
     </section>

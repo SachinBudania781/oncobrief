@@ -17,11 +17,11 @@ Release branch: `codex/final-deliverable`. Baseline: integrated teammate branch 
 
 Before rollout, the original live metadata inventory contained 62 documents, all matching bundled fixtures; no additional uploaded document was found. No live record content was downloaded. Existing PostgreSQL records and encryption keys must be retained. Schema changes are additive tables; no live database reset is part of this release.
 
-Do not delete the original deploy history until post-release verification is complete. Back up the repository refs before pruning historical branches. The UI redesign remains a later task.
+Do not delete the original deploy history until post-release verification is complete. Back up the repository refs before pruning historical branches.
 
 ## Remaining provider/device checks
 
-Automatic Google Calendar invitations need OAuth credentials and a controlled real invitation test. SMS, WhatsApp, telephony and hosted speech need configured adapters and delivery tests. Native Android BLE requires an actual device/sensor test. Browser checks cover modern Chromium and responsive widths; physical iPhone/Safari and foldable hardware have not been verified.
+The controlled Google Calendar/Meet invitation and cancellation test passed, as recorded below. SMS, WhatsApp, telephony and hosted speech need configured adapters and delivery tests; messaging is deferred to Round 3. Native Android BLE requires an actual device/sensor test. Browser checks cover modern Chromium and responsive widths; physical iPhone/Safari and foldable hardware have not been verified.
 
 Validation results and deployed commit are recorded below after the release checks finish.
 
@@ -45,3 +45,10 @@ GitHub Actions run 42218211974 passed all jobs: 225 API tests on SQLite, 225 on 
 Render access was restored through the official CLI. The API is live at `861c521`; all three frontend builds of that commit completed successfully. Live browser verification then found a static-host routing issue in the appointment-advice link. The frontend follow-up uses `/memory-up/` so Render serves the standalone page instead of the SPA fallback. No backend API or credentials changed for this fix.
 
 Live verification passed role sign-in, protected report access, patient isolation, and Gemini chat/explanations. After Google Calendar API was enabled, a controlled real Calendar event and Meet link were created, shown in the patient's day pass, and cancelled successfully. The test invitation/cancellation was sent only to the user-approved address. Rollback tags remain under `archive/pre-final-*-2026-11-06`. The source uses automatic text detection to avoid Windows line-ending noise.
+## Final interface pass — 6 November 2026
+
+The three portals share a cool hospital palette, translucent surfaces, readable controls and a consistent dialog system. Patient, doctor and staff overviews use their existing role permissions and live data. Desktop has grouped sidebar navigation and tables; phone layouts use report cards, a floating navigation dock and a workspace sheet. Feature search supports Ctrl/Cmd+K. Reduced-motion preferences disable animations.
+
+Report filters now open in a focused dialog. Medicine reminders have a direct action that opens Medicines without recording or changing a dose. Appointment advice uses the same palette and spacing. PWA metadata matches the portal colours and supports device safe areas. Native Android/iOS builds remain outside this web-app release.
+
+All three production builds, packet tests and the transport/advice component browser checks passed locally. The additional browser regression verifies reminder deduplication, the Medicines action, report filters, the phone workspace sheet and keyboard feature search. The existing portal journeys cover all permitted navigation screens and widths from 320 to 1440 pixels.

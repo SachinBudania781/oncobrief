@@ -8,7 +8,7 @@ const names = {
 export function pwa(target = "all") {
   if (!Object.hasOwn(names, target)) throw new Error(`Unknown app target: ${target}`);
   const name = names[target];
-  const theme = { doctor: "#246da0", staff: "#346a75" }[target] || "#087e8b";
+  const theme = { doctor: "#286ca0", staff: "#347485" }[target] || "#137d87";
   return {
     name: "oncobrief-installable-app",
     transformIndexHtml(html) {
@@ -36,7 +36,7 @@ export function pwa(target = "all") {
           start_url: target === "all" ? "/app" : "/",
           scope: "/",
           display: "standalone",
-          background_color: "#f2f7f8",
+          background_color: "#f1f6f9",
           theme_color: theme,
           lang: "en-IN",
           icons: [

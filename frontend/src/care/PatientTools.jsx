@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bell, BellOff, Camera, CheckCircle2, Flower2, Heart, Send } from "lucide-react";
+import { ArrowRight, Bell, BellOff, Camera, CheckCircle2, Flower2, Heart, Pill, Send, X } from "lucide-react";
 import { request, useResource, dateTime, nice } from "./client";
 import {
   Action,
@@ -741,7 +741,7 @@ export function Medicines({ pid, user, onUpdate }) {
   );
 }
 
-export function DoseReminder({ pid }) {
+export function DoseReminder({ pid, onOpen }) {
   const [enabled, setEnabled] = useState(() => isDoseReminderEnabled(pid));
   const [notice, setNotice] = useState(null);
   const meds = useResource(enabled && pid ? `/patients/${pid}/medications` : null, 60000);
@@ -811,8 +811,8 @@ export function DoseReminder({ pid }) {
         id: nowMs,
         time: dueDoses[0].dose.time,
         message: dueDoses.length === 1
-          ? `Time for ${names[0]}. Open Medicines to record this dose.`
-          : `Time for ${dueDoses.length} scheduled medicines. Open Medicines to record each dose.`,
+          ? [names[0], dueDoses[0].medicine.dose].filter(Boolean).join(" · ")
+          : `${dueDoses.length} scheduled medicines are due.`,
       });
     };
     checkDueDoses();
@@ -822,12 +822,15 @@ export function DoseReminder({ pid }) {
 
   if (!notice) return null;
   return (
-    <div className="care-dose-reminder" role="status" aria-live="assertive" key={notice.id}>
+    <div className="care-dose-reminder" role="status" aria-live="polite" key={notice.id}>
+      <span className="dashboard-icon"><Pill size={21} strokeWidth={1.5} /></span>
       <div>
-        <b>Medicine reminder · {notice.time}</b>
+        <small>SCHEDULED AT {notice.time}</small>
+        <b>Time for your medicine</b>
         <p>{notice.message}</p>
+        {onOpen && <button className="reminder-open" type="button" onClick={() => { setNotice(null); onOpen(); }}>View medicines<ArrowRight size={15} /></button>}
       </div>
-      <button type="button" aria-label="Dismiss medicine reminder" onClick={() => setNotice(null)}>×</button>
+      <button className="reminder-dismiss" type="button" aria-label="Dismiss medicine reminder" onClick={() => setNotice(null)}><X size={16} /></button>
     </div>
   );
 }
