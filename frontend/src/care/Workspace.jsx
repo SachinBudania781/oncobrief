@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 10166)
-Total output lines: 881
-
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
@@ -483,7 +480,19 @@ function CareSpace() {
                   viewerRole={user.role}
                 />
               )}
-              {(tab === "transport" || transportOpened) && <Transport pid={pid} user={user} active={t…166 tokens truncated…        onSelect={(id) => {
+              {(tab === "transport" || transportOpened) && <Transport pid={pid} user={user} active={tab === "transport"} />}
+              {tab === "wearables" && <Wearables pid={pid} demo={Boolean(user.demo)} viewerRole={user.role} focusMetric={wearableFocus.metric} focusRevision={wearableFocus.revision} />}
+              {tab === "records" && (
+                <RecordsDesk pid={pid} user={user} onOpen={setDocId} />
+              )}
+              {tab === "money" && (
+                <MoneyNavigator pid={pid} patient={patient} />
+              )}
+              {tab === "circle" && <CareCircle pid={pid} />}
+              {tab === "share" && <ShareTools pid={pid} />}
+              {tab === "triage" && (
+                <AlertConsole
+                  onSelect={(id) => {
                     setPid(id);
                     change("clinical");
                   }}
