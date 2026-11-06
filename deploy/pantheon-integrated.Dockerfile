@@ -16,6 +16,7 @@ ENV TZ=Asia/Kolkata \
     FRONTEND_DIST=/app/frontend/dist \
     DATA_DIR=/app/backend/data
 WORKDIR /app/backend
+COPY backend/requirements.txt ./
 COPY backend/requirements-pantheon-integrated.txt ./
 RUN pip install --no-cache-dir -r requirements-pantheon-integrated.txt
 COPY backend/ ./
