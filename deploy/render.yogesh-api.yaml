@@ -10,7 +10,7 @@
       "plan": "free",
       "healthCheckPath": "/api/health",
       "numInstances": 1,
-      "autoDeployTrigger": "off",
+      "autoDeployTrigger": "checksPass",
       "envVars": [
         {
           "key": "DEMO_MODE",
