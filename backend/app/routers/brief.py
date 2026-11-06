@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 def _ncg_guideline_store():
     # Lazy initialization avoids loading the local embedding model for routes
     # that do not use guideline retrieval.
-    from ..services.knowledge_base import NCGGuidelineStore
+    from ..services.knowledge_base import ClinicalChromaRetriever
 
-    return NCGGuidelineStore()
+    return ClinicalChromaRetriever()
 
 
 def _guideline_citations(patient: Patient) -> list[dict]:
