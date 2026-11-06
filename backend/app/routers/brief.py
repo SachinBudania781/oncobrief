@@ -178,7 +178,7 @@ def brief_dict(b: Brief, p: Patient, db: Session) -> dict:
             parameter=parameter or "Clinical finding",
             observation=text,
             guideline_action="Review against the current institutional protocol. This brief does not recommend a dose or treatment change.",
-        ).model_dump(mode="json"))
+        ).model_dump(mode="python"))
     citations = _guideline_citations(p)
     if citations:
         guideline_concordance = (

@@ -74,7 +74,7 @@ def _patient_guidance_note(doc, result, language):
         "emergency_red_flags": [PatientRedFlag(symptom=symptom, action=action).model_dump(mode="python")
                                 for symptom, action in words["flags"]],
     })
-    return note.model_dump(mode="json")
+    return note.model_dump(mode="python")
 
 
 @router.post("/patients/{patient_id}/voice-reminder")
