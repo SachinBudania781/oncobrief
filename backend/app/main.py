@@ -80,7 +80,24 @@ async def boundaries(request: Request, call_next):
                 host_origin = f"{request.url.scheme}://{request.url.netloc}"
                 if origin and origin.rstrip("/") not in ORIGINS + [host_origin]:
                     raise HTTPException(403, "Cross-site request refused")
-            key = (request.client.host if request.client else "local", "login" if path.startswith("/api/auth/") and request.method == "POST" else "api")
+            client_ip = request.client.host if request.client else "local"
+            is_login_request = path.startswith("/api/auth/") and request.method == "POST"
+            session_token = request.cookies.get("ob_session", "")
+            is_public_request = (
+                path in PUBLIC
+                or path == "/api/webhooks/telephony"
+                or path.startswith("/api/shared/")
+            )
+            # Render may serve many users through the same proxy IP. Keep
+            # unauthenticated and login throttles IP-based, but isolate normal
+            # API traffic by the signed-in session so users cannot exhaust one
+            # another's request budget.
+            rate_subject = (
+                client_ip
+                if is_login_request or is_public_request or not session_token
+                else digest(session_token)
+            )
+            key = (rate_subject, "login" if is_login_request else "api")
             queue = _rates[key]
             now = time.monotonic()
             while queue and queue[0] < now - 60:
