@@ -1,3 +1,7 @@
+import logging
+import re
+from functools import lru_cache
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -5,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import Brief, Patient
-from ..schemas import AlertSeverity, SafetyAlert, TumorBoardSynopticBrief
+from ..schemas import AlertSeverity, GuidelineCitation, SafetyAlert, TumorBoardSynopticBrief
 from ..services import llm
 from ..services import clinical_engine
 from ..services.brief import generate_brief
@@ -13,6 +17,55 @@ from .common import Actor, audit, get_actor, load_patient
 from .patients import patient_dict
 
 router = APIRouter(prefix="/api", tags=["brief"])
+logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _ncg_guideline_store():
+    # Lazy initialization avoids loading the local embedding model for routes
+    # that do not use guideline retrieval.
+    from ..services.knowledge_base import NCGGuidelineStore
+
+    return NCGGuidelineStore()
+
+
+def _guideline_citations(patient: Patient) -> list[dict]:
+    cancer_type = (patient.cancer_type or "").strip()
+    stage_group = (patient.stage or "").strip()
+    if not cancer_type or not stage_group:
+        return []
+
+    query = " ".join(filter(None, (
+        patient.cancer_type,
+        patient.stage,
+        patient.current_regimen,
+        "oncology guideline treatment protocol",
+    )))
+    try:
+        matches = _ncg_guideline_store().query_guideline_with_provenance(
+            query=query,
+            cancer_type=cancer_type,
+            stage_group=stage_group,
+            n_results=3,
+        )
+    except Exception:
+        # Guideline retrieval must never prevent the rest of the clinical brief
+        # from loading. The response then clearly marks citations unavailable.
+        logger.exception("NCG guideline retrieval unavailable")
+        return []
+
+    citations = []
+    for item in matches:
+        metadata = item["metadata"]
+        version = re.search(r"\b(20\d{2})\b", str(metadata["doc"]))
+        citations.append(GuidelineCitation(
+            guideline_source=str(metadata["doc"]),
+            guideline_version=version.group(1) if version else "Edition not recorded",
+            section_name=str(metadata["section"]),
+            page_number=int(metadata["page"]),
+            verbatim_text=str(item["verbatim_text"]),
+        ).model_dump(mode="json"))
+    return citations
 
 
 class BriefIn(BaseModel):
@@ -126,13 +179,28 @@ def brief_dict(b: Brief, p: Patient, db: Session) -> dict:
             observation=text,
             guideline_action="Review against the current institutional protocol. This brief does not recommend a dose or treatment change.",
         ).model_dump(mode="json"))
+    citations = _guideline_citations(p)
+    if citations:
+        guideline_concordance = (
+            "Source-verified NCG excerpts are listed below for clinician review. "
+            "Automated regimen concordance has not been assessed; verify the "
+            "current guideline and patient-specific applicability."
+        )
+        guideline_source_status = "verified"
+    else:
+        guideline_concordance = (
+            "Not assessed: no matching, source-verified NCG excerpt was retrieved. "
+            "Verify against the current guideline before clinical use."
+        )
+        guideline_source_status = "not_loaded"
+
     synoptic = TumorBoardSynopticBrief.model_validate({
         "patient_id": p.id,
         "clinical_summary": clinical_summary,
-        "guideline_concordance": "Not assessed: no authoritative NCG guideline text is configured for this deployment. Verify against the current NCG guideline before clinical use.",
-        "guideline_source_status": "not_loaded",
+        "guideline_concordance": guideline_concordance,
+        "guideline_source_status": guideline_source_status,
         "safety_alerts": safety_alerts,
-        "citations": [],
+        "citations": citations,
     }).model_dump(mode="json")
     return {"id": b.id, "patient": patient_dict(p, db), "visit_type": b.visit_type,
             "created_at": b.created_at.isoformat(), "model": b.model, "latency_ms": b.latency_ms,
@@ -161,5 +229,6 @@ def past_briefs(patient: Patient = Depends(load_patient), db: Session = Depends(
 def ai_status():
     return {"llm_enabled": llm.enabled(), "provider": llm.config.LLM_PROVIDER if llm.enabled() else None,
             "model": llm.model_name() if llm.enabled() else "deterministic writer"}
+
 
 
