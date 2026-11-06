@@ -904,4 +904,4 @@ button:not(:disabled):active { transform: scale(.975); }
 /* Keep native controls inside narrow and folded viewports. */
 .care-main .field { min-width: 0; }
 .care-main input, .care-main select, .care-main textarea { max-width: 100%; min-width: 0; }
-.care-main input[type="file"] { width: 100%; }
+.care-main input[type="file"]:not(.sr-only) { width: 100%; }
