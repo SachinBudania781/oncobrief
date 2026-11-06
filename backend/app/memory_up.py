@@ -1,3 +1,4 @@
+from .file_storage import persist_file, file_exists
 """Department-authored visit reminders; patient-visible after a doctor's review."""
 from datetime import datetime
 from pathlib import Path
@@ -202,7 +203,7 @@ async def create_memory_up(patient_id: str, request: Request, appointment_id: in
             text, _, _ = await run_in_threadpool(extract_text, path, attachment_mime)
             check_identity(text, db.get(Patient, patient_id), True,
                            "Department staff confirmed the patient and appointment before upload")
-            encrypt_file(path)
+            persist_file(db, path)
         except Exception:
             path.unlink(missing_ok=True)
             raise
@@ -274,7 +275,7 @@ def publish_memory_up(note_id: int, request: Request, db=Depends(get_db)):
 def attachment(note_id: int, request: Request, db=Depends(get_db)):
     user, row = visible_note(db, request, note_id)
     path = (MEMORY_DIR / row.attachment).resolve()
-    if not row.attachment or not path.is_relative_to(MEMORY_DIR.resolve()) or not path.is_file():
+    if not row.attachment or not path.is_relative_to(MEMORY_DIR.resolve()) or not file_exists(path):
         raise HTTPException(404, "Attachment not found")
     append_audit(db, user, "memory_up_attachment", row.patient_id, f"Memory Up {row.id}")
     return Response(read_file(path), media_type=row.attachment_mime,

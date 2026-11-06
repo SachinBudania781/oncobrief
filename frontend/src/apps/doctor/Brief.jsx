@@ -17,7 +17,7 @@ const LAB_ORDER = ['Haemoglobin', 'ANC', 'Platelets', 'WBC', 'CEA', 'CA 15-3', '
 function GuidelineVerificationDrawer({ synoptic }) {
   const citations = synoptic.citations || []
   const verified = synoptic.guideline_source_status === 'verified' && citations.length > 0
-  const lowConfidence = citations.some((citation) => citation.is_high_confidence === false)
+  const lowConfidence = citations.some((citation) => Number.isFinite(citation.similarity) && citation.is_high_confidence === false)
 
   return (
     <details className="guideline-verification-drawer">
@@ -245,4 +245,3 @@ export default function Brief({ data, onOpen }) {
     </div>
   )
 }
-

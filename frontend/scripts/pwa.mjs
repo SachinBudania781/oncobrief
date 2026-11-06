@@ -24,6 +24,7 @@ export function pwa(target = "all") {
       };
     },
     generateBundle() {
+      this.emitFile({ type: "asset", fileName: "release.json", source: JSON.stringify({ version: "2.1.0", target, commit: process.env.RENDER_GIT_COMMIT || process.env.GITHUB_SHA || "local" }) });
       this.emitFile({
         type: "asset",
         fileName: "manifest.webmanifest",

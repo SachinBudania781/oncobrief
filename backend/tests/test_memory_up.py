@@ -41,8 +41,12 @@ def memory_client(tmp_path, monkeypatch):
                                start=start, end=start + timedelta(minutes=20),
                                clinician="Doctor", room="Test", visit_type="follow_up", status=status))
         db.commit()
-    monkeypatch.setattr(feature, "MEMORY_DIR", tmp_path / "memory-up")
+    monkeypatch.setattr(feature, "MEMORY_DIR", tmp_path / "storage" / "memory-up")
     from app.routers import documents
+    from app import file_storage
+    from sqlalchemy.orm import sessionmaker
+    monkeypatch.setattr(file_storage, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(file_storage, "SessionLocal", sessionmaker(bind=engine))
     monkeypatch.setattr(documents, "STORAGE_DIR", tmp_path / "storage")
     app = FastAPI()
 

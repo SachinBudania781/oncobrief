@@ -17,7 +17,8 @@ export async function request(path, method = "GET", body) {
     }
     if (response.status === 401 && !path.startsWith("/auth/"))
       window.dispatchEvent(new Event("ob-session-expired"));
-    throw new Error(typeof error === "string" ? error : JSON.stringify(error));
+    if (Array.isArray(error)) error = error.map(item => item.msg || "Check the entered value").join(". ");
+    throw new Error(typeof error === "string" ? error : "The request could not be completed. Please try again.");
   }
   return response.json();
 }

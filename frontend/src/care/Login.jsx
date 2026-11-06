@@ -14,7 +14,7 @@ const portals = {
 export default function Login() {
   const { setUser } = useAuth();
   const routePortal = new URLSearchParams(window.location.search).get("portal")
-    || window.location.pathname.match(/^\/legacy\/(patient|doctor|staff)$/)?.[1];
+    || window.location.pathname.match(/^\/(?:legacy\/)?(patient|doctor|staff)$/)?.[1];
   const initialPortal = APP_TARGET === "all"
     ? (portals[routePortal] ? routePortal : "patient")
     : APP_TARGET;

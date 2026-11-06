@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 def _ncg_guideline_store():
     # Lazy initialization avoids loading the local embedding model for routes
     # that do not use guideline retrieval.
-    from ..services.knowledge_base import ClinicalChromaRetriever
+    from ..services.knowledge_base import ClinicalReferenceRetriever
 
-    return ClinicalChromaRetriever()
+    return ClinicalReferenceRetriever()
 
 
 def _guideline_citations(patient: Patient) -> list[dict]:
@@ -72,9 +72,9 @@ def _guideline_citations(patient: Patient) -> list[dict]:
             ),
             cancer_site=str(metadata["cancer_site"]),
             stage=str(metadata["stage"]),
-            similarity=float(item["similarity"]),
+            similarity=item["similarity"],
             is_high_confidence=bool(item["is_high_confidence"]),
-        ).model_dump(mode="json"))
+        ).model_dump(mode="python"))
     return citations
 
 
@@ -188,7 +188,7 @@ def brief_dict(b: Brief, p: Patient, db: Session) -> dict:
             parameter=parameter or "Clinical finding",
             observation=text,
             guideline_action="Review against the current institutional protocol. This brief does not recommend a dose or treatment change.",
-        ).model_dump(mode="json"))
+        ).model_dump(mode="python"))
     citations = _guideline_citations(p)
     if citations:
         guideline_concordance = (
@@ -211,7 +211,7 @@ def brief_dict(b: Brief, p: Patient, db: Session) -> dict:
         "guideline_source_status": guideline_source_status,
         "safety_alerts": safety_alerts,
         "citations": citations,
-    }).model_dump(mode="json")
+    })
     return {"id": b.id, "patient": patient_dict(p, db), "visit_type": b.visit_type,
             "created_at": b.created_at.isoformat(), "model": b.model, "latency_ms": b.latency_ms,
             "content": b.content, "sources": b.sources, "synoptic": synoptic}
@@ -239,5 +239,3 @@ def past_briefs(patient: Patient = Depends(load_patient), db: Session = Depends(
 def ai_status():
     return {"llm_enabled": llm.enabled(), "provider": llm.config.LLM_PROVIDER if llm.enabled() else None,
             "model": llm.model_name() if llm.enabled() else "deterministic writer"}
-
-

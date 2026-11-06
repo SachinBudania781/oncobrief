@@ -1,18 +1,442 @@
-# One-click deploy on Render: Dashboard -> New -> Blueprint -> pick this repo.
-services:
-  - type: web
-    name: oncobrief
-    runtime: docker
-    plan: free
-    healthCheckPath: /api/health
-    envVars:
-      - key: DEMO_MODE
-        value: "true"
-      - key: COOKIE_SECURE
-        value: "true"
-      - key: LLM_PROVIDER        # gemini | anthropic | openai | none
-        value: none
-      - key: LLM_API_KEY         # optional; set in the dashboard, never commit it
-        sync: false
-      - key: LLM_MODEL           # optional; provider default if empty
-        sync: false
+# Canonical deployment: three web apps, one API, one database.
+{
+  "services": [
+    {
+      "type": "web",
+      "name": "oncobrief-round2-api",
+      "runtime": "docker",
+      "dockerfilePath": "./deploy/api.Dockerfile",
+      "dockerContext": ".",
+      "region": "singapore",
+      "plan": "free",
+      "healthCheckPath": "/api/health",
+      "numInstances": 1,
+      "autoDeployTrigger": "checksPass",
+      "envVars": [
+        {
+          "key": "DEMO_MODE",
+          "value": "true"
+        },
+        {
+          "key": "COOKIE_SECURE",
+          "value": "true"
+        },
+        {
+          "key": "DATABASE_URL",
+          "fromDatabase": {
+            "name": "oncobrief-round2-db",
+            "property": "connectionString"
+          }
+        },
+        {
+          "key": "DATA_ENCRYPTION_KEY",
+          "sync": false
+        },
+        {
+          "key": "FILE_SIGNING_KEY",
+          "sync": false
+        },
+        {
+          "key": "ALLOWED_ORIGINS",
+          "value": "https://oncobrief-round2-patient.onrender.com,https://oncobrief-round2-doctor.onrender.com,https://oncobrief-round2-staff.onrender.com"
+        },
+        {
+          "key": "LLM_PROVIDER",
+          "sync": false
+        },
+        {
+          "key": "LLM_API_KEY",
+          "sync": false
+        },
+        {
+          "key": "LLM_MODEL",
+          "sync": false
+        }
+      ],
+      "branch": "main"
+    },
+    {
+      "type": "web",
+      "name": "oncobrief-round2-patient",
+      "runtime": "static",
+      "buildCommand": "cd frontend && npm ci --no-audit --no-fund && npm run build:patient",
+      "staticPublishPath": "./frontend/dist/patient",
+      "autoDeployTrigger": "checksPass",
+      "envVars": [
+        {
+          "key": "NODE_VERSION",
+          "value": "24"
+        },
+        {
+          "key": "SCARF_ANALYTICS",
+          "value": "false"
+        }
+      ],
+      "routes": [
+        {
+          "type": "rewrite",
+          "source": "/api/*",
+          "destination": "https://oncobrief-round2-api.onrender.com/api/*"
+        },
+        {
+          "type": "rewrite",
+          "source": "/docs",
+          "destination": "https://oncobrief-round2-api.onrender.com/docs"
+        },
+        {
+          "type": "rewrite",
+          "source": "/openapi.json",
+          "destination": "https://oncobrief-round2-api.onrender.com/openapi.json"
+        },
+        {
+          "type": "rewrite",
+          "source": "/*",
+          "destination": "/index.html"
+        }
+      ],
+      "headers": [
+        {
+          "path": "/*",
+          "name": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "path": "/*",
+          "name": "X-Frame-Options",
+          "value": "SAMEORIGIN"
+        },
+        {
+          "path": "/*",
+          "name": "Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "path": "/*",
+          "name": "Permissions-Policy",
+          "value": "camera=(self), microphone=(self), geolocation=(self)"
+        },
+        {
+          "path": "/api/*",
+          "name": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "path": "/sw.js",
+          "name": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "path": "/manifest.webmanifest",
+          "name": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "path": "/manifest.webmanifest",
+          "name": "Content-Type",
+          "value": "application/manifest+json"
+        },
+        {
+          "path": "/index.html",
+          "name": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "path": "/",
+          "name": "Cache-Control",
+          "value": "no-store"
+        }
+      ],
+      "branch": "main"
+    },
+    {
+      "type": "web",
+      "name": "oncobrief-round2-doctor",
+      "runtime": "static",
+      "buildCommand": "cd frontend && npm ci --no-audit --no-fund && npm run build:doctor",
+      "staticPublishPath": "./frontend/dist/doctor",
+      "autoDeployTrigger": "checksPass",
+      "envVars": [
+        {
+          "key": "NODE_VERSION",
+          "value": "24"
+        },
+        {
+          "key": "SCARF_ANALYTICS",
+          "value": "false"
+        }
+      ],
+      "routes": [
+        {
+          "type": "rewrite",
+          "source": "/api/*",
+          "destination": "https://oncobrief-round2-api.onrender.com/api/*"
+        },
+        {
+          "type": "rewrite",
+          "source": "/docs",
+          "destination": "https://oncobrief-round2-api.onrender.com/docs"
+        },
+        {
+          "type": "rewrite",
+          "source": "/openapi.json",
+          "destination": "https://oncobrief-round2-api.onrender.com/openapi.json"
+        },
+        {
+          "type": "rewrite",
+          "source": "/*",
+          "destination": "/index.html"
+        }
+      ],
+      "headers": [
+        {
+          "path": "/*",
+          "name": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "path": "/*",
+          "name": "X-Frame-Options",
+          "value": "SAMEORIGIN"
+        },
+        {
+          "path": "/*",
+          "name": "Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "path": "/*",
+          "name": "Permissions-Policy",
+          "value": "camera=(self), microphone=(self), geolocation=(self)"
+        },
+        {
+          "path": "/api/*",
+          "name": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "path": "/sw.js",
+          "name": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "path": "/manifest.webmanifest",
+          "name": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "path": "/manifest.webmanifest",
+          "name": "Content-Type",
+          "value": "application/manifest+json"
+        },
+        {
+          "path": "/index.html",
+          "name": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "path": "/",
+          "name": "Cache-Control",
+          "value": "no-store"
+        }
+      ],
+      "branch": "main"
+    },
+    {
+      "type": "web",
+      "name": "oncobrief-round2-staff",
+      "runtime": "static",
+      "buildCommand": "cd frontend && npm ci --no-audit --no-fund && npm run build:staff",
+      "staticPublishPath": "./frontend/dist/staff",
+      "autoDeployTrigger": "checksPass",
+      "envVars": [
+        {
+          "key": "NODE_VERSION",
+          "value": "24"
+        },
+        {
+          "key": "SCARF_ANALYTICS",
+          "value": "false"
+        }
+      ],
+      "routes": [
+        {
+          "type": "rewrite",
+          "source": "/api/*",
+          "destination": "https://oncobrief-round2-api.onrender.com/api/*"
+        },
+        {
+          "type": "rewrite",
+          "source": "/docs",
+          "destination": "https://oncobrief-round2-api.onrender.com/docs"
+        },
+        {
+          "type": "rewrite",
+          "source": "/openapi.json",
+          "destination": "https://oncobrief-round2-api.onrender.com/openapi.json"
+        },
+        {
+          "type": "rewrite",
+          "source": "/*",
+          "destination": "/index.html"
+        }
+      ],
+      "headers": [
+        {
+          "path": "/*",
+          "name": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "path": "/*",
+          "name": "X-Frame-Options",
+          "value": "SAMEORIGIN"
+        },
+        {
+          "path": "/*",
+          "name": "Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "path": "/*",
+          "name": "Permissions-Policy",
+          "value": "camera=(self), microphone=(self), geolocation=(self)"
+        },
+        {
+          "path": "/api/*",
+          "name": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "path": "/sw.js",
+          "name": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "path": "/manifest.webmanifest",
+          "name": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "path": "/manifest.webmanifest",
+          "name": "Content-Type",
+          "value": "application/manifest+json"
+        },
+        {
+          "path": "/index.html",
+          "name": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "path": "/",
+          "name": "Cache-Control",
+          "value": "no-store"
+        }
+      ],
+      "branch": "main"
+    },
+    {
+      "type": "web",
+      "name": "oncobrief-round2-hub",
+      "runtime": "static",
+      "buildCommand": "cd frontend && npm ci --no-audit --no-fund && npm run build:hub",
+      "staticPublishPath": "./frontend/dist/hub",
+      "autoDeployTrigger": "checksPass",
+      "envVars": [
+        {
+          "key": "NODE_VERSION",
+          "value": "24"
+        },
+        {
+          "key": "SCARF_ANALYTICS",
+          "value": "false"
+        }
+      ],
+      "routes": [
+        {
+          "type": "rewrite",
+          "source": "/api/*",
+          "destination": "https://oncobrief-round2-api.onrender.com/api/*"
+        },
+        {
+          "type": "rewrite",
+          "source": "/docs",
+          "destination": "https://oncobrief-round2-api.onrender.com/docs"
+        },
+        {
+          "type": "rewrite",
+          "source": "/openapi.json",
+          "destination": "https://oncobrief-round2-api.onrender.com/openapi.json"
+        },
+        {
+          "type": "rewrite",
+          "source": "/*",
+          "destination": "/index.html"
+        }
+      ],
+      "headers": [
+        {
+          "path": "/*",
+          "name": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "path": "/*",
+          "name": "X-Frame-Options",
+          "value": "SAMEORIGIN"
+        },
+        {
+          "path": "/*",
+          "name": "Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "path": "/*",
+          "name": "Permissions-Policy",
+          "value": "camera=(self), microphone=(self), geolocation=(self)"
+        },
+        {
+          "path": "/api/*",
+          "name": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "path": "/sw.js",
+          "name": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "path": "/manifest.webmanifest",
+          "name": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "path": "/manifest.webmanifest",
+          "name": "Content-Type",
+          "value": "application/manifest+json"
+        },
+        {
+          "path": "/index.html",
+          "name": "Cache-Control",
+          "value": "no-cache"
+        },
+        {
+          "path": "/",
+          "name": "Cache-Control",
+          "value": "no-store"
+        }
+      ],
+      "branch": "main"
+    }
+  ],
+  "databases": [
+    {
+      "name": "oncobrief-round2-db",
+      "databaseName": "oncobrief_round2_db",
+      "user": "oncobrief_round2_db_user",
+      "region": "singapore",
+      "plan": "free",
+      "postgresMajorVersion": "16",
+      "ipAllowList": []
+    }
+  ]
+}

@@ -43,14 +43,14 @@ export const Load = ({ resource, children }) =>
     children(resource.data)
   );
 
-export function Action({ children, run, onDone, className = "btn" }) {
+export function Action({ children, run, onDone, className = "btn", disabled = false }) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   return (
     <span className="care-action">
       <button
         className={className}
-        disabled={busy}
+        disabled={busy || disabled}
         onClick={async () => {
           setBusy(true);
           setError("");

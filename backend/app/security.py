@@ -126,5 +126,6 @@ def encrypt_file(path):
 
 
 def read_file(path):
-    data = path.read_bytes()
+    from .file_storage import stored_bytes
+    data = path.read_bytes() if path.is_file() else stored_bytes(path)
     return cipher().decrypt(data[7:]) if data.startswith(b"OBENC1:") else data

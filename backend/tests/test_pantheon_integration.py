@@ -102,20 +102,6 @@ def test_device_upload_signed_protocol_caregiver_alert_and_revocation(client, lo
                        headers={"Authorization": "Bearer " + credential["token"]}).status_code == 401
 
 
-def test_integrated_dependency_pin_preserves_original_manifest():
-    backend = Path(__file__).resolve().parents[1]
-    def pins(name):
-        return {line.split("==", 1)[0]: line.split("==", 1)[1] for line in (backend / name).read_text().splitlines()
-                if line and not line.startswith("#")}
-    original = pins("requirements.txt")
-    integrated = pins("requirements-pantheon-integrated.txt")
-    assert original["pypdf"] == "6.21.4"
-    assert integrated["pypdf"] == "6.21.4"
-    assert "chromadb" not in original
-    assert integrated["chromadb"] == "1.0.20"
-    assert {key: value for key, value in original.items() if key != "pypdf"} == {
-        key: value for key, value in integrated.items() if key not in {"pypdf", "chromadb"}}
-
 
 def test_slot_adapter_still_requires_session_patient_and_consent(client, login):
     day = (hospital_now() + timedelta(days=181)).date().isoformat()

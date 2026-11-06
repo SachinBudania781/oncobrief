@@ -529,21 +529,22 @@ export function Privacy({ pid, user }) {
 export function Integrations({ pid, user, language }) {
   const resource = useResource("/v2/integrations");
   const [documentId, setDocumentId] = useState("");
-  const [service, setService] = useState("translation"),
+  const [service, setService] = useState(""),
     [text, setText] = useState(""),
     [consent, setConsent] = useState(false),
     [result, setResult] = useState(null);
+  const configured = (resource.data?.services || []).filter(s => s.configured);
+  const canUse = configured.some(s => s.service === service);
   return (
     <div className="stack">
       <Panel
-        title="Connected services & setup"
-        hint="Missing credentials are explicit placeholders. Browser voice and manual entry work independently."
+        title="Connected services"
       >
         <Load resource={resource}>
           {(d) => (
             <>
               <div className="care-integration-grid">
-                {d.services.map((s) => (
+                {d.services.filter(s => s.configured || user.role === "admin").map((s) => (
                   <article className="care-record" key={s.service}>
                     <div className="row">
                       <b>{nice(s.service)}</b>
@@ -551,27 +552,20 @@ export function Integrations({ pid, user, language }) {
                         value={s.configured ? "configured" : "needs_setup"}
                       />
                     </div>
-                    <p className="small muted">{s.settings.join(" + ")}</p>
+                    {user.role === "admin" && <p className="small muted">{s.settings.join(" + ")}</p>}
                   </article>
                 ))}
               </div>
-              <p className="care-notice">
-                Hospital emergency contact: {d.hospital_emergency}
-                <br />
-                Hospital address: {d.hospital_address}
-                <br />
-                India hosting confirmed:{" "}
-                {d.india_hosting_confirmed
-                  ? "yes"
-                  : "requires deployment setup"}
-              </p>
+              <p className="small muted">Records, appointments and care-team messages are available in your workspace.</p>
+              {d.hospital_emergency && !d.hospital_emergency.startsWith("Set ") && <p>Hospital contact: {d.hospital_emergency}</p>}
+              {d.hospital_address && !d.hospital_address.startsWith("Set ") && <p>{d.hospital_address}</p>}
+
             </>
           )}
         </Load>
       </Panel>
-      <Panel
-        title="Use a configured service"
-        hint="External results are drafts and require human review. A service without its URL and key returns a clear setup error."
+      {configured.some(s => !["google_meet", "audit_anchor", "email"].includes(s.service)) && <Panel
+        title="Use a connected service"
       >
         <div className="stack">
           <label className="field">
@@ -581,6 +575,7 @@ export function Integrations({ pid, user, language }) {
               value={service}
               onChange={(e) => setService(e.target.value)}
             >
+              <option value="">Choose a service</option>
               {[
                 "translation",
                 "speech",
@@ -603,7 +598,7 @@ export function Integrations({ pid, user, language }) {
                         : []),
                     ]
                   : []),
-              ].map((s) => (
+              ].filter(s => configured.some(item => item.service === s)).map((s) => (
                 <option key={s}>{s}</option>
               ))}
             </select>
@@ -640,6 +635,7 @@ export function Integrations({ pid, user, language }) {
             I consent to sending this information to the configured provider.
           </label>
           <Action
+            disabled={!canUse || !consent || !text.trim()}
             run={() =>
               request(`/v2/patients/${pid}/integration`, "POST", {
                 service,
@@ -660,7 +656,7 @@ export function Integrations({ pid, user, language }) {
             <pre className="care-pre">{JSON.stringify(result, null, 2)}</pre>
           )}
         </div>
-      </Panel>
+      </Panel>}
       {["doctor", "dietitian"].includes(user.role) && <LibraryReview />}
       {user.role === "admin" && (
         <>
@@ -1167,4 +1163,3 @@ function PrivacyRequests() {
     </Panel>
   );
 }
-

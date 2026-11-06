@@ -42,3 +42,21 @@ jobs:
         with: { python-version: "3.13" }
       - run: pip install -r backend/requirements.txt pytest
       - run: cd backend && pytest -q
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y tesseract-ocr fonts-dejavu-core
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: pip install -r backend/requirements.txt
+      - uses: actions/setup-node@v4
+        with: { node-version: "24" }
+      - run: cd frontend && npm ci && npx playwright install --with-deps chromium
+      - run: cd frontend && npm test && npm run test:components && npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-failure
+          path: frontend/test-results/

@@ -20,6 +20,7 @@ import {
   ResponsiveContainer,
   ReferenceLine,
   Line,
+  LineChart,
   Tooltip as ChartTooltip,
   XAxis,
   YAxis,
@@ -807,4 +808,3 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
     </div>
   );
 }
-

@@ -23,7 +23,8 @@ WORKDIR /app/backend
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./
+COPY frontend/memory-up/ /app/frontend/memory-up/
 COPY --from=web /web/dist /app/frontend/dist
 EXPOSE 8000
 # Render/Railway/HF set $PORT; default 8000 locally. One worker: the demo DB is SQLite.
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]

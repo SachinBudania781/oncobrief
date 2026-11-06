@@ -1,3 +1,4 @@
+from ..file_storage import persist_file, storage_key, StoredFile
 import io
 import json
 import re
@@ -181,7 +182,7 @@ def explain(document_id: int, request: Request, language: Literal["en", "hi", "m
     terms = {"Haemoglobin": "Haemoglobin carries oxygen in the blood.", "ANC": "ANC counts infection-fighting neutrophils.", "Platelets": "Platelets help blood clot.", "Creatinine": "Creatinine is one marker used when checking kidney function."}
     explanation = [{"text": f"{l.test}: {l.value} {l.unit}. {terms.get(l.test, 'Ask your team how this result fits your plan.')} " + ("The value is outside this report's reference range; your doctor interprets it in context." if l.flag else "The value is within this report's recorded reference range."), "source": f"D{doc.id}"} for l in labs]
     result = {"document_id": doc.id, "title": doc.title, "language": "en", "requested_language": language,
-            "explanation": explanation, "original_excerpt": safe_text(doc.ocr_text)[:4000],
+            "explanation": explanation[:6], "original_excerpt": safe_text(doc.ocr_text)[:4000],
             "questions": ["What does this result mean for my current plan?", "Do I need a repeat test?", "Which symptoms should I report?"],
             "translation_required": language != "en", "source": f"D{doc.id}",
             "model": "records", "generation": "extractive",
@@ -242,7 +243,7 @@ async def bulk_import(patient_id: str, request: Request, file: UploadFile = File
     import secrets
     path = folder / (secrets.token_hex(16) + ".pdf")
     path.write_bytes(data)
-    encrypt_file(path)
+    persist_file(db, path)
     row = BulkImport(patient_id=patient_id, author_id=user.id, file_path=str(path.relative_to(DATA_DIR)), pages=pages)
     db.add(row)
     db.commit()
@@ -310,8 +311,10 @@ def confirm_bulk(import_id: int, body: BulkConfirm, request: Request, db=Depends
             saved.append(doc.id)
             db.add(DocumentOwner(document_id=doc.id,user_id=user.id))
     row.status = "filed"
+    stored = db.get(StoredFile, storage_key(DATA_DIR / row.file_path))
+    if stored:
+        db.delete(stored)
     db.commit()
     (DATA_DIR / row.file_path).unlink(missing_ok=True)
     append_audit(db, user, "confirm_bulk_filing", p.id, ",".join(map(str, saved)))
     return {"documents": saved, "status": "filed"}
-

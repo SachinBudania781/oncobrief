@@ -771,7 +771,7 @@ export function DoseReminder({ pid }) {
     if (!enabled || !pid || !Array.isArray(meds.data)) return;
     const checkDueDoses = () => {
       const now = new Date();
-      const today = localDoseDay(now);
+
       const nowMs = now.getTime();
       const dueDoses = [];
       for (const medicine of meds.data) {
@@ -779,8 +779,9 @@ export function DoseReminder({ pid }) {
           if (dose.status !== "due") continue;
           const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(dose.time || ""));
           if (!match) continue;
-          const scheduled = new Date(now);
-          scheduled.setHours(Number(match[1]), Number(match[2]), 0, 0);
+          const scheduled = new Date(dose.scheduled_at);
+          if (!Number.isFinite(scheduled.getTime())) continue;
+          const today = medicine.day;
           const minutesLate = (nowMs - scheduled.getTime()) / 60000;
           if (minutesLate < 0 || minutesLate > 15) continue;
           const marker = `${doseReminderKey(pid)}:fired:${today}:${medicine.id}:${dose.time}`;
@@ -800,7 +801,7 @@ export function DoseReminder({ pid }) {
           try {
             new window.Notification("OncoBrief medicine reminder", {
               body: `Time for ${medicine.name} ${medicine.dose} · scheduled at ${dose.time}`,
-              tag: `${pid}-${medicine.id}-${today}-${dose.time}`,
+              tag: `${pid}-${medicine.id}-${medicine.day}-${dose.time}`,
             });
           } catch {}
         }
@@ -1135,6 +1136,3 @@ function EducationLibrary({ language }) {
     </Panel>
   );
 }
-
-
-

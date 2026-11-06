@@ -15,7 +15,7 @@ from ..round2_models import User, VirtualAppointment
 from ..taxonomy import DEPARTMENTS, SYMPTOMS
 from .common import Actor, audit, get_actor, load_patient
 from ..services.scheduling import serial_schedule
-from ..timeutil import hospital_now, to_hospital_wall_time
+from ..timeutil import hospital_now, hospital_wall_to_utc, to_hospital_wall_time
 
 router = APIRouter(prefix="/api", tags=["care"])
 
@@ -40,9 +40,11 @@ def medications(patient: Patient = Depends(load_patient), db: Session = Depends(
     status = {(l.medication_id, l.scheduled_for.strftime("%H:%M")): l.status for l in logs}
     out = []
     for m in meds:
-        doses = [{"time": t, "status": status.get((m.id, t), "due")} for t in m.times]
+        doses = [{"time": t, "status": status.get((m.id, t), "due"),
+                  "scheduled_at": hospital_wall_to_utc(start.replace(hour=int(t[:2]), minute=int(t[3:]))).isoformat() + "Z"}
+                 for t in m.times if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", t)]
         out.append({"id": m.id, "name": m.name, "dose": m.dose, "frequency": m.frequency,
-                    "instructions": m.instructions, "today": doses})
+                    "instructions": m.instructions, "day": start.date().isoformat(), "today": doses})
     return out
 
 

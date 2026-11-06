@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from .config import FRONTEND_DIST, HOSPITAL_NAME
 from .db import Base, SessionLocal, engine
 from . import round2_models
+from . import memory_up, file_storage
 from .routers import auth, brief, care, documents, patients, round2, document_tools, operations
 from .security import DEMO_MODE, append_audit, digest, require_patient, roles, session_user
 from .round2_models import User, WearableDeviceCredential
@@ -28,6 +29,7 @@ async def lifespan(app):
         ensure_seeded()
     Base.metadata.create_all(engine)
     initialise()
+    file_storage.backfill_files()
     async def reminders():
         from .services.jobs import tick
         while True:
@@ -48,13 +50,13 @@ async def lifespan(app):
             pass
 
 
-app = FastAPI(title="OncoBrief API", version="2.0.0", lifespan=lifespan, docs_url=None, redoc_url=None)
-ORIGINS = [v.strip().rstrip("/") for v in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:8000,http://127.0.0.1:8000").split(",") if v.strip()]
+app = FastAPI(title="OncoBrief API", version="2.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
+ORIGINS = [v.strip().rstrip("/") for v in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000").split(",") if v.strip()]
 for configured_origin in (os.getenv("RENDER_EXTERNAL_URL"), os.getenv("PUBLIC_BASE_URL")):
     if configured_origin:
         ORIGINS.append(configured_origin.rstrip("/"))
 app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_credentials=True,
-                   allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["Content-Type", "Authorization"])
+                   allow_methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], allow_headers=["Content-Type", "Authorization"])
 _rates = defaultdict(deque)
 PUBLIC = {"/api/health", "/api/stats", "/api/taxonomy", "/api/ai-status", "/api/auth/config", "/api/auth/login", "/api/auth/otp", "/api/auth/verify-otp"}
 
@@ -65,7 +67,13 @@ async def boundaries(request: Request, call_next):
     db = None
     try:
         if path.startswith("/api/"):
-            if int(request.headers.get("content-length", "0")) > 25 * 1024 * 1024:
+            try:
+                content_length = int(request.headers.get("content-length", "0"))
+            except ValueError:
+                raise HTTPException(400, "Invalid request length")
+            if content_length < 0:
+                raise HTTPException(400, "Invalid request length")
+            if content_length > 25 * 1024 * 1024:
                 raise HTTPException(413, "Maximum request size is 25 MB")
             if request.method not in {"GET", "HEAD", "OPTIONS"}:
                 origin = request.headers.get("origin")
@@ -115,7 +123,7 @@ async def boundaries(request: Request, call_next):
                     pid = match[1].strip().upper()
                 if request.query_params.get("patient_id"):
                     pid = request.query_params["patient_id"]
-                if request.method in {"POST", "PATCH"} and "application/json" in request.headers.get("content-type", ""):
+                if request.method in {"POST", "PUT", "PATCH"} and "application/json" in request.headers.get("content-type", ""):
                     try:
                         body = await request.json()
                     except ValueError:
@@ -132,7 +140,7 @@ async def boundaries(request: Request, call_next):
                     require_patient(db, user, pid, scope)
                 if path == "/api/brief":
                     roles(user, "doctor", "admin")
-                if path in {"/api/schedule", "/api/slots"}:
+                if path == "/api/schedule":
                     roles(user, "doctor", "nurse", "frontdesk", "admin")
                 if path == "/api/patients" and request.method == "POST":
                     roles(user, "frontdesk", "admin")
@@ -157,7 +165,7 @@ async def boundaries(request: Request, call_next):
     return response
 
 
-for router in (auth.router, round2.router, document_tools.router, operations.router, patients.router, documents.router, care.router, brief.router):
+for router in (auth.router, round2.router, document_tools.router, operations.router, patients.router, documents.router, care.router, brief.router, memory_up.router):
     app.include_router(router)
 
 
@@ -169,7 +177,7 @@ def health():
             connection.execute(text("SELECT 1"))
     except SQLAlchemyError:
         raise HTTPException(503, "Database is unavailable")
-    return {"status": "ok", "hospital": HOSPITAL_NAME, "version": "2.0.0", "demo": DEMO_MODE,
+    return {"status": "ok", "hospital": HOSPITAL_NAME, "version": "2.1.0", "release": os.getenv("RENDER_GIT_COMMIT", "local")[:12], "demo": DEMO_MODE,
             "database": engine.dialect.name}
 
 

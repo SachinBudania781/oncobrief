@@ -1,3 +1,4 @@
+from ..file_storage import persist_file, file_exists
 import json
 import mimetypes
 import math
@@ -117,7 +118,7 @@ def document_file(doc_id: int, request: Request, token: str = "", download: bool
     if download:
         roles(user, "patient", "doctor", "admin")
     path = (STORAGE_DIR.parent / d.file_path).resolve()
-    if not path.is_relative_to(STORAGE_DIR.resolve()) or not path.exists():
+    if not path.is_relative_to(STORAGE_DIR.resolve()) or not file_exists(path):
         raise HTTPException(404, "File not found")
     data, mime = watermarked(read_file(path), d.mime, user.name)
     return Response(data, media_type=mime, headers={"Content-Disposition": f'{"attachment" if download else "inline"}; filename="document-{d.id}{".pdf" if d.mime == "application/pdf" else ".png" if d.mime.startswith("image/") else ".txt"}"'})
@@ -155,7 +156,7 @@ def store_document(db: Session, patient: Patient, *, category: str, subtype: str
         raise HTTPException(422, f"Unknown subtype {subtype} for {category}")
     folder = STORAGE_DIR / patient.id / _slug(category)
     folder.mkdir(parents=True, exist_ok=True)
-    name = f"{record_date:%Y-%m-%d_%H%M}_{_slug(subtype)}{src_path.suffix.lower()}"
+    name = f"{record_date:%Y-%m-%d_%H%M}_{_slug(subtype)}-{__import__('uuid').uuid4().hex[:12]}{src_path.suffix.lower()}"
     dest = folder / name
     i = 1
     while dest.exists():
@@ -169,7 +170,7 @@ def store_document(db: Session, patient: Patient, *, category: str, subtype: str
                  external_hospital=external_hospital, file_path=dest.relative_to(STORAGE_DIR.parent).as_posix(),
                  mime=mime, ocr_text=ocr_text or "", ocr_method=ocr_method or "none", ocr_confidence=ocr_conf,
                  uploaded_at=uploaded_at or datetime.now())
-    encrypt_file(dest)
+    persist_file(db, dest)
     db.add(d)
     db.flush()
     values = lab_values or []

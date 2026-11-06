@@ -13,14 +13,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-try:
-    import chromadb
-    from chromadb.utils import embedding_functions
-except ImportError as exc:  # pragma: no cover - depends on deployment extras
-    raise RuntimeError(
-        "ChromaDB is required for guideline retrieval. Install the backend "
-        "requirements, including the chromadb package."
-    ) from exc
 
 
 COLLECTION_NAME = "oncology_guidelines"
@@ -160,6 +152,8 @@ class ClinicalChromaRetriever:
     """Persistent Chroma vector store with hard metadata pre-filtering."""
 
     def __init__(self, persist_dir: str | Path = DEFAULT_PERSIST_PATH) -> None:
+        import chromadb
+        from chromadb.utils import embedding_functions
         path = Path(persist_dir).expanduser()
         path.mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=str(path))
@@ -366,3 +360,26 @@ class ClinicalChromaRetriever:
                 "is_high_confidence": result["is_high_confidence"],
             })
         return formatted
+
+
+class ClinicalReferenceRetriever:
+    """Bundled references filtered by explicit site/stage; no treatment assessment.
+
+    This lookup does not assign semantic confidence. Unknown sites/stages return
+    no results. The optional Chroma class remains available for larger libraries.
+    """
+    def query_guideline_with_provenance(self, query, cancer_type, stage_group, *, n_results=3, **kwargs):
+        try:
+            site = _normalize_cancer_site(cancer_type)
+            stage = _normalize_stage_group(stage_group)
+        except ValueError:
+            return []
+        matches = []
+        for item in _REFERENCE_GUIDELINES:
+            meta = item["metadata"]
+            if meta["cancer_site"] != site or meta["stage"] != stage:
+                continue
+            matches.append({"text": item["text"], "verbatim_text": item["text"],
+                            "metadata": dict(meta), "similarity": None,
+                            "is_high_confidence": False})
+        return matches[:n_results]

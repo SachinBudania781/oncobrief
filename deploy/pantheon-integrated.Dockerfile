@@ -22,4 +22,4 @@ COPY backend/ ./
 COPY frontend/memory-up/ /app/frontend/memory-up/
 COPY --from=web /web/dist /app/frontend/dist
 EXPOSE 8000
-CMD ["sh", "-c", "uvicorn app.pantheon_app:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
+CMD ["sh", "-c", "exec uvicorn app.pantheon_app:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
