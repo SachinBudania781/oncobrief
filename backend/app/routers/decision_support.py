@@ -104,7 +104,10 @@ def _effective_stage(body: ClinicalCaseReviewIn) -> tuple[str | None, dict[str, 
     except (TypeError, ValueError) as exc:
         raise HTTPException(422, f"Invalid TNM categories: {exc}") from exc
     supported = stage != "Stage Undetermined (unsupported primary site)"
-    return (stage if supported and "Undetermined" not in stage else None), {
+    # Collapse the NSCLC AJCC-8 M1-unspecified label to the stage-IV group
+    # used by the verified guideline metadata, while keeping the basis explicit.
+    retrieval_stage = "Stage IV" if stage == "Stage IV (M subclass not specified)" else stage
+    return (retrieval_stage if supported and "Undetermined" not in stage else None), {
         "stage": stage,
         "basis": "Anatomical TNM calculation" if supported else "Unsupported primary site for built-in TNM mapping",
         "ruleset": "AJCC 8 anatomical mapping" if supported else None,
