@@ -31,6 +31,10 @@ import {
   MonitorPlay,
   CheckCheck,
   Route,
+  Mic,
+  Orbit,
+  PersonStanding,
+  ArrowLeft,
 } from "lucide-react";
 import Modal from "./Modal";
 import { useAuth } from "./Auth";
@@ -75,13 +79,21 @@ import Transport from "./Transport";
 import "./interface.css";
 import "./finish.css";
 import "./polish.css";
+import "./aura.css";
 import Dashboard from "./Dashboard";
 import QueueBoard from "./QueueBoard";
 import { askNotificationPermission, useLiveNotifications, GlobalSearch, InstallButton, OfflineBanner, PrivacyCurtain, ShortcutsHelp, SosButton, TextSizeControl, Toaster, WelcomeTour, usePrivacyScreen, useTextSize } from "./Extras";
 import { toast } from "./toast";
+import { Aurora, ScrollGloss } from "./Glass3D";
+import ConsultStudio from "./ConsultStudio";
+import BodyMap from "./BodyMap";
+import CycleCompass from "./CycleCompass";
 
 const NAV = [
   ["home", "Overview", Home, "profile"],
+  ["scribe", "Consult studio", Mic, "doctor"],
+  ["cycle", "Treatment cycle", Orbit, "documents"],
+  ["bodymap", "Symptom map", PersonStanding, "checkin"],
   ["checkin", "Check-ins", HeartPulse, "checkin"],
   ["companion", "Assistant", MessageCircle, "documents"],
   ["medicines", "Medicines", Pill, "medicines"],
@@ -212,6 +224,11 @@ function CareSpace() {
   }, [patient?.id]);
   const change = (value) => {
     if (value === "transport") setTransportOpened(true);
+    if (value !== tab) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("view", value);
+      window.history.pushState({ view: value }, "", url);
+    }
     setTab(value);
     setMenu(false);
     setSearchOpen(false);
@@ -223,6 +240,14 @@ function CareSpace() {
   const firstName = portal === "patient" ? (patient?.name?.split(" ")[0] || user.name.split(" ")[0]) : user.name.replace(/^(Dr\.?|Nurse|Reception|Navigator|Dietitian|Lab technician)\s+/i, "").split(" ").slice(-1)[0];
   const title = tab === "home" ? `${greeting}, ${portal === "doctor" ? "Dr. " : ""}${firstName}` : nav.find((n) => n[0] === tab)?.[1] || "Overview";
   useEffect(() => { document.title = `${tab === "home" ? "Home" : nav.find((n) => n[0] === tab)?.[1] || "OncoBrief"} · OncoBrief`; }, [tab]);
+  useEffect(() => {
+    const onPop = () => {
+      const view = new URLSearchParams(window.location.search).get("view") || "home";
+      setTab(view); setMenu(false); setSearchOpen(false); setShowNotifications(false);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
   useEffect(() => {
     let lastG = 0;
     const openFinder = e => {
@@ -242,12 +267,12 @@ function CareSpace() {
     return () => window.removeEventListener("keydown", openFinder);
   }, []);
   const navGroups = [
-    ["Workspace", ["home", "clinic", "checkin", "triage", "approvals", "records", "clinical", "medicines", "companion"]],
+    ["Workspace", ["home", "scribe", "clinic", "cycle", "bodymap", "checkin", "triage", "approvals", "records", "clinical", "medicines", "companion"]],
     ["Care", ["day", "schedule", "queue", "staffActivity", "journal", "chat", "transport", "wellness", "wearables", "money", "circle", "share"]],
     ["Account", ["privacy", "settings"]],
   ].map(([label, keys]) => [label, keys.map(key => nav.find(n => n[0] === key)).filter(Boolean)]).filter(([, items]) => items.length);
-  const dockKeys = portal === "patient" ? ["home", "medicines", "records", "companion"] : portal === "doctor" ? ["home", "clinic", "approvals", "records"] : ["home", "day", "schedule", "staffActivity", "records", "triage", "journal", "privacy"];
-  const dockLabel = { home: "Home", checkin: "Check-in", records: "Reports", chat: "Messages", clinical: "Journey", clinic: "Clinic", staffActivity: "Activity", approvals: "Approvals", schedule: "Schedule", day: "Visits", privacy: "Privacy", journal: "Plan", triage: "Triage", medicines: "Medicines", companion: "Ask" };
+  const dockKeys = portal === "patient" ? ["home", "medicines", "bodymap", "companion"] : portal === "doctor" ? ["home", "scribe", "clinic", "records"] : ["home", "day", "schedule", "staffActivity", "records", "triage", "journal", "privacy"];
+  const dockLabel = { bodymap: "Symptoms", scribe: "Studio", cycle: "Cycle", home: "Home", checkin: "Check-in", records: "Reports", chat: "Messages", clinical: "Journey", clinic: "Clinic", staffActivity: "Activity", approvals: "Approvals", schedule: "Schedule", day: "Visits", privacy: "Privacy", journal: "Plan", triage: "Triage", medicines: "Medicines", companion: "Ask" };
   const dock = dockKeys.map(k => nav.find(n => n[0] === k)).filter(Boolean).slice(0, 4);
   const markAllRead = async () => {
     const pending = (notes.data || []).filter(n => n.status === "unread");
@@ -259,7 +284,9 @@ function CareSpace() {
   const initials = user.name.replace(/^(Dr\.?|Nurse|Reception|Navigator|Dietitian|Lab technician)\s+/i, "").split(" ").map(w => w[0]).slice(0, 2).join("").toUpperCase();
   if (tab === "queue") return <><QueueBoard onExit={() => change("home")} /><Toaster /></>;
   return (
-    <div className={`care-app portal-${portal}`}>
+    <div className={`care-app portal-${portal} view-${tab}`}>
+      <Aurora tone={portal} />
+      <ScrollGloss />
       <a className="care-skip-link" href="#care-content">Skip to content</a>
       <OfflineBanner />
       {user.role === "patient" && pid && <DoseReminder pid={pid} onOpen={() => change("medicines")} />}
@@ -284,8 +311,6 @@ function CareSpace() {
           ))}</div>)}
         </nav>
         <div className="ob-sidebar-foot">
-          {portal === "patient" && <TextSizeControl size={textSize} setSize={setTextSize} />}
-          <InstallButton />
           <div className="care-role">
             <span className="care-avatar">{initials}</span>
             <div>
@@ -325,10 +350,13 @@ function CareSpace() {
         <main className="care-main" id="care-content" tabIndex={-1}>
           <div className="care-page-heading">
             <div>
-              <p className="eyebrow">
-                {calendar.data?.hospital_today ? new Date(calendar.data.hospital_today + "T00:00:00").toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" }) : ""}
-              </p>
-              <h1>{title}</h1>
+              {tab !== "home" && <button className="ob-back" onClick={() => change("home")} aria-label="Back to home"><ArrowLeft size={19} /></button>}
+              <div>
+                <p className="eyebrow">
+                  {tab === "home" && calendar.data?.hospital_today ? new Date(calendar.data.hospital_today + "T00:00:00").toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" }) : tab === "home" ? "" : patient?.name && portal !== "patient" ? patient.name : ""}
+                </p>
+                <h1>{title}</h1>
+              </div>
             </div>
             <div className="care-heading-actions">
             {["doctor", "nurse", "frontdesk", "lab"].includes(user.role) && <button className="btn care-scan" onClick={() => setQr(true)}><QrCode size={18} /><span>Scan patient</span></button>}
@@ -550,6 +578,9 @@ function CareSpace() {
               {tab === "schedule" && <ScheduleDesk user={user} />}
               {tab === "staffActivity" && <StaffActivity user={user} onOpen={(id) => setDocId(Number(id))} />}
               {tab === "privacy" && <Privacy pid={pid} user={user} />}
+              {tab === "scribe" && <ConsultStudio pid={pid} patient={patient} user={user} onTab={change} />}
+              {tab === "bodymap" && <BodyMap pid={pid} user={user} patient={patient} onTab={change} />}
+              {tab === "cycle" && <CycleCompass pid={pid} user={user} patient={patient} onTab={change} />}
               {tab === "settings" && (
                 <Integrations pid={pid} user={user} language={language} />
               )}
@@ -558,7 +589,7 @@ function CareSpace() {
         </main>
       </div>
       <nav className="care-mobile-dock" aria-label="Mobile navigation">{dock.map(([key, label, Icon]) => <button key={key} className={tab === key ? "active" : ""} aria-current={tab === key ? "page" : undefined} onClick={() => change(key)}><Icon size={21} /><span>{dockLabel[key] || label}</span></button>)}<button className={menu || !dock.some(n => n[0] === tab) ? "active" : ""} aria-expanded={menu} aria-haspopup="dialog" onClick={() => setMenu(true)}><Ellipsis size={23} /><span>More</span></button></nav>
-      {menu && <Modal title="Menu" className="care-more-sheet" onClose={() => setMenu(false)}><div className="care-sheet-profile"><span className="care-avatar">{initials}</span><div><b>{user.name}</b><small>{user.department || nice(user.role)}</small></div></div><div className="care-feature-grid">{nav.map(([key, label, Icon]) => <button className={tab === key ? "active" : ""} key={key} onClick={() => change(key)}><Icon size={22} /><span>{label}</span></button>)}</div>{portal === "patient" && <div className="ob-sheet-row"><span>Text size</span><TextSizeControl size={textSize} setSize={setTextSize} /></div>}<div className="care-sheet-footer"><InstallButton /><button className="btn" onClick={logout}><LogOut size={17} />Sign out</button></div></Modal>}
+      {menu && <Modal title="Menu" className="care-more-sheet" onClose={() => setMenu(false)}><div className="care-sheet-profile"><span className="care-avatar">{initials}</span><div><b>{user.name}</b><small>{user.department || nice(user.role)}</small></div></div><div className="care-feature-grid">{nav.map(([key, label, Icon]) => <button className={tab === key ? "active" : ""} key={key} onClick={() => change(key)}><Icon size={22} /><span>{label}</span></button>)}</div><div className="ob-sheet-row"><span>Language</span><select className="select" aria-label="Language" value={language} onChange={(e) => setLanguage(e.target.value)}><option value="en">English</option><option value="hi">हिंदी</option><option value="mr">मराठी</option></select></div>{portal === "patient" && <div className="ob-sheet-row"><span>Text size</span><TextSizeControl size={textSize} setSize={setTextSize} /></div>}<div className="care-sheet-footer"><InstallButton /><button className="btn" onClick={logout}><LogOut size={17} />Sign out</button></div></Modal>}
       {searchOpen && <GlobalSearch nav={nav} patients={careTeam ? patients.data || [] : []} pid={pid} canDocs={can("documents")} onTab={change} onPatient={(id) => { setPid(id); setDocId(null); }} onOpenDoc={(id) => setDocId(Number(id))} onClose={() => setSearchOpen(false)} />}
       {phoneCheckin && <Modal title="Voice check-in" onClose={() => setPhoneCheckin(false)}><CheckIn pid={pid} language={language} phoneDemo onUpdate={() => setRevision(v => v + 1)} /></Modal>}
       {qr && (
@@ -580,8 +611,6 @@ function CareSpace() {
       )}
       {docId && <DocViewer docId={docId} onClose={() => setDocId(null)} />}
       {["patient", "doctor"].includes(portal) && can("documents") && pid && tab !== "companion" && <AIAssistantWidget pid={pid} language={language} onOpen={setDocId} userRole={user.role} />}
-      {portal === "patient" && user.role === "patient" && <WelcomeTour name={firstName} />}
-      <ShortcutsHelp portal={portal} />
       <PrivacyCurtain on={privacyOn} onOff={() => setPrivacyOn(false)} />
       <Toaster />
     </div>

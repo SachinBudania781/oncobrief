@@ -1,3 +1,4 @@
+import re
 from ..timeutil import utcnow
 import os
 import secrets
@@ -49,26 +50,7 @@ def login_session(db, user, request, response):
 
 @router.get("/config")
 def config(db=Depends(get_db)):
-    # Guest profiles never expose credentials; sign-in happens server-side via /auth/guest.
-    return {"demo": DEMO_MODE, "idle_minutes": SESSION_MINUTES,
-            "accounts": [{"sign_in_id": sign_in_id(db, u), "name": u.name, "role": u.role}
-                         for u in db.scalars(select(User).where(User.active.is_(True))) ] if DEMO_MODE else []}
-
-
-class GuestIn(BaseModel):
-    sign_in_id: str = Field(min_length=3, max_length=40)
-    portal: Literal["all", "patient", "doctor", "staff"] = "all"
-
-
-@router.post("/guest")
-def guest(body: GuestIn, request: Request, response: Response, db=Depends(get_db)):
-    if not DEMO_MODE:
-        raise HTTPException(404, "Not found")
-    wanted = body.sign_in_id.strip().upper()
-    user = next((u for u in db.scalars(select(User).where(User.active.is_(True))) if sign_in_id(db, u) == wanted), None)
-    if not user or (body.portal != "all" and user.role not in PORTAL_ROLES[body.portal]):
-        raise HTTPException(404, "This guest profile is not available")
-    return login_session(db, user, request, response)
+    return {"demo": DEMO_MODE, "idle_minutes": SESSION_MINUTES}
 
 
 class LoginIn(BaseModel):
@@ -133,6 +115,67 @@ def otp(body: OTPIn, db=Depends(get_db)):
             deliver("sms", {"to": body.phone, "body": "Your OncoBrief code is " + code})
     return {"challenge_id": challenge_id, "message": "If the account exists, a code has been sent.",
             **({"demo_code": code} if DEMO_MODE and user else {})}
+
+
+class ForgotIn(BaseModel):
+    identifier: str = Field(min_length=3, max_length=40)
+
+
+def _find_account(db, identifier):
+    wanted = identifier.strip()
+    digits = wanted.lstrip("+")
+    for u in db.scalars(select(User).where(User.active.is_(True))):
+        if u.username.lower() == wanted.lower() or sign_in_id(db, u) == wanted.upper() or (digits.isdigit() and u.phone and u.phone.lstrip("+").endswith(digits[-10:])):
+            return u
+    return None
+
+
+@router.post("/forgot")
+def forgot(body: ForgotIn, db=Depends(get_db)):
+    """Start a password reset. The response never reveals whether the account exists."""
+    user = _find_account(db, body.identifier)
+    challenge_id = "rst_" + secrets.token_urlsafe(32)
+    code = f"{secrets.randbelow(1000000):06d}"
+    masked = ""
+    if user and user.phone:
+        db.add(Challenge(id=challenge_id, user_id=user.id, code_hash=digest(challenge_id + code),
+                         expires_at=utcnow() + timedelta(minutes=10)))
+        db.commit()
+        masked = "•••• " + user.phone[-4:]
+        if not DEMO_MODE:
+            from ..services.integrations import deliver
+            deliver("sms", {"to": user.phone, "body": f"Your OncoBrief password reset code is {code}. It expires in 10 minutes."})
+    return {"challenge_id": challenge_id, "sent_to": masked,
+            **({"demo_code": code} if DEMO_MODE and user and user.phone else {})}
+
+
+class ResetIn(BaseModel):
+    challenge_id: str = Field(max_length=100)
+    code: str = Field(pattern=r"^\d{6}$")
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+@router.post("/reset")
+def reset(body: ResetIn, db=Depends(get_db)):
+    if not body.challenge_id.startswith("rst_"):
+        raise HTTPException(401, "Code expired or invalid")
+    if not (re.search(r"[A-Za-z]", body.new_password) and re.search(r"\d", body.new_password)):
+        raise HTTPException(422, "Use at least 8 characters with letters and a number")
+    c = db.get(Challenge, body.challenge_id)
+    if not c or c.used or c.attempts >= 5 or c.expires_at < utcnow():
+        raise HTTPException(401, "Code expired or invalid")
+    c.attempts += 1
+    db.commit()
+    if not secrets.compare_digest(c.code_hash, digest(c.id + body.code)):
+        raise HTTPException(401, "Code expired or invalid")
+    c.used = True
+    user = db.get(User, c.user_id)
+    user.password_hash = password_hash(body.new_password)
+    for row in db.scalars(select(LoginSession).where(LoginSession.user_id == user.id, LoginSession.revoked.is_(False))):
+        row.revoked = True
+    db.commit()
+    append_audit(db, user, "password_reset")
+    return {"ok": True}
 
 
 class VerifyIn(BaseModel):
