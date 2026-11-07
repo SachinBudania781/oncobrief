@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   CheckCircle2,
@@ -11,6 +11,7 @@ import {
   UserRound,
 } from "lucide-react";
 import Brief from "../apps/doctor/Brief";
+import { PatientCheckInHistory } from "./ClinicalTools";
 import { Empty, Error, Load, Panel } from "./UI";
 import { hospitalDateTime, request, useResource } from "./client";
 import MemoryUpLink from "./MemoryUpLink";
@@ -21,7 +22,8 @@ const VISITS = [
   ["transfer", "Hospital transfer", "History from another hospital"],
 ];
 
-export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords }) {
+export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords, demo = false, canReviewActivity = true }) {
+  const briefResult = useRef(null);
   const calendar = useResource("/taxonomy");
   const day = calendar.data?.hospital_today || "";
   const queue = useResource(
@@ -31,6 +33,7 @@ export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords }) 
   const [query, setQuery] = useState("");
   const [visit, setVisit] = useState("follow_up");
   const [brief, setBrief] = useState(null);
+  useEffect(() => { if (brief && briefResult.current) briefResult.current.scrollIntoView({ behavior: "smooth", block: "start" }); }, [brief]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const activePatient = patients.find((p) => p.id === pid);
@@ -136,11 +139,16 @@ export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords }) 
         </div>
       </div>
 
+      {brief && <div ref={briefResult} tabIndex={-1} className="care-generated-result" role="region" aria-label="Generated visit brief"><p className="care-success" role="status">Visit brief ready. Review the structured tumor board brief and guideline sources below.</p><Panel title="Visit brief" hint="Each item includes a source link where the record supports it." action={<span className="care-inline-meta"><CheckCircle2 size={15} /> Ready for review</span>}><Brief data={brief} onOpen={onOpen} /></Panel></div>}
+
+      {activePatient && <section className="stack" aria-label="Patient check-ins and trends">
+        <h2 className="care-section-title">Patient check-ins, graphs & report trends</h2>
+        <PatientCheckInHistory pid={pid} canReviewActivity={canReviewActivity} onOpen={onOpen} demo={demo} />
+      </section>}
+
       <MemoryUpLink pid={pid} appointmentId={selectedAppointment?.id} />
 
       {activePatient && <DeterministicClinicalPanel patient={activePatient} />}
-
-      {brief && <Panel title="Visit brief" hint="Each item includes a source link where the record supports it." action={<span className="care-inline-meta"><CheckCircle2 size={15} /> Ready for review</span>}><Brief data={brief} onOpen={onOpen} /></Panel>}
     </div>
   );
 }
@@ -216,12 +224,12 @@ function DeterministicClinicalPanel({ patient }) {
   ] : [];
 
   return <section className="care-clinical-tools">
-    <Panel title="TNM stage calculator" hint="AJCC 8 anatomical stage grouping from clinician-selected source TNM. It does not infer TNM from the report.">
+    <Panel title="Deterministic staging" hint="AJCC 8 anatomical stage grouping from clinician-selected source TNM. It does not infer TNM from the report.">
       <div className="grid2">
         <label className="field">Primary site<select className="select" value={site} onChange={(e) => { setSite(e.target.value); setTnm({ t: "TX", n: "NX", m: "MX" }); }}><option value="breast">Breast</option><option value="lung">NSCLC / lung</option></select></label>
         {[['t','T'],['n','N'],['m','M']].map(([key,label]) => <label className="field" key={key}>{label} category<select className="select" value={tnm[key]} onChange={(e) => setTnm((old) => ({ ...old, [key]: e.target.value }))}>{(key === 't' ? tOptions : key === 'n' ? nOptions : mOptions).map((option) => <option key={option}>{option}</option>)}</select></label>)}
       </div>
-      <div className="care-success" style={{ marginTop: 14, padding: 16, background: "#e8f5ed", color: "#17633e" }} aria-live="polite"><b>AJCC 8 stage group</b><div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{stage?.stage || "Calculating…"}</div></div>
+      <div className="care-success" style={{ marginTop: 14, padding: 16, background: "#e8f5ed", color: "#17633e" }} aria-live="polite"><b>Deterministic Staging</b><div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{stage?.stage || "Calculating…"}</div></div>
       {stageError && <p className="care-error" role="alert">Staging calculation unavailable: {stageError}</p>}
       {stage?.basis && <p className="small muted">{stage.basis}</p>}
     </Panel>
@@ -245,7 +253,7 @@ function DeterministicClinicalPanel({ patient }) {
       {dosing?.metrics?.gfr_capped && <p className="care-notice warning">Carboplatin calculation capped the GFR input at 125 mL/min.</p>}
       {dosing?.alerts?.map((alert, index) => <div className={alert.severity === "CRITICAL" ? "care-emergency" : "care-notice warning"} role={alert.severity === "CRITICAL" ? "alert" : "status"} key={`${alert.parameter}-${index}`}><b>{alert.severity}: {alert.parameter}</b><p>{alert.observation}</p><p>{alert.guideline_action}</p></div>)}
       {dosingError && <p className="care-error" role="alert">Calculation unavailable: {dosingError}</p>}
-      <p className="small muted">CrCl is used as the Calvert GFR input. Verify renal measure, weight selection, alerts, and dose with the current local protocol. This tool does not prescribe or place orders.</p>
+      <p className="small muted">CrCl is used as the Calvert GFR input for this demo. Verify renal measure, weight selection, alerts, and dose with the current local protocol. This tool does not prescribe or place orders.</p>
     </Panel>
   </section>;
 }
@@ -277,5 +285,6 @@ export function StaffActivity({ user, onOpen }) {
     </div>
   );
 }
+
 
 
