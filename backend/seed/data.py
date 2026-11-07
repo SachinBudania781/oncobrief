@@ -4,9 +4,9 @@ Dates are offsets in days from "today" (the day the demo is seeded), written {d-
 Formats: "pdf" = digital report with a text layer, "scan" = scanned page (OCR needed),
 "photo" = phone photo uploaded by a patient (lower quality, OCR needed)."""
 
-HOME = "OncoBrief Demo Cancer Centre, Mumbai"
+HOME = "OncoBrief Cancer Centre, Mumbai"
 RIVERSIDE = "Riverside Hospital, Nashik"
-WOMENS = "Demo Women's Clinic, Thane"
+WOMENS = "Women's Clinic, Thane"
 CITYLAB = "CityCare Diagnostics, Thane"
 ONCOLOGIST = "Dr. R. Menon"
 

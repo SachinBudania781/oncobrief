@@ -29,6 +29,12 @@ async def lifespan(app):
         ensure_seeded()
     Base.metadata.create_all(engine)
     initialise()
+    from .seed_round2 import tidy_fixture_text
+    try:
+        tidy_fixture_text()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Fixture text update skipped")
     file_storage.backfill_files()
     async def reminders():
         from .services.jobs import tick

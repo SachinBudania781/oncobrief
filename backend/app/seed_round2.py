@@ -153,3 +153,63 @@ def initialise():
                 db.add(Approval(patient_id=p.id, kind="medicine", request="Please review nausea support", requested_by="Meera Kulkarni",
                                 draft={"text": "Review recorded nausea and current supportive medicines. No new drug selected automatically."}))
         db.commit()
+
+
+FIXTURE_TEXT = [
+    ("Riverside Demo Hospital", "Riverside Hospital"),
+    ("CityCare Demo Diagnostics", "CityCare Diagnostics"),
+    ("OncoBrief Demo Cancer Centre", "OncoBrief Cancer Centre"),
+    ("Demo Women's Clinic", "Women's Clinic"),
+    ("ABHA link - ", "Imported from "),
+    (" (simulated)", ""),
+    ("Fabricated demo roadmap: review blood tests before the next cycle.", "Weekly paclitaxel after AC. Review blood counts before each dose."),
+    ("Ask the treating team for the regimen-specific symptom calendar.", "Nausea is most likely on days 1–3. Check your temperature twice daily from day 7 to day 14 and call us for 38°C or above."),
+    ("Fabricated demonstration measurement", "Ultrasound measurement"),
+    ("None recorded in this fabricated fixture; verify clinically", "No known drug allergies"),
+    ("Fabricated demo relationship", "Patient consent at registration"),
+    ("DEMO approval only; replace with clinical review", "Patient education team"),
+    ("Meera (demo)", "Meera Kulkarni"),
+    ("Demo administrator", "Hospital administrator"),
+    ("Demo clinician", "Dr. R. Menon"),
+]
+
+
+def _tidy(value):
+    if isinstance(value, str):
+        for old, new in FIXTURE_TEXT:
+            value = value.replace(old, new)
+        return value
+    if isinstance(value, dict):
+        return {k: _tidy(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_tidy(v) for v in value]
+    return value
+
+
+def tidy_fixture_text():
+    """Idempotently update wording in databases seeded by earlier versions (demo mode only).
+    Source documents keep their own 'fabricated data' stamp; only labels shown in the app change."""
+    if not DEMO_MODE:
+        return 0
+    from .models import Document, Patient
+    from .round2_models import AccessGrant, Approval, CareRecord, LibraryItem, User
+    changed = 0
+    with SessionLocal() as db:
+        targets = [(Document, ("uploaded_by", "external_hospital")), (Patient, ("referred_from",)), (User, ("name",)),
+                   (AccessGrant, ("consent_by",)), (LibraryItem, ("approved_by",)), (Approval, ("requested_by",)),
+                   (CareRecord, ("approved_by", "author_name", "data"))]
+        for model, fields in targets:
+            for row in db.scalars(select(model)):
+                for field in fields:
+                    if not hasattr(row, field):
+                        continue
+                    old = getattr(row, field)
+                    new = _tidy(old)
+                    if new != old:
+                        setattr(row, field, new)
+                        if field == "data":
+                            from sqlalchemy.orm.attributes import flag_modified
+                            flag_modified(row, "data")
+                        changed += 1
+        db.commit()
+    return changed
