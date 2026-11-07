@@ -49,10 +49,26 @@ def login_session(db, user, request, response):
 
 @router.get("/config")
 def config(db=Depends(get_db)):
+    # Guest profiles never expose credentials; sign-in happens server-side via /auth/guest.
     return {"demo": DEMO_MODE, "idle_minutes": SESSION_MINUTES,
-            "accounts": [{"username": u.username, "sign_in_id": sign_in_id(db, u), "phone": u.phone, "name": u.name, "role": u.role}
-                         for u in db.scalars(select(User).where(User.active.is_(True))) ] if DEMO_MODE else [],
-            "demo_password": "OncoDemo!2026" if DEMO_MODE else None}
+            "accounts": [{"sign_in_id": sign_in_id(db, u), "name": u.name, "role": u.role}
+                         for u in db.scalars(select(User).where(User.active.is_(True))) ] if DEMO_MODE else []}
+
+
+class GuestIn(BaseModel):
+    sign_in_id: str = Field(min_length=3, max_length=40)
+    portal: Literal["all", "patient", "doctor", "staff"] = "all"
+
+
+@router.post("/guest")
+def guest(body: GuestIn, request: Request, response: Response, db=Depends(get_db)):
+    if not DEMO_MODE:
+        raise HTTPException(404, "Not found")
+    wanted = body.sign_in_id.strip().upper()
+    user = next((u for u in db.scalars(select(User).where(User.active.is_(True))) if sign_in_id(db, u) == wanted), None)
+    if not user or (body.portal != "all" and user.role not in PORTAL_ROLES[body.portal]):
+        raise HTTPException(404, "This guest profile is not available")
+    return login_session(db, user, request, response)
 
 
 class LoginIn(BaseModel):

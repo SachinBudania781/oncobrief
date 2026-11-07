@@ -15,7 +15,7 @@ from .config import FRONTEND_DIST, HOSPITAL_NAME
 from .db import Base, SessionLocal, engine
 from . import round2_models
 from . import memory_up, file_storage
-from .routers import auth, brief, care, documents, patients, round2, document_tools, operations, decision_support
+from .routers import auth, brief, care, documents, patients, round2, document_tools, operations, decision_support, assistant_actions
 from .security import DEMO_MODE, append_audit, digest, require_patient, roles, session_user
 from .round2_models import User, WearableDeviceCredential
 from .timeutil import utcnow
@@ -58,7 +58,7 @@ for configured_origin in (os.getenv("RENDER_EXTERNAL_URL"), os.getenv("PUBLIC_BA
 app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_credentials=True,
                    allow_methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], allow_headers=["Content-Type", "Authorization"])
 _rates = defaultdict(deque)
-PUBLIC = {"/api/health", "/api/stats", "/api/taxonomy", "/api/ai-status", "/api/auth/config", "/api/auth/login", "/api/auth/otp", "/api/auth/verify-otp"}
+PUBLIC = {"/api/health", "/api/stats", "/api/taxonomy", "/api/ai-status", "/api/auth/config", "/api/auth/login", "/api/auth/guest", "/api/auth/otp", "/api/auth/verify-otp"}
 
 
 @app.middleware("http")
@@ -182,7 +182,7 @@ async def boundaries(request: Request, call_next):
     return response
 
 
-for router in (auth.router, round2.router, document_tools.router, operations.router, patients.router, documents.router, care.router, brief.router, decision_support.router, memory_up.router):
+for router in (auth.router, round2.router, document_tools.router, operations.router, patients.router, documents.router, care.router, brief.router, decision_support.router, assistant_actions.router, assistant_actions.sos_router, memory_up.router):
     app.include_router(router)
 
 

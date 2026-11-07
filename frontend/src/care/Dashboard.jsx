@@ -1,99 +1,176 @@
-import { useState } from "react";
-import { ArrowDownToLine, ArrowRight, ArrowUpRight, BookHeart, CalendarDays, Check, ChevronRight, ClipboardList, Clock3, FileStack, HeartHandshake, HeartPulse, History, LayoutDashboard, MessageCircle, Pill, ShieldCheck, Sparkles, Stethoscope, Users } from "lucide-react";
-import { request, useResource, hospitalDateTime, nice } from "./client";
+import { useEffect, useState } from "react";
+import { ArrowDownToLine, ArrowRight, CalendarPlus, Check, ChevronRight, ClipboardList, Clock3, FileStack, HeartHandshake, HeartPulse, History, LayoutDashboard, MapPin, MessageCircle, Pill, ShieldCheck, Sparkles, Stethoscope, Upload, Users, Video, BellRing, Smile, Meh, Frown, Laugh, Angry } from "lucide-react";
+import { request, useResource, nice } from "./client";
 import { Action, Empty, Load, Panel, SourceLinks, Voice } from "./UI";
 import { SmartInbox } from "./ClinicalTools";
 import Brief from "../apps/doctor/Brief";
-import CareMotif from "./CareMotif";
+import { Skeleton } from "./Extras";
+import { googleCalendarUrl, minutesUntil, wallClock, wallTimeLabel } from "./calendar";
+import { toast } from "./toast";
 
-const ACTIONS = [
-  ["records", FileStack, "Your reports", "Find, upload and understand"],
-  ["clinical", Stethoscope, "Care journey", "Your treatment, together"],
-  ["companion", MessageCircle, "Ask OncoBrief", "Answers from the patient record"],
-  ["journal", BookHeart, "Plans & takeaways", "Keep the next steps close"],
-  ["medicines", Pill, "Medicines", "Prescriptions and requests"],
-  ["day", CalendarDays, "Appointments", "Your hospital day, organised"],
-  ["schedule", LayoutDashboard, "Hospital schedule", "Visits and chair assignments"],
-  ["staffActivity", History, "Recent activity", "Uploads and access history"],
+const until = (mins) => {
+  if (mins <= 0 && mins > -30) return "Now";
+  if (mins < 0) return "Earlier today";
+  if (mins < 60) return `in ${mins} min`;
+  const h = Math.floor(mins / 60), m = mins % 60;
+  if (h < 24) return `in ${h} h${m ? ` ${m} min` : ""}`;
+  const d = Math.round(h / 24);
+  return `in ${d} day${d > 1 ? "s" : ""}`;
+};
+
+export default function Dashboard(props) {
+  const { user } = props;
+  const careTeam = !["patient", "caregiver"].includes(user.role);
+  return careTeam ? <TeamHome {...props} /> : <PatientHome {...props} />;
+}
+
+/* ---------------- Patient ---------------- */
+function PatientHome({ pid, patient, can, onTab, visibleTabs = [] }) {
+  const day = useResource(can("appointments") ? `/v2/patients/${pid}/day-pass` : null, 30000);
+  const meds = useResource(can("medicines") ? `/patients/${pid}/medications` : null);
+  const week = useResource(can("activity") ? `/v2/patients/${pid}/week` : null);
+  const future = useResource(can("appointments") ? `/appointments?upcoming=true&patient_id=${encodeURIComponent(pid)}` : null, 60000);
+  const [, tick] = useState(0);
+  useEffect(() => { const t = setInterval(() => tick((v) => v + 1), 60000); return () => clearInterval(t); }, []);
+  const stops = (day.data?.stops || []).filter((s) => !["cancelled", "completed"].includes(s.status));
+  const todayLeft = stops.filter((s) => minutesUntil(s.start) > -30);
+  const later = (future.data || []).filter((a) => !todayLeft.some((s) => s.id === a.id) && minutesUntil(a.start) > -30);
+  const upcoming = [...todayLeft, ...later];
+  const next = upcoming[0];
+  const isToday = next && todayLeft.includes(next);
+  const doses = (meds.data || []).flatMap((m) => (m.today || []).map((d) => ({ ...d, med: m })));
+  const taken = doses.filter((d) => d.status === "taken").length;
+  const pct = doses.length ? Math.round((taken / doses.length) * 100) : 0;
+  const markTaken = async (d) => {
+    try {
+      await request("/med-logs", "POST", { medication_id: d.med.id, time: d.time, status: "taken" });
+      meds.refresh(); window.dispatchEvent(new Event("ob-dose-reminders-refresh"));
+      toast(`${d.med.name} marked as taken`);
+    } catch (e) { toast(e.message, "error"); }
+  };
+  const moods = [[Angry, "Very bad"], [Frown, "Not good"], [Meh, "Okay"], [Smile, "Good"], [Laugh, "Great"]];
+  return <div className="ob-home">
+    <div className="ob-home-grid">
+      <section className="ob-card ob-next">
+        <div className="ob-card-head"><span className="ob-chip"><Clock3 size={14} />Next appointment</span>{next && <span className={`ob-countdown ${minutesUntil(next.start) <= 30 ? "soon" : ""}`}>{until(minutesUntil(next.start))}</span>}</div>
+        {day.error ? <p className="care-error">{day.error}</p> : !day.data || (future.enabled && !future.data) ? <Skeleton lines={3} /> : next ? <>
+          <h2>{next.department}</h2>
+          <p className="ob-next-meta"><span><Clock3 size={15} />{isToday ? `Today, ${wallClock(next.start)}` : wallTimeLabel(next.start)}</span>{next.virtual_visit ? <span><Video size={15} />Video consult</span> : <span><MapPin size={15} />{next.room}</span>}{next.clinician && !/pending/i.test(next.clinician) && <span><Stethoscope size={15} />{next.clinician}</span>}</p>
+          {next.ahead > 0 && <p className="ob-next-wait">{next.ahead} {next.ahead === 1 ? "person" : "people"} ahead · about {next.wait_minutes} min wait</p>}
+          <div className="ob-next-actions">
+            {next.virtual_visit?.meeting_url && <a className="btn primary" href={next.virtual_visit.meeting_url} target="_blank" rel="noreferrer"><Video size={16} />Join video call</a>}
+            <button className={next.virtual_visit?.meeting_url ? "btn" : "btn primary"} onClick={() => onTab("day")}>{isToday ? "View today's plan" : "All appointments"}<ArrowRight size={16} /></button>
+            <a className="btn" href={googleCalendarUrl(next)} target="_blank" rel="noreferrer"><CalendarPlus size={16} />Add to calendar</a>
+          </div>
+          {upcoming.length > 1 && <ul className="ob-next-later">{upcoming.slice(1, 4).map((s) => <li key={s.id}><time>{todayLeft.includes(s) ? wallClock(s.start) : wallTimeLabel(s.start).replace(/,.*/, "")}</time><span>{s.department}</span><small>{s.virtual_visit ? "Video" : s.room}</small></li>)}</ul>}
+        </> : <div className="ob-empty-state"><span><Check size={22} /></span><b>No upcoming appointments</b><small>New bookings will show up here.</small>{visibleTabs.includes("day") && <button className="btn" onClick={() => onTab("day")}>Book an appointment</button>}</div>}
+      </section>
+
+      <section className="ob-card ob-meds">
+        <div className="ob-card-head"><span className="ob-chip"><Pill size={14} />Today's medicines</span>{doses.length > 0 && <span className="ob-progress-label">{taken} of {doses.length}</span>}</div>
+        {!meds.enabled ? <Empty>Medicines aren't shared with this account.</Empty> : !meds.data ? <Skeleton lines={4} /> : doses.length ? <>
+          <div className="ob-progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${pct}%` }} /></div>
+          <ul className="ob-dose-list">{doses.sort((a, b) => a.time.localeCompare(b.time)).map((d) => <li key={d.med.id + d.time} className={`is-${d.status}`}>
+            <time>{d.time}</time><span><b>{d.med.name}</b><small>{d.med.dose}</small></span>
+            {d.status === "taken" ? <span className="ob-dose-done"><Check size={15} />Taken</span> : d.status === "missed" ? <span className="ob-dose-missed">Missed</span> : <button className="btn ob-dose-btn" onClick={() => markTaken(d)}>Take</button>}
+          </li>)}</ul>
+        </> : <Empty>No medicines scheduled today.</Empty>}
+        {visibleTabs.includes("medicines") && <button className="ob-link" onClick={() => onTab("medicines")}>All medicines and refills<ChevronRight size={16} /></button>}
+      </section>
+    </div>
+
+    {visibleTabs.includes("checkin") && <section className="ob-card ob-feel">
+      <div><h2>How are you feeling today?</h2><p>{week.data ? `${week.data.checkin_days} check-in${week.data.checkin_days === 1 ? "" : "s"} this week` : "A quick check-in helps your team spot problems early."}</p></div>
+      <div className="ob-mood-row">{moods.map(([Icon, label], i) => <button key={label} onClick={() => onTab("checkin")} aria-label={label} title={label} className={`mood-${i}`}><Icon size={26} strokeWidth={1.6} /><span>{label}</span></button>)}</div>
+    </section>}
+
+    <div className="ob-quick-grid">
+      {[["companion", MessageCircle, "Ask a question", "About reports or medicines"], ["records", Upload, "Upload a report", "Photo or PDF"], ["chat", HeartHandshake, "Messages", "Your care circle"], ["share", ShieldCheck, "Emergency card", "Share in one tap"], ["clinical", Sparkles, "Care journey", "Your treatment timeline"], ["money", FileStack, "Financial help", "Schemes and support"]]
+        .filter(([key]) => visibleTabs.includes(key)).slice(0, 4)
+        .map(([key, Icon, label, sub]) => <button key={key} className="ob-quick" onClick={() => onTab(key)}><span className="ob-quick-icon"><Icon size={20} /></span><b>{label}</b><small>{sub}</small></button>)}
+    </div>
+
+    {patient && <section className="ob-card ob-care-team">
+      <div className="ob-card-head"><span className="ob-chip"><Stethoscope size={14} />Your treatment</span></div>
+      <dl>
+        <div><dt>Oncologist</dt><dd>{patient.treating_oncologist || "Being assigned"}</dd></div>
+        <div><dt>Diagnosis</dt><dd>{patient.cancer_type || "—"}</dd></div>
+        <div><dt>Current plan</dt><dd>{patient.current_regimen || "—"}</dd></div>
+      </dl>
+    </section>}
+  </div>;
+}
+
+/* ---------------- Care team ---------------- */
+const STATS = [
+  ["patients", Users, "Patients", null],
+  ["approvals", ClipboardList, "To review", "approvals"],
+  ["alerts", BellRing, "Open alerts", "triage"],
+  ["today", LayoutDashboard, "Visits today", "schedule"],
 ];
 
-export default function Dashboard({ pid, patient, user, can, onTab, onSelect, onOpen, visibleTabs = [] }) {
+function TeamHome({ pid, patient, user, onTab, onSelect, onOpen, visibleTabs = [] }) {
   const clinician = ["doctor", "nurse", "navigator", "frontdesk", "admin"].includes(user.role);
-  const careTeam = !["patient", "caregiver"].includes(user.role);
-  const portal = careTeam ? user.role === "doctor" ? "doctor" : "staff" : "patient";
   const command = useResource(clinician ? "/v2/command-centre" : null, 15000);
-  const week = useResource(can("activity") ? `/v2/patients/${pid}/week` : null);
-  const day = useResource(can("appointments") ? `/v2/patients/${pid}/day-pass` : null);
-  const meds = useResource(can("medicines") ? `/patients/${pid}/medications` : null);
-  const documents = useResource(visibleTabs.includes("records") && careTeam && !clinician ? `/patients/${pid}/documents` : null);
-  const stats = (clinician ? [
-    ["home", Users, command.data?.patients.length ?? "—", "Assigned patients", "Your care overview"],
-    ...(user.role === "doctor" ? [["clinic", ClipboardList, "Today", "Clinic & visit briefs", "Prepare for the next visit"]] : []),
-    ...(visibleTabs.includes("staffActivity") ? [["staffActivity", History, "Recent", "Uploads & access", "Review workspace activity"]] : []),
-    ["approvals", ClipboardList, command.data?.awaiting_approval ?? "—", "Awaiting review", "Clinical requests"],
-    ["triage", HeartPulse, command.data?.open_alerts ?? "—", "Open care alerts", "Review patient check-ins"],
-    ["day", CalendarDays, day.data?.stops.length ?? "—", "Patient stops today", "Open the day pass"],
-    ["schedule", LayoutDashboard, command.data?.chairs.length ?? "—", "Chair assignments", "View the schedule"],
-    ["chat", HeartHandshake, "Together", "Care circle", "Open the conversation"],
-    ["privacy", ShieldCheck, "Access", "Privacy & devices", "Review account access"],
-  ] : careTeam ? [
-    ["records", FileStack, documents.data?.length ?? "—", "Accessible reports", "Open patient records"],
-    ["wellness", HeartPulse, "Care", "Patient wellbeing", "Open wellbeing"],
-    ["journal", BookHeart, "Plans", "Shared care journal", "Review patient plans"],
-    ["privacy", ShieldCheck, "Access", "Privacy & devices", "Review account access"],
-  ] : [
-    ["medicines", Pill, meds.data?.length ?? "—", "Medicines", "View your prescriptions"],
-    ["day", CalendarDays, day.data?.stops.length ?? "—", "Appointments today", "See your day pass"],
-    ["checkin", HeartPulse, week.data?.checkin_days ?? "—", "Check-ins this week", "A moment for yourself"],
-    ["chat", HeartHandshake, "Together", "Your care circle", "Stay close to your team"],
-  ]).filter(s => visibleTabs.includes(s[0])).slice(0, 4);
-  const preferred = careTeam ? ({ doctor: "clinic", nurse: "triage", frontdesk: "schedule", admin: "schedule", lab: "records", navigator: "journal", dietitian: "wellness", privacy: "privacy" }[user.role]) : visibleTabs.includes("checkin") ? "checkin" : "day";
-  const primaryTab = visibleTabs.includes(preferred) ? preferred : visibleTabs.find(t => t !== "home");
-  const primaryLabel = { clinic: "Open clinic", triage: "Review care alerts", schedule: "Open schedule", records: "Open reports", journal: "Open care plans", wellness: "Open wellbeing", privacy: "Review access", checkin: "Start daily check-in", day: "View appointments" }[primaryTab] || "Open workspace";
-  const stops = (day.data?.stops || []).filter(s => !["cancelled", "completed"].includes(s.status));
-  const next = stops[0];
+  const schedule = useResource(["doctor", "nurse", "frontdesk", "admin"].includes(user.role) ? "/schedule" : null, 30000);
   const [brief, setBrief] = useState(null), [commandAnswer, setCommandAnswer] = useState(null);
-  const voiceCommand = async text => {
+  const appts = (schedule.data?.appointments || []).filter((a) => a.status !== "cancelled");
+  const mine = user.role === "doctor" ? appts.filter((a) => a.clinician === user.name) : appts;
+  const nowIso = schedule.data?.current_time || "";
+  const upcoming = mine.filter((a) => !nowIso || a.end.slice(0, 16) > nowIso).sort((a, b) => a.start.localeCompare(b.start));
+  const values = { patients: command.data?.patients.length, approvals: command.data?.awaiting_approval, alerts: command.data?.open_alerts, today: user.role === "doctor" ? mine.length : appts.length };
+  const stats = STATS.filter(([key, , , tab]) => (!tab || visibleTabs.includes(tab)) && (key !== "today" || schedule.enabled) && (key === "today" || clinician));
+  const voiceCommand = async (text) => {
     try {
       if (/brief/i.test(text)) setBrief(await request("/brief", "POST", { patient_id: pid, visit_type: "follow_up" }));
-      else if (/cbc|blood count|सीबीसी/i.test(text)) {
-        const docs = await request(`/patients/${pid}/documents?q=CBC`);
-        setCommandAnswer({ answer: "The latest matching CBC records:", sources: docs.sort((a, b) => b.record_date.localeCompare(a.record_date)).slice(0, 3).map(d => ({ id: d.id, tag: d.tag, title: d.title })) });
-      } else setCommandAnswer(await request(`/v2/patients/${pid}/companion`, "POST", { text, language: "en" }));
+      else setCommandAnswer(await request(`/v2/patients/${pid}/companion`, "POST", { text, language: "en" }));
     } catch (e) { setCommandAnswer({ answer: e.message, sources: [] }); }
   };
-  const shortcuts = ACTIONS.filter(([key]) => visibleTabs.includes(key)).slice(0, 4);
-  return <div className="care-dashboard">
-    <div className="dashboard-top-grid">
-      <section className="dashboard-hero">
-        <div className="dashboard-hero-copy">
-          <span className="dashboard-kicker"><span className="care-connection-dot" />{portal === "patient" ? "WITH YOU, EVERY DAY" : portal === "doctor" ? "CARE WITH CLARITY" : "WORKING BETTER, TOGETHER"}</span>
-          <h2>{portal === "patient" ? <>One step at a time.<br /><span>With your team beside you.</span></> : portal === "doctor" ? <>A clearer picture.<br /><span>More time for your patients.</span></> : <>Every detail connected.<br /><span>A smoother day of care.</span></>}</h2>
-          <p>{portal === "patient" ? "Your records, your next steps, and the people who care. All here, whenever you need them." : portal === "doctor" ? "Patient stories, priorities and next decisions, brought into one considered workspace." : "Keep patient care moving, from the first check-in to the next handover."}</p>
-          {primaryTab && <button className="btn primary dashboard-primary" onClick={() => onTab(primaryTab)}>{primaryLabel}<ArrowUpRight size={18} /></button>}
-        </div>
-        <CareMotif portal={portal} compact />
-      </section>
-      <section className="dashboard-context">
-        <div className="dashboard-card-heading"><span className="dashboard-icon"><CalendarDays size={19} /></span><h2>{visibleTabs.includes("day") ? "Today’s care" : "Patient in focus"}</h2><span className="dashboard-live"><i />{visibleTabs.includes("day") ? "Today" : "Selected"}</span></div>
-        {visibleTabs.includes("day") ? <>
-          {day.error ? <p className="care-error" role="alert">{day.error}</p> : !day.data ? <p className="care-loading">Loading today’s care…</p> : next ? <div className="dashboard-next-visit"><span className="dashboard-next-label">NEXT IN YOUR DAY</span><h3>{next.department || next.type || "Hospital visit"}</h3><p><Clock3 size={15} />{hospitalDateTime(next.start || next.scheduled_at || next.date)}</p><small>{next.room || next.location || nice(next.status) || "Your care team is expecting you"}</small></div> : <div className="dashboard-day-clear"><span><Check size={24} strokeWidth={1.6} /></span><h3>No upcoming stops today</h3><p>Your appointments and visit details will appear here.</p></div>}
-          <button className="dashboard-text-link" onClick={() => onTab("day")}>Open your day pass<ArrowRight size={16} /></button>
-        </> : <div className="dashboard-patient-focus"><div className="dashboard-patient-avatar">{patient?.name?.slice(0, 1) || "—"}</div><h3>{patient?.name || "Select a patient"}</h3><p>{pid}</p><span>{patient?.cancer_type || "Assigned care folder"}</span>{visibleTabs.includes("clinical") && <button className="dashboard-text-link" onClick={() => onTab("clinical")}>View care journey<ArrowRight size={16} /></button>}</div>}
-      </section>
-    </div>
-    <div className="care-section-label"><h2>{careTeam ? "Your workspace at a glance" : "A little overview of your day"}</h2><span className="dashboard-section-caption">{careTeam ? "Connected care" : "YOUR CARE, TOGETHER"}</span></div>
-    <div className="care-summary-grid" style={{ "--stat-count": Math.max(stats.length, 1) }}>{stats.map(([key, Icon, value, label, detail]) => <button key={key} className="care-stat" onClick={() => onTab(key)}><span className="dashboard-stat-top"><span className="dashboard-icon"><Icon size={19} /></span><ArrowUpRight size={16} /></span><b className={typeof value === "string" && value.length > 6 ? "care-stat-word" : ""}>{value}</b><span>{label}</span><small>{detail}</small></button>)}</div>
-    {clinician && <Panel title={["doctor", "nurse"].includes(user.role) ? "Patient priorities" : "Patient coordination"} hint="Ordered using recorded check-ins, alerts, missed doses, visits and activity changes. This supports team review; it is not a clinical prediction." action={<span className="dashboard-count">{command.data?.patients.length ?? "—"} patients</span>}>
-      <Load resource={command}>{d => <div className="dashboard-priorities">{d.patients.map(p => <button className={`care-risk-row risk-${p.risk || "neutral"} ${pid === p.patient_id ? "is-selected" : ""}`} key={p.patient_id} aria-pressed={pid === p.patient_id} onClick={() => onSelect(p.patient_id)}><span className="dashboard-row-avatar">{p.name.slice(0, 1)}<i className="care-risk-dot" /></span><div><b>{p.name}</b><p>{p.reasons?.join(" · ") || `${p.patient_id} · No current flagged concern`}</p></div><span className="dashboard-patient-id">{p.patient_id}</span>{p.rescue && <span className="care-pill">Follow-up</span>}<ChevronRight size={17} /></button>)}{!d.patients.length && <Empty>No assigned patients yet.</Empty>}<details className="dashboard-hospital-details"><summary>Hospital overview<ChevronRight size={16} /></summary><div><p>{d.awaiting_approval ?? "—"} clinical requests await review.</p>{d.patients.map(p => <p key={p.patient_id}>{p.name}: {p.diagnosis_days ?? "unknown"} days since recorded diagnosis{p.rescue ? " · Follow-up requested" : ""}</p>)}{d.chairs.map(c => <p key={c.id}>Chair {c.data.chair}: {c.patient_id} · {c.data.prep}</p>)}</div></details></div>}</Load>
-    </Panel>}
-    <div className="dashboard-bottom-grid">
-      <Panel title={careTeam ? "Keep care moving" : "Everything, a little closer"} action={<span className="dashboard-subtle-icon"><ArrowUpRight size={18} /></span>}><div className="dashboard-shortcuts">{shortcuts.map(([key, Icon, label, detail]) => <button key={key} onClick={() => onTab(key)}><span className="dashboard-icon"><Icon size={20} /></span><span><b>{label}</b><small>{detail}</small></span><ChevronRight size={17} /></button>)}</div></Panel>
-      <Panel className="dashboard-care-card" title={user.role === "doctor" ? "Ready for the next visit" : careTeam ? "Care, in good hands" : "Your care. Your choices."} action={<span className="dashboard-subtle-icon">{user.role === "doctor" ? <Sparkles size={18} /> : <HeartHandshake size={19} />}</span>}>
-        {user.role === "doctor" ? <><p className="dashboard-support-copy">Bring the patient story together in a concise, source-linked clinical brief.</p><Action className="btn primary" run={() => request("/brief", "POST", { patient_id: pid, visit_type: "follow_up" })} onDone={setBrief}>Build follow-up brief<ArrowUpRight size={16} /></Action>{brief && <Voice text={brief.content.summary.map(x => x.text).join(" ").split(/\s+/).slice(0, 140).join(" ")} />}<a className="dashboard-text-link" href={`/api/v2/patients/${pid}/pack.pdf`} target="_blank" rel="noreferrer"><ArrowDownToLine size={16} />Tumour board pack<ArrowUpRight size={15} /></a><details className="care-inline-help"><summary>Voice shortcuts</summary><p className="small muted">Say “build brief”, “show last three CBCs”, or ask a question about the chart.</p><Voice onText={voiceCommand} /></details>{commandAnswer && <div className="care-notice"><p>{commandAnswer.answer}</p><SourceLinks sources={commandAnswer.sources} onOpen={onOpen} /></div>}</> : <><div className="dashboard-care-symbol"><ShieldCheck size={33} strokeWidth={1.3} /></div><p className="dashboard-support-copy">{careTeam ? "Assigned patient folders and shared plans keep your team connected through every handover." : "Keep someone you trust close. You decide who can see your information, and can review access at any time."}</p><div className="row wrap">{visibleTabs.includes("circle") && <button className="btn" onClick={() => onTab("circle")}>Your care circle<ArrowUpRight size={16} /></button>}{visibleTabs.includes("privacy") && <button className="dashboard-text-link" onClick={() => onTab("privacy")}>Review access<ArrowRight size={16} /></button>}</div></>}
-      </Panel>
+  return <div className="ob-home">
+    {stats.length > 0 && <div className="ob-stats">{stats.map(([key, Icon, label, tab]) => <button key={key} className="ob-stat" onClick={() => tab && onTab(tab)} disabled={!tab}>
+      <span className="ob-stat-icon"><Icon size={18} /></span><b>{values[key] ?? <span className="ob-dash">–</span>}</b><span>{label}</span>
+    </button>)}</div>}
+
+    <div className="ob-home-grid">
+      {clinician && <Panel title={["doctor", "nurse"].includes(user.role) ? "Patients needing attention" : "Patients"} className="ob-priorities" action={<span className="ob-muted-count">{command.data?.patients.length ?? ""}</span>}>
+        {command.error ? <p className="care-error">{command.error}</p> : !command.data ? <Skeleton lines={5} /> : <div className="dashboard-priorities">
+          {command.data.patients.map((p) => <button className={`care-risk-row risk-${p.risk || "neutral"} ${pid === p.patient_id ? "is-selected" : ""}`} key={p.patient_id} aria-pressed={pid === p.patient_id} onClick={() => onSelect(p.patient_id)}>
+            <span className="dashboard-row-avatar">{p.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}<i className="care-risk-dot" /></span>
+            <div><b>{p.name}</b><p>{p.reasons?.length ? p.reasons.join(" · ") : "No concerns flagged"}</p></div>
+            {p.open_alerts > 0 && <span className="care-pill ob-pill-alert">{p.open_alerts} alert{p.open_alerts > 1 ? "s" : ""}</span>}
+            {p.rescue && <span className="care-pill">Follow-up</span>}
+            <ChevronRight size={17} />
+          </button>)}
+          {!command.data.patients.length && <Empty>No patients assigned yet.</Empty>}
+        </div>}
+      </Panel>}
+
+      <div className="stack">
+        {schedule.enabled && <Panel title={user.role === "doctor" ? "Your clinic today" : "Today's visits"} className="ob-agenda" action={visibleTabs.includes(user.role === "doctor" ? "clinic" : "schedule") && <button className="ob-link" onClick={() => onTab(user.role === "doctor" ? "clinic" : "schedule")}>Open<ChevronRight size={15} /></button>}>
+          {!schedule.data ? <Skeleton lines={4} /> : upcoming.length ? <ol className="ob-agenda-list">{upcoming.slice(0, 6).map((a, i) => <li key={a.id} className={i === 0 ? "is-next" : ""}>
+            <time>{wallClock(a.start)}</time>
+            <button onClick={() => onSelect(a.patient_id)}><b>{a.patient_name}</b><small>{a.virtual_visit ? "Video consult" : `${a.department} · ${a.room}`}</small></button>
+            {a.virtual_visit?.meeting_url ? <a className="btn icon-btn" href={a.virtual_visit.meeting_url} target="_blank" rel="noreferrer" aria-label="Join Google Meet"><Video size={16} /></a> : i === 0 ? <span className="ob-next-tag">Next</span> : null}
+          </li>)}</ol> : <div className="ob-empty-state compact"><span><Check size={20} /></span><b>Nothing left today</b></div>}
+        </Panel>}
+
+        {user.role === "doctor" && patient && <Panel title={`Prepare for ${patient.name.split(" ")[0]}`} className="ob-brief-card">
+          <p className="ob-brief-meta">{patient.cancer_type}{patient.stage ? ` · ${patient.stage}` : ""}</p>
+          <div className="row wrap">
+            <Action className="btn primary" run={() => request("/brief", "POST", { patient_id: pid, visit_type: "follow_up" })} onDone={(b) => { setBrief(b); toast("Brief ready"); }}><Sparkles size={16} />Build pre-visit brief</Action>
+            <a className="btn" href={`/api/v2/patients/${pid}/pack.pdf`} target="_blank" rel="noreferrer"><ArrowDownToLine size={16} />Tumour board pack</a>
+          </div>
+          <details className="care-inline-help"><summary>Use voice</summary><p className="small muted">Say “build brief”, or ask a question about this patient.</p><Voice onText={voiceCommand} /></details>
+          {commandAnswer && <div className="care-notice"><p>{commandAnswer.answer}</p><SourceLinks sources={commandAnswer.sources} onOpen={onOpen} /></div>}
+        </Panel>}
+
+        {!clinician && <Panel title="Shortcuts">
+          <div className="dashboard-shortcuts">{[["records", FileStack, "Reports", "Find and upload"], ["journal", ClipboardList, "Care plans", "Shared plans"], ["wellness", HeartPulse, "Wellbeing", "Nutrition and support"], ["staffActivity", History, "Activity log", "Uploads and access"], ["privacy", ShieldCheck, "Privacy", "Sessions and access"]]
+            .filter(([key]) => visibleTabs.includes(key)).map(([key, Icon, label, detail]) => <button key={key} onClick={() => onTab(key)}><span className="dashboard-icon"><Icon size={19} /></span><span><b>{label}</b><small>{detail}</small></span><ChevronRight size={17} /></button>)}</div>
+        </Panel>}
+      </div>
     </div>
     {["doctor", "nurse"].includes(user.role) && <SmartInbox onSelect={onSelect} />}
-    {brief && <Brief data={brief} onOpen={tag => onOpen(Number(tag.slice(1)))} />}
+    {brief && <div className="ob-brief-output"><div className="row"><h2>Pre-visit brief · {patient?.name}</h2><span className="spacer" /><button className="btn" onClick={() => window.print()}>Print</button></div><Brief data={brief} onOpen={(tag) => onOpen(Number(tag.slice(1)))} /></div>}
   </div>;
 }

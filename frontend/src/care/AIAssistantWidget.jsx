@@ -13,6 +13,9 @@ import {
 import { request, speak } from "./client";
 import { Emergency } from "./PatientTools";
 import { Error, SourceLinks, Status } from "./UI";
+import ActionCard, { looksLikeAction } from "./ActionCard";
+
+const CARE_TEAM = ["doctor", "nurse", "frontdesk", "admin"];
 
 const levelNames = ["inform", "everyday_guidance", "doctor_review", "emergency"];
 
@@ -82,6 +85,13 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, onExit
     setMessages((items) => [...items, { id: "q-" + Date.now(), role: "user", text: clean }]);
     setBusy(true);
     try {
+      if (CARE_TEAM.includes(userRole) && looksLikeAction(clean)) {
+        const plan = await request("/v2/assistant/plan", "POST", { text: clean, patient_id: pid });
+        if (plan.intent) {
+          setMessages((items) => [...items, { id: "p-" + Date.now(), role: "assistant", plan }]);
+          return;
+        }
+      }
       const result = await request("/v2/patients/" + pid + "/companion", "POST", {
         text: clean,
         language,
@@ -191,12 +201,12 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, onExit
   return (
     <div className={"care-ai-assistant " + (embedded ? "care-ai-embedded care-ai-fullscreen" : "")}>
       {visible && (
-        <section className={"care-ai-window " + (embedded ? "care-ai-window-embedded care-ai-window-fullscreen" : "")} role="region" aria-label="OncoBrief AI chat">
+        <section className={"care-ai-window " + (embedded ? "care-ai-window-embedded care-ai-window-fullscreen" : "")} role="region" aria-label="OncoBrief assistant">
           <header className="care-ai-head">
             {embedded && <button className="care-ai-back" aria-label="Back to workspace" title="Back to workspace" onClick={onExit}><ArrowLeft size={20} /></button>}
             <div className="care-ai-identity">
               <span className="care-ai-avatar"><Sparkles size={19} /></span>
-              <span><b>AI Chat</b><small><i /> {userRole === "doctor" ? "Care-folder answers · patient-shared insights" : "Your care folder · here to help"}</small></span>
+              <span><b>Assistant</b><small><i /> {CARE_TEAM.includes(userRole) ? "Answers from the record · books, messages and tasks" : "Answers from your care folder"}</small></span>
             </div>
             {!embedded && <button className="care-ai-close" aria-label="Close assistant" onClick={closeAssistant}><X size={19} /></button>}
           </header>
@@ -222,13 +232,15 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, onExit
               <div className="care-ai-welcome">
                 <span className="care-ai-welcome-icon"><Bot size={21} /></span>
                 <h3>How can I help today?</h3>
-                <p>{userRole === "doctor"
-                  ? "Ask about this patient’s records, or review chat excerpts the patient has chosen to share."
-                  : "Ask about your records, get help with everyday questions, or prepare for your next visit."}</p>
+                <p>{CARE_TEAM.includes(userRole)
+                  ? "Ask about this patient’s record, or tell me what to do: book a visit, start a video consult, message the patient or assign a task."
+                  : "Ask about your reports and medicines, or get ready for your next visit."}</p>
                 <div className="care-ai-prompts">
                   {userRole === "doctor" ? <>
-                    <button onClick={() => ask("Summarize the records relevant to this patient's current care")}>Summarize patient records <span>↗</span></button>
-                    <button onClick={() => ask("What has the patient chosen to share in AI Chat recently?")}>Review shared chat excerpts <span>↗</span></button>
+                    <button onClick={() => ask("Summarize the records relevant to this patient's current care")}>Summarize this patient’s record <span>↗</span></button>
+                    <button onClick={() => ask("Book a video follow-up tomorrow at 4 pm")}>Book a video follow-up tomorrow, 4 pm <span>↗</span></button>
+                    <button onClick={() => ask("Remind the patient to drink at least 3 litres of water today")}>Remind the patient to stay hydrated <span>↗</span></button>
+                    <button onClick={() => ask("Ask the nurse to call the patient about today's check-in")}>Ask the nurse to call the patient <span>↗</span></button>
                   </> : <>
                     <button onClick={() => ask("Summarize my latest report")}>Summarize my latest report <span>↗</span></button>
                     <button onClick={() => ask("Help me prepare for my next visit")}>Help me prepare for my visit <span>↗</span></button>
@@ -238,7 +250,7 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, onExit
             )}
             {messages.map((message) => (
               <article key={message.id} className={"care-ai-message " + message.role}>
-                {message.role === "user" ? <p>{message.text}</p> : (
+                {message.role === "user" ? <p>{message.text}</p> : message.plan ? <ActionCard plan={message.plan} /> : (
                   <div className="care-ai-answer">
                     {message.result.level === 3 ? <Emergency result={message.result} /> : <>
                       {message.result.citations?.length ? message.result.citations.map((citation, index) => (
@@ -249,7 +261,7 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, onExit
                       )) : <><p>{message.result.answer}</p><SourceLinks sources={message.result.sources} onOpen={onOpen} /></>}
                       <div className="care-ai-answer-foot">
                         <Status value={levelNames[message.result.level] || "inform"} />
-                        <span>{message.result.generation === "ai" ? "AI-assisted" : message.result.generation === "records summary" ? "Patient status from records" : message.result.generation === "supportive fallback" ? "Support guidance" : message.result.generation === "extractive" ? "From your records" : "Care assistant"}</span>
+                        <span>{message.result.generation === "ai" ? "Summarised from records" : message.result.generation === "records summary" ? "Patient status from records" : message.result.generation === "supportive fallback" ? "Support guidance" : message.result.generation === "extractive" ? "From your records" : "Care assistant"}</span>
                         <button aria-label="Listen to answer" title="Listen to answer" onClick={() => { try { speak(message.result.answer, message.result.language || language); } catch (e) { setError(e.message); } }}><Volume2 size={15} /></button>
                       </div>
                     </>}
@@ -257,7 +269,7 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, onExit
                 )}
               </article>
             ))}
-            {busy && <div className="care-ai-thinking"><span><i /><i /><i /></span>Checking your care folder…</div>}
+            {busy && <div className="care-ai-thinking"><span><i /><i /><i /></span>Working on it…</div>}
             {listening && <div className="care-ai-thinking care-ai-listening"><span><i /><i /><i /></span>Listening for your question…</div>}
           </div>
 
@@ -266,7 +278,7 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, onExit
             {mode === "type" ? (
               <form onSubmit={submit} className="care-ai-form">
                 <label className="care-ai-sr-only" htmlFor="care-ai-input">Type your question</label>
-                <textarea id="care-ai-input" ref={inputRef} rows={1} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(event); } }} placeholder="Ask about your care…" disabled={busy} />
+                <textarea id="care-ai-input" ref={inputRef} rows={1} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(event); } }} placeholder={CARE_TEAM.includes(userRole) ? "Ask, or say “book a follow-up Monday 11 am”…" : "Ask about your care…"} disabled={busy} />
                 <button type="submit" aria-label="Send message" disabled={!draft.trim() || busy}><Send size={17} /></button>
               </form>
             ) : (
@@ -277,14 +289,14 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, onExit
                 <div><b>{listening ? "I’m listening" : voiceSession.current && busy ? "Preparing your reply…" : voiceSession.current ? "Conversation paused" : "Tap to start talking"}</b><span>{voiceSession.current ? "I’ll listen again after each reply. Tap stop to end." : "Your reply will be read aloud."}</span></div>
               </div>
             )}
-            <div className="care-ai-privacy"><ShieldCheck size={12} /> {userRole === "doctor" ? "Patient chat is hidden unless they share it" : "Care-folder access follows your account"} <span>·</span> Voice uses browser speech</div>
+            <div className="care-ai-privacy"><ShieldCheck size={12} /> {CARE_TEAM.includes(userRole) ? "Nothing is booked or sent until you confirm" : "Only you and the people you allow can see this"}</div>
           </div>
         </section>
       )}
 
-      {!embedded && <button className={"care-ai-launcher " + (open ? "is-open" : "")} aria-label={open ? "Close AI assistant" : "Open AI assistant"} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+      {!embedded && <button className={"care-ai-launcher " + (open ? "is-open" : "")} aria-label={open ? "Close assistant" : "Open assistant"} aria-expanded={open} onClick={() => setOpen((value) => !value)}>
         {open ? <X size={22} /> : <><MessageCircle size={22} /><span className="care-ai-launcher-spark"><Sparkles size={11} /></span></>}
-        {!open && <span className="care-ai-launcher-label">Ask AI</span>}
+        {!open && <span className="care-ai-launcher-label">Ask</span>}
       </button>}
     </div>
   );

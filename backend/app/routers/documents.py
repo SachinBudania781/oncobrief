@@ -52,7 +52,8 @@ def taxonomy():
     now = hospital_now()
     return {"categories": CATEGORIES, "departments": DEPARTMENTS, "symptoms": SYMPTOMS,
             "visit_types": VISIT_TYPES, "lab_tests": {k: v["unit"] for k, v in LAB_REFERENCE.items()},
-            "hospital_today": now.date().isoformat(), "hospital_now": now.isoformat(timespec="minutes")}
+            "hospital_today": now.date().isoformat(), "hospital_now": now.isoformat(timespec="minutes"),
+            "emergency_phone": __import__("os").getenv("HOSPITAL_EMERGENCY_PHONE", "")}
 
 
 @router.get("/patients/{patient_id}/documents")

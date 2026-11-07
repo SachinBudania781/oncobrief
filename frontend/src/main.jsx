@@ -7,6 +7,7 @@ import "@fontsource/ibm-plex-sans/600.css";
 import "@fontsource/ibm-plex-sans/700.css";
 import "@fontsource/ibm-plex-sans-devanagari/400.css";
 import "@fontsource/ibm-plex-sans-devanagari/600.css";
+import "@fontsource-variable/inter";
 import "./styles.css";
 import Landing from "./pages/Landing";
 import Workspace, { SharedCard } from "./care/Workspace";

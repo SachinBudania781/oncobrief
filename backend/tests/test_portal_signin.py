@@ -4,9 +4,20 @@ import pytest
 PASSWORD = "OncoDemo!2026"
 
 
+def _account(username):
+    # Sign-in config no longer exposes usernames or phones; read seeded accounts directly.
+    from sqlalchemy import select
+    from app.db import SessionLocal
+    from app.round2_models import User
+    from app.routers.auth import sign_in_id
+    with SessionLocal() as db:
+        user = db.scalar(select(User).where(User.username == username))
+        return {"username": user.username, "sign_in_id": sign_in_id(db, user), "phone": user.phone, "role": user.role}
+
+
 @pytest.mark.parametrize("username,portal,prefix", [("doctor", "doctor", "DOC-"), ("nurse", "staff", "STF-"), ("frontdesk", "staff", "STF-"), ("meera", "patient", "OB-"), ("caregiver", "patient", "CG-")])
 def test_issued_id_signin(client, username, portal, prefix):
-    account = next(a for a in client.get("/api/auth/config").json()["accounts"] if a["username"] == username)
+    account = _account(username)
     assert account["sign_in_id"].startswith(prefix)
     client.cookies.clear()
     result = client.post("/api/auth/login", json={"username": account["sign_in_id"].lower(), "password": PASSWORD, "portal": portal})
@@ -17,7 +28,7 @@ def test_issued_id_signin(client, username, portal, prefix):
 
 @pytest.mark.parametrize("username,portal", [("doctor", "staff"), ("nurse", "doctor"), ("meera", "doctor"), ("doctor", "patient"), ("caregiver", "staff")])
 def test_wrong_portal_cannot_create_session(client, username, portal):
-    account = next(a for a in client.get("/api/auth/config").json()["accounts"] if a["username"] == username)
+    account = _account(username)
     client.cookies.clear()
     result = client.post("/api/auth/login", json={"username": account["sign_in_id"], "password": PASSWORD, "portal": portal})
     assert result.status_code == 401
@@ -26,7 +37,7 @@ def test_wrong_portal_cannot_create_session(client, username, portal):
 
 @pytest.mark.parametrize("username,portal", [("doctor", "doctor"), ("frontdesk", "staff")])
 def test_phone_signin_needs_password_and_correct_portal(client, username, portal):
-    account = next(a for a in client.get("/api/auth/config").json()["accounts"] if a["username"] == username)
+    account = _account(username)
     assert account["phone"]
     client.cookies.clear()
     body = {"username": account["phone"], "password": PASSWORD, "portal": portal, "identifier_type": "phone"}
@@ -38,7 +49,7 @@ def test_phone_signin_needs_password_and_correct_portal(client, username, portal
 
 
 def test_hospital_phone_does_not_receive_patient_otp(client):
-    phone = next(a["phone"] for a in client.get("/api/auth/config").json()["accounts"] if a["username"] == "doctor")
+    phone = _account("doctor")["phone"]
     client.cookies.clear()
     result = client.post("/api/auth/otp", json={"phone": phone})
     assert result.status_code == 200
@@ -46,7 +57,7 @@ def test_hospital_phone_does_not_receive_patient_otp(client):
 
 
 def test_id_prefix_cannot_impersonate_a_different_role(client):
-    doctor = next(a for a in client.get("/api/auth/config").json()["accounts"] if a["username"] == "doctor")
+    doctor = _account("doctor")
     client.cookies.clear()
     result = client.post("/api/auth/login", json={"username": doctor["sign_in_id"].replace("DOC-", "STF-"), "password": PASSWORD, "portal": "staff"})
     assert result.status_code == 401
@@ -69,3 +80,16 @@ def test_phone_signin_keeps_production_authenticator_requirement(client, monkeyp
     body = {"username": phone, "password": PASSWORD, "portal": "doctor", "identifier_type": "phone"}
     assert client.post("/api/auth/login", json=body).status_code == 401
     assert client.post("/api/auth/login", json={**body, "totp": pyotp.TOTP(secret).now()}).status_code == 200
+
+
+def test_config_never_exposes_credentials(client):
+    body = client.get("/api/auth/config").json()
+    assert "demo_password" not in body
+    assert all(set(a) == {"sign_in_id", "name", "role"} for a in body["accounts"])
+
+
+def test_guest_signin_respects_portal(client):
+    client.cookies.clear()
+    assert client.post("/api/auth/guest", json={"sign_in_id": "DOC-0001", "portal": "patient"}).status_code == 404
+    ok = client.post("/api/auth/guest", json={"sign_in_id": "DOC-0001", "portal": "doctor"})
+    assert ok.status_code == 200 and ok.json()["role"] == "doctor"
