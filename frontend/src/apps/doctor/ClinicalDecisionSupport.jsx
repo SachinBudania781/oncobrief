@@ -139,7 +139,7 @@ export default function ClinicalDecisionSupport({ patient }) {
         </p>
         <form className="grid2" onSubmit={review}>
           <label className="field">Primary cancer site
-            <select className="select" value={site} onChange={(event) => { setSite(event.target.value); setResult(null) }} required>
+            <select className="select" value={site} onChange={(event) => { setSite(event.target.value); setTnm({ t_stage: '', n_stage: '', m_stage: '' }); setResult(null) }} required>
               <option value="">Select an explicit site</option>
               {SITES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
