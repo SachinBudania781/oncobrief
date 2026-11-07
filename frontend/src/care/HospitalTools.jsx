@@ -317,12 +317,12 @@ export function DayPass({ pid, user }) {
             <>
               <div className="care-pass">
                 <div className="row">
-                  <span className="eyebrow">ONCOBRIEF · DAY PASS</span>
+                  <span className="eyebrow">Day pass · show at the gate</span>
                   <span className="spacer" />
                   <QrCode />
                 </div>
                 <h2>{pid}</h2>
-                <p>{d.date}</p>
+                <p>{new Date(d.date + "T00:00:00").toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</p>
                 <img
                   src={`/api/v2/patients/${pid}/gate-qr`}
                   alt="Hospital gate check-in QR"

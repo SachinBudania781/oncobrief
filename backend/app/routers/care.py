@@ -381,8 +381,17 @@ def book(body: AppointmentIn, db: Session = Depends(get_db), actor: Actor = Depe
         db.add(visit)
     db.commit()
     if body.visit_mode == "google_meet":
-        from ..services.google_meet import notify_appointment_participants
-        notify_appointment_participants(db, p.id, "Video appointment booked", "Your Google Meet consultation is on the appointment day pass. Open OncoBrief for the link or setup status.")
+        from ..services.google_meet import GoogleMeetError, configured, create_event, invitee_list, notify_appointment_participants, set_meeting_result
+        if configured():
+            # Create the Meet straight away so the link shows on confirmation; the
+            # background job still retries if Google is slow or briefly unavailable.
+            try:
+                event_id, meeting_url = create_event(a, invitee_list(visit))
+                set_meeting_result(visit, event_id, meeting_url)
+                db.commit()
+            except (GoogleMeetError, Exception):
+                db.rollback()
+        notify_appointment_participants(db, p.id, "Video appointment booked", "Your Google Meet link is on your appointments page in OncoBrief." if visit.status == "scheduled" else "Your video consultation is booked. The Google Meet link will appear on your appointments page shortly.")
     same_day = db.scalars(select(Appointment).where(Appointment.start >= start.replace(hour=0, minute=0),
                                                     Appointment.start < start.replace(hour=23, minute=59))).all()
     warn = [c for c in find_clashes(same_day) if a.id in c["ids"]]

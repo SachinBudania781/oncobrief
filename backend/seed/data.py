@@ -5,7 +5,7 @@ Formats: "pdf" = digital report with a text layer, "scan" = scanned page (OCR ne
 "photo" = phone photo uploaded by a patient (lower quality, OCR needed)."""
 
 HOME = "OncoBrief Demo Cancer Centre, Mumbai"
-RIVERSIDE = "Riverside Demo Hospital, Nashik"
+RIVERSIDE = "Riverside Hospital, Nashik"
 WOMENS = "Demo Women's Clinic, Thane"
 CITYLAB = "CityCare Diagnostics, Thane"
 ONCOLOGIST = "Dr. R. Menon"
@@ -205,7 +205,7 @@ DOCUMENTS = [
         signer="Dr. S. Kale, MD (Radiology)", sections=[
         ("IMPRESSION", "Stable disease compared with the study of {d-190}. No new lesion in thorax or abdomen.")]),
     doc(P2, -60, "09:00", "Lab report", "LFT", "Liver function test", "scan", source="external", hospital=RIVERSIDE,
-        signer="Riverside Demo Hospital Laboratory", labs=[("Bilirubin", 0.7), ("ALT", 48), ("AST", 41),
+        signer="Riverside Hospital Laboratory", labs=[("Bilirubin", 0.7), ("ALT", 48), ("AST", 41),
                                                             ("Albumin", 4.0)]),
     doc(P2, -60, "10:00", "Imaging", "Echocardiogram / ECG", "ECG", source="external", hospital=RIVERSIDE,
         signer="Dr. K. Rao, DM (Medical Oncology)", sections=[

@@ -364,7 +364,7 @@ function CareSpace() {
               {tab !== "home" && <button className="ob-back" onClick={() => change("home")} aria-label="Back to home"><ArrowLeft size={19} /></button>}
               <div>
                 <p className="eyebrow">
-                  {tab === "home" && calendar.data?.hospital_today ? new Date(calendar.data.hospital_today + "T00:00:00").toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" }) : tab === "home" ? "" : patient?.name && portal !== "patient" ? patient.name : ""}
+                  {tab === "home" && calendar.data?.hospital_today ? new Date(calendar.data.hospital_today + "T00:00:00").toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" }) : tab === "home" || ["schedule", "queue", "staffActivity", "triage", "clinic", "privacy", "settings"].includes(tab) ? "" : patient?.name && portal !== "patient" ? patient.name : ""}
                 </p>
                 <h1>{title}</h1>
               </div>

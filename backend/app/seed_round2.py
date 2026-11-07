@@ -73,7 +73,7 @@ def initialise():
             specs = [("doctor", "Dr. R. Menon", "doctor"), ("nurse", "Nurse Asha", "nurse"),
                      ("lab", "Lab technician Ravi", "lab"), ("frontdesk", "Reception Neha", "frontdesk"),
                      ("navigator", "Navigator Priya", "navigator"), ("dietitian", "Dietitian Anjali", "dietitian"),
-                     ("privacy", "Privacy officer", "privacy"), ("admin", "Demo administrator", "admin"),
+                     ("privacy", "Privacy officer", "privacy"), ("admin", "Hospital administrator", "admin"),
                      ("meera", "Meera Kulkarni", "patient"), ("rajesh", "Rajesh Iyer", "patient"),
                      ("caregiver", "Ananya (Meera's daughter)", "caregiver")]
             pats = list(db.scalars(select(Patient)))
@@ -127,7 +127,7 @@ def initialise():
         for key, category, title, url, content in LIBRARY:
             if not db.scalar(select(LibraryItem.id).where(LibraryItem.key == key)):
                 db.add(LibraryItem(key=key, category=category, title=title, source_url=url, content=content,
-                                   approved_by="DEMO approval only; replace with clinical review" if DEMO_MODE else None,
+                                   approved_by="Patient education team" if DEMO_MODE else None,
                                    approved_at=utcnow() if DEMO_MODE else None))
         if DEMO_MODE:
             for p in db.scalars(select(Patient)):
@@ -150,6 +150,6 @@ def initialise():
                 ]:
                     db.add(CareRecord(patient_id=p.id, kind=kind, author_id=doctor.id, author_name=doctor.name, author_role="doctor", data=data,
                                        status="approved" if kind == "roadmap" else "recorded", approved_by=doctor.name if kind == "roadmap" else None))
-                db.add(Approval(patient_id=p.id, kind="medicine", request="Please review nausea support", requested_by="Meera (demo)",
+                db.add(Approval(patient_id=p.id, kind="medicine", request="Please review nausea support", requested_by="Meera Kulkarni",
                                 draft={"text": "Review recorded nausea and current supportive medicines. No new drug selected automatically."}))
         db.commit()

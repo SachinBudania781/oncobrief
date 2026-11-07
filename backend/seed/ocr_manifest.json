@@ -40,22 +40,22 @@
   "confidence": 92.4
  },
  "OB-2026-0002|-298|16:00|Cytology|Pleural fluid cytology": {
-  "text": "Riverside Demo Hospital, Nashik\nDemo document - fabricated data\nPLEURAL FLUID CYTOLOGY\nName: Rajesh lyer Age/Sex: 61/M\nUHID: 170804 ABHA: 91-7702-3318-4409\nReport date: 08/12/2025 16:00\naoe\nDIAGNOSIS:\nPositive for malignant cells - metastatic adenocarcinoma. Cell block:\nTTF-1 positive, Napsin-A positive.\nElectronically signed: Dr. N. Gokhale, MD (Pathology)\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "text": "Riverside Hospital, Nashik\nDemo document - fabricated data\nPLEURAL FLUID CYTOLOGY\nName: Rajesh lyer Age/Sex: 61/M\nUHID: 170804 ABHA: 91-7702-3318-4409\nReport date: 08/12/2025 16:00\naoe\nDIAGNOSIS:\nPositive for malignant cells - metastatic adenocarcinoma. Cell block:\nTTF-1 positive, Napsin-A positive.\nElectronically signed: Dr. N. Gokhale, MD (Pathology)\nOncoBrief prototype - FABRICATED DEMO DATA",
   "method": "tesseract",
   "confidence": 89.4
  },
  "OB-2026-0002|-278|12:00|Discharge summary|Discharge summary": {
-  "text": "Riverside Demo Hospital, Nashik\nDemo document - fabricated data\nDISCHARGE SUMMARY\nName: Rajesh lyer Age/Sex: 61/M\nUHID: 170804 ABHA: 91-7702-3318-4409\nReport date: 28/12/2025 12:00\na\nSUMMARY:\nAdmitted 22/12/2025 with breathlessness. Therapeutic pleural tap (1.2 L)\nand pleurodesis done. Diagnosis: adenocarcinoma lung, EGFR exon 19\ndeletion, Stage IVA. Started osimertinib 80 mg once daily on 28/12/2025.\nDischarged stable.\nADVICE:\nReview in 4 weeks with CBC, LFT, ECG.\nElectronically signed: Dr. K. Rao, DM (Medical Oncology)\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "text": "Riverside Hospital, Nashik\nDemo document - fabricated data\nDISCHARGE SUMMARY\nName: Rajesh lyer Age/Sex: 61/M\nUHID: 170804 ABHA: 91-7702-3318-4409\nReport date: 28/12/2025 12:00\na\nSUMMARY:\nAdmitted 22/12/2025 with breathlessness. Therapeutic pleural tap (1.2 L)\nand pleurodesis done. Diagnosis: adenocarcinoma lung, EGFR exon 19\ndeletion, Stage IVA. Started osimertinib 80 mg once daily on 28/12/2025.\nDischarged stable.\nADVICE:\nReview in 4 weeks with CBC, LFT, ECG.\nElectronically signed: Dr. K. Rao, DM (Medical Oncology)\nOncoBrief prototype - FABRICATED DEMO DATA",
   "method": "tesseract",
   "confidence": 93.0
  },
  "OB-2026-0002|-100|13:00|CT|CECT thorax and abdomen": {
-  "text": "Riverside Demo Hospital, Nashik\nDemo document - fabricated data\nCECT THORAX AND ABDOMEN\nName: Rajesh lyer Age/Sex: 61/M\nUHID: 170804 ABHA: 91-7702-3318-4409\nReport date: 24/06/2026 13:00\nee\nIMPRESSION:\nStable disease compared with the study of 26/03/2026. No new lesion in\nthorax or abdomen.\nElectronically signed: Dr. S. Kale, MD (Radiology)\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "text": "Riverside Hospital, Nashik\nDemo document - fabricated data\nCECT THORAX AND ABDOMEN\nName: Rajesh lyer Age/Sex: 61/M\nUHID: 170804 ABHA: 91-7702-3318-4409\nReport date: 24/06/2026 13:00\nee\nIMPRESSION:\nStable disease compared with the study of 26/03/2026. No new lesion in\nthorax or abdomen.\nElectronically signed: Dr. S. Kale, MD (Radiology)\nOncoBrief prototype - FABRICATED DEMO DATA",
   "method": "tesseract",
   "confidence": 92.5
  },
  "OB-2026-0002|-60|09:00|LFT|Liver function test": {
-  "text": "Riverside Demo Hospital, Nashik\nDemo document - fabricated data\nLIVER FUNCTION TEST\nName: Rajesh lyer Age/Sex: 61/M\nUHID: 170804 ABHA: 91-7702-3318-4409\nReport date: 03/08/2026 09:00\n — —\nTest Result Unit Reference\nTotal Bilirubin On, mg/dL 0.2 -1.2\nALT (SGPT) 48 U/L 7-40\nAST (SGOT) 41 U/L 8-40\nAlbumin 4 g/dL 3.5-5.0\nElectronically signed: Riverside Demo Hospital Laboratory\nOncoBrief prototype - FABRICATED DEMO DATA",
+  "text": "Riverside Hospital, Nashik\nDemo document - fabricated data\nLIVER FUNCTION TEST\nName: Rajesh lyer Age/Sex: 61/M\nUHID: 170804 ABHA: 91-7702-3318-4409\nReport date: 03/08/2026 09:00\n — —\nTest Result Unit Reference\nTotal Bilirubin On, mg/dL 0.2 -1.2\nALT (SGPT) 48 U/L 7-40\nAST (SGOT) 41 U/L 8-40\nAlbumin 4 g/dL 3.5-5.0\nElectronically signed: Riverside Hospital Laboratory\nOncoBrief prototype - FABRICATED DEMO DATA",
   "method": "tesseract",
   "confidence": 89.7
  },

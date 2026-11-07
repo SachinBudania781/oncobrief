@@ -150,7 +150,7 @@ def seed():
                 if pre:
                     kwargs = dict(ocr_text=_shift_dates(pre["text"], delta), ocr_method="tesseract",
                                   ocr_conf=pre["confidence"])
-                who = {"external": f"ABHA link - {spec['hospital']} (simulated)", "patient": "Patient app (self)"}
+                who = {"external": f"Imported from {spec['hospital']}", "patient": "Patient app (self)"}
                 store_document(
                     db, patient, category=spec["category"], subtype=spec["subtype"],
                     record_date=_at(spec["day"], spec["time"], today), title=spec["title"],

@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
+// Load the full stylesheet stack in cascade order, so the login renders correctly
+// on its own and later layers (polish, aura) still override the earlier ones.
+import "./care.css";
+import "./interface.css";
+import "./finish.css";
 import "./polish.css";
+import "./aura.css";
 import { ArrowLeft, ArrowRight, Check, Eye, EyeOff, HeartPulse, LockKeyhole } from "lucide-react";
 import { useAuth } from "./Auth";
 import { request } from "./client";
@@ -101,7 +107,7 @@ export default function Login() {
           {error && <p className="ob-login-error" role="alert">{error}</p>}
           <button className="ob-cta" disabled={busy || !config}>{busy ? <span className="ob-spinner" aria-label="Signing in" /> : <>{portal === "patient" && mode === "phone" && !challenge ? "Send code" : "Sign in"}<span><ArrowRight size={18} /></span></>}</button>
         </form>
-        <p className="ob-login2-foot"><LockKeyhole size={13} />End-to-end encrypted · Every access is logged</p>
+        <p className="ob-login2-foot"><LockKeyhole size={13} />Encrypted in transit and at rest · Every access is logged</p>
       </div>}
     </section>
   </div>;

@@ -287,7 +287,7 @@ function DeterministicClinicalPanel({ patient }) {
   const mOptions = site === "breast" ? ["MX", "M0", "M0(i+)", "M1"] : site === "lung" ? ["MX", "M0", "M1a", "M1b", "M1c", "M1"] : [];
   const update = (key, value) => setValues((old) => ({ ...old, [key]: value }));
   const field = (key, label, min, max, step = "any") => <label className="field" key={key}>{label}
-    <input className="input" type="number" min={min} max={max} step={step} value={values[key]} onChange={(event) => update(key, event.target.value)} />
+    <input className="input" type="number" min={min} max={max} step={step} value={values[key] ?? ""} onChange={(event) => update(key, event.target.value)} />
   </label>;
   const metricCards = dosing?.metrics ? [
     { name: "BSA", value: `${dosing.metrics.bsa_m2} m²` },
@@ -320,7 +320,7 @@ function DeterministicClinicalPanel({ patient }) {
         {field("serum_creatinine_mg_dl", "Serum creatinine (mg/dL)", 0.1, 50, "0.01")}
         {field("recorded_crcl_ml_min", "Latest reported CrCl (mL/min)", 0, 300, "0.1")}
         <label className="field">Cockcroft–Gault 0.85 factor<select className="select" value={values.is_female ? "yes" : "no"} onChange={(e) => update("is_female", e.target.value === "yes")}><option value="yes">Apply 0.85 factor</option><option value="no">Do not apply 0.85 factor</option></select></label>
-        <label className="field">Proposed regimen for safety screen<input className="input" type="text" maxLength={200} value={values.regimen} onChange={(e) => update("regimen", e.target.value)} placeholder="Enter a clinician-selected regimen" /></label>
+        <label className="field">Proposed regimen for safety screen<input className="input" type="text" maxLength={200} value={values.regimen ?? ""} onChange={(e) => update("regimen", e.target.value)} placeholder="Enter a clinician-selected regimen" /></label>
         {field("anc_per_ul", "ANC (/µL)", 0, 200000, "1")}
         {field("lvef_percent", "LVEF (%)", 0, 100, "0.1")}
         {field("platelets_per_ul", "Platelets (/µL)", 0, 2000000, "1")}

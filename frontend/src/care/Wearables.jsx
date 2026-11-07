@@ -767,8 +767,8 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
                   activeDot={{ r: 5, strokeWidth: 0 }}
                   dot={(point) => {
                     const belowReviewLine = reviewLine != null && Number(point.payload.value) < Number(reviewLine);
-                    if (!belowReviewLine && chartRows.length >= 18) return null;
-                    return <circle cx={point.cx} cy={point.cy} r={belowReviewLine ? 5 : 2.5} fill={belowReviewLine ? "#c84f55" : METRICS[metric].color} stroke="white" strokeWidth={belowReviewLine ? 2 : 0} style={{ cursor: "pointer" }} onClick={() => setSelectedReading(point.payload)} />;
+                    if (!belowReviewLine && chartRows.length >= 18) return <g key={`dot-${point.index}`} />;
+                    return <circle key={`dot-${point.index}`} cx={point.cx} cy={point.cy} r={belowReviewLine ? 5 : 2.5} fill={belowReviewLine ? "#c84f55" : METRICS[metric].color} stroke="white" strokeWidth={belowReviewLine ? 2 : 0} style={{ cursor: "pointer" }} onClick={() => setSelectedReading(point.payload)} />;
                   }}
                 />
               </AreaChart>

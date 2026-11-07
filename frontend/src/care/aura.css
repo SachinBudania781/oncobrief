@@ -1,6 +1,6 @@
 /* OncoBrief "Aura" design layer: soft colour fields, glossy glass, 3D art and depth on scroll. */
 :root {
-  --au-ink: #0b0d12;
+  --au-ink: #161a24;
   --au-ink-2: #3a404c;
   --au-ink-3: #6b7280;
   --au-ink-4: #9aa1ad;
@@ -161,7 +161,7 @@ html body { background: var(--au-bg); }
 .care-app .care-ai-launcher { background: radial-gradient(circle at 30% 25%, #fff 0, #ffb3da 18%, #a66bff 60%, #5b3fe0 100%); box-shadow: 0 16px 34px -10px #a66bffaa, inset 0 -6px 14px rgba(0, 0, 0, .12), inset 0 4px 10px rgba(255, 255, 255, .6); }
 
 /* ---------- Home heroes ---------- */
-.ob-hero { position: relative; overflow: hidden; border-radius: 32px; padding: 28px; min-height: 240px; display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: center; color: #fff; background: radial-gradient(120% 140% at 0% 0%, #2b3245 0%, #10131b 55%, #0b0d12 100%); box-shadow: var(--au-shadow-lg); transform: perspective(1200px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)); transition: transform .3s ease-out; }
+.ob-hero { position: relative; overflow: hidden; border-radius: 32px; padding: 28px; min-height: 240px; display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: center; color: #fff; background: radial-gradient(120% 140% at 0% 0%, #3a4460 0%, #1f2534 55%, #191e2b 100%); box-shadow: var(--au-shadow-lg); transform: perspective(1200px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)); transition: transform .3s ease-out; }
 .ob-hero::before { content: ""; position: absolute; inset: 0; background: radial-gradient(60% 80% at var(--gx, 80%) var(--gy, 20%), rgba(255, 255, 255, .14), transparent 60%); pointer-events: none; }
 .ob-hero::after { content: ""; position: absolute; inset: 0; border-radius: inherit; border: 1px solid rgba(255, 255, 255, .12); pointer-events: none; }
 .ob-hero.tone-light { color: var(--au-ink); background: linear-gradient(135deg, rgba(255, 255, 255, .92), rgba(255, 255, 255, .6)); border: 1px solid var(--au-stroke); backdrop-filter: blur(24px); }
@@ -211,19 +211,19 @@ html body { background: var(--au-bg); }
 .ob-feature-card b { display: block; font-size: 18px; font-weight: 700; letter-spacing: -.03em; margin-top: 6px; }
 .ob-feature-card small { display: block; font-size: 13px; color: var(--au-ink-3); margin-top: 2px; }
 .ob-feature-card > svg:last-child { color: var(--au-ink-4); }
-.ob-feature-card.tone-cycle { color: #fff; background: radial-gradient(120% 140% at 0% 0%, #3a2a7a 0%, #191338 55%, #0f0b22 100%); border-color: rgba(255,255,255,.1); }
+.ob-feature-card.tone-cycle { color: #fff; background: radial-gradient(120% 140% at 0% 0%, #4f3d9a 0%, #2c2260 55%, #241c50 100%); border-color: rgba(255,255,255,.12); }
 .ob-feature-card.tone-cycle small { color: rgba(255,255,255,.65); }
 .ob-feature-card.tone-cycle .ob-cycle-ring { color: #fff; }
 .ob-feature-body { width: 70px; height: 104px; display: grid; place-items: center; }
 .ob-feature-body .ob-body-svg { height: 104px; width: auto; }
 
 /* Care hero tones */
-.ob-care-hero { background: radial-gradient(120% 140% at 0% 0%, #23345e 0%, #111a33 55%, #0b0f1e 100%); }
-.ob-doctor-hero { background: radial-gradient(120% 140% at 0% 0%, #36285f 0%, #16112b 55%, #0d0a1a 100%); }
-.ob-studio-hero { background: radial-gradient(120% 140% at 0% 0%, #3b2a6e 0%, #17122e 55%, #0d0a1a 100%); }
-.ob-cycle-hero { background: radial-gradient(120% 140% at 0% 0%, #2d2a6b 0%, #141233 55%, #0b0a1d 100%); color: #fff; }
-.ob-cycle-hero.phase-nadir { background: radial-gradient(120% 140% at 0% 0%, #6b2a3d 0%, #2a1220 55%, #160a10 100%); }
-.ob-cycle-hero.phase-recovery { background: radial-gradient(120% 140% at 0% 0%, #1f5a4c 0%, #0f2a25 55%, #0a1714 100%); }
+.ob-care-hero { background: radial-gradient(120% 140% at 0% 0%, #34508a 0%, #1e2c52 55%, #182342 100%); }
+.ob-doctor-hero { background: radial-gradient(120% 140% at 0% 0%, #4c3b8a 0%, #2a2150 55%, #211a40 100%); }
+.ob-studio-hero { background: radial-gradient(120% 140% at 0% 0%, #503d92 0%, #2b2254 55%, #221b44 100%); }
+.ob-cycle-hero { background: radial-gradient(120% 140% at 0% 0%, #403c94 0%, #24215a 55%, #1d1a48 100%); color: #fff; }
+.ob-cycle-hero.phase-nadir { background: radial-gradient(120% 140% at 0% 0%, #8a3a52 0%, #4a2034 55%, #3a1a2a 100%); }
+.ob-cycle-hero.phase-recovery { background: radial-gradient(120% 140% at 0% 0%, #2c7a68 0%, #1a4a40 55%, #153d35 100%); }
 .ob-hero h2 + .ob-orb-legend { margin-top: 14px; }
 
 /* ---------- Consult Studio ---------- */
@@ -384,3 +384,4 @@ html body { background: var(--au-bg); }
 .care-app .care-ai-window-fullscreen .care-ai-log > .care-ai-message { align-self: stretch; }
 .care-app .care-ai-window-embedded .care-ai-head { display: none; }
 .care-app .care-ai-window-embedded .care-ai-sharing { padding-top: 10px; padding-bottom: 10px; }
+.care-app .care-top > .care-bell { display: inline-flex !important; align-items: center; justify-content: center; }

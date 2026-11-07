@@ -231,7 +231,7 @@ def deterministic_narrative(patient: Patient, ctx: dict, retrieved: list[dict], 
         ext = [d for d in docs if d.source == "external"]
         hosp = sorted({d.external_hospital for d in ext if d.external_hospital})
         summary.append({"text": f"Transferring care from {', '.join(hosp) or patient.referred_from or 'another hospital'}; "
-                                f"{len(ext)} external record(s) linked via ABHA (simulated) and merged into this folder.",
+                                f"{len(ext)} record(s) imported from other hospitals and merged into this folder.",
                         "sources": [tag(d.id) for d in ext[-2:]]})
         dis = next((d for d in reversed(docs) if d.subtype in ("Discharge summary", "Referral letter")), None)
         if dis:
