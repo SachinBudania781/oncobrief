@@ -97,6 +97,7 @@ class ClinicalDosingIn(BaseModel):
     serum_creatinine_mg_dl: float = Field(gt=0, le=50)
     is_female: bool
     regimen: str = Field(default="", max_length=200)
+    recorded_crcl_ml_min: float | None = Field(default=None, ge=0, le=300)
     anc_per_ul: float | None = Field(default=None, ge=0)
     lvef_percent: float | None = Field(default=None, ge=0, le=100)
     platelets_per_ul: float | None = Field(default=None, ge=0)
@@ -129,14 +130,19 @@ def deterministic_dosing(body: ClinicalDosingIn, actor: Actor = Depends(get_acto
             body.age_years, body.weight_kg, body.height_cm,
             body.serum_creatinine_mg_dl, body.is_female,
         )
+        screening_crcl = (body.recorded_crcl_ml_min
+                          if body.recorded_crcl_ml_min is not None
+                          else metrics.crcl_ml_min)
         alerts = clinical_engine.run_organ_safety_screening(
-            body.regimen, metrics.crcl_ml_min, body.anc_per_ul,
+            body.regimen, screening_crcl, body.anc_per_ul,
             body.lvef_percent, body.platelets_per_ul, body.bilirubin_mg_dl,
         )
     except (TypeError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return {
         "metrics": metrics.model_dump(),
+        "screening_crcl_ml_min": screening_crcl,
+        "screening_crcl_source": "latest reported value" if body.recorded_crcl_ml_min is not None else "calculated Cockcroft–Gault estimate",
         "alerts": [alert.model_dump() for alert in alerts],
         "notice": ("Calculated estimates for clinician review. Confirm the dosing weight, renal metric, "
                    "and current regimen-specific protocol before any treatment decision."),
