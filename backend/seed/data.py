@@ -7,7 +7,7 @@ Formats: "pdf" = digital report with a text layer, "scan" = scanned page (OCR ne
 HOME = "OncoBrief Demo Cancer Centre, Mumbai"
 RIVERSIDE = "Riverside Demo Hospital, Nashik"
 WOMENS = "Demo Women's Clinic, Thane"
-CITYLAB = "CityCare Demo Diagnostics, Thane"
+CITYLAB = "CityCare Diagnostics, Thane"
 ONCOLOGIST = "Dr. R. Menon"
 
 PATIENTS = [
@@ -166,7 +166,7 @@ DOCUMENTS = [
                      "with partially restored fatty hilum."),
         ("IMPRESSION", "Partial response in the left breast mass and axillary node after 4 cycles of AC.")]),
     doc(P1, -6, "19:20", "Patient-reported", "Outside report photo", "Blood sugar report (local lab)", "photo",
-        dept="Patient", source="patient", hospital=CITYLAB, signer="CityCare Demo Diagnostics", sections=[
+        dept="Patient", source="patient", hospital=CITYLAB, signer="CityCare Diagnostics", sections=[
         ("TEST", "Random blood sugar: 168 mg/dL (reference 70-140)."),
         ("REMARK", "Sample collected at home on {d-6}.")]),
 
@@ -229,7 +229,7 @@ DOCUMENTS = [
 
     # ------------------------------------------------------------------ Fatima — cervix, new patient
     doc(P3, -24, "11:00", "Pathology", "Cytology", "Pap smear (liquid based cytology)", source="external",
-        hospital=WOMENS, signer="CityCare Demo Diagnostics - Cytopathology", sections=[
+        hospital=WOMENS, signer="CityCare Diagnostics - Cytopathology", sections=[
         ("INTERPRETATION", "High-grade squamous intraepithelial lesion (HSIL); cannot exclude invasion.")]),
     doc(P3, -21, "16:30", "Clinical note", "Referral letter", "Referral letter from gynaecologist", "scan",
         dept="Front desk / Records", source="external", hospital=WOMENS, signer="Dr. F. Siddiqui, MS (OBGY)",
@@ -239,7 +239,7 @@ DOCUMENTS = [
                                 "evaluate and manage."),
         ("HISTORY", "P2L2, both normal deliveries. No known comorbidities.")]),
     doc(P3, -16, "20:15", "Pathology", "Biopsy histopathology", "Cervical punch biopsy (photo of outside report)",
-        "photo", dept="Patient", source="patient", hospital=CITYLAB, signer="CityCare Demo Diagnostics",
+        "photo", dept="Patient", source="patient", hospital=CITYLAB, signer="CityCare Diagnostics",
         quality="poor", sections=[
         ("FINAL DIAGNOSIS", "Invasive squamous cell carcinoma, keratinizing, moderately differentiated, cervix.")]),
     doc(P3, -12, "10:00", "Imaging", "Ultrasound", "USG abdomen and pelvis", source="external", hospital=CITYLAB,

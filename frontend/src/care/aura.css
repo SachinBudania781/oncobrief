@@ -363,3 +363,24 @@ html body { background: var(--au-bg); }
 }
 .care-app label.ob-consent { background: transparent !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; min-height: 0; color: rgba(255,255,255,.82); font-weight: 500; }
 .care-app label.ob-consent input { appearance: auto; -webkit-appearance: checkbox; width: 18px; height: 18px; min-height: 0; padding: 0; box-shadow: none; flex: 0 0 auto; }
+/* Sidebar "More" group */
+.care-app .ob-nav-more { display: flex; align-items: center; justify-content: space-between; width: calc(100% - 20px); border: 0; background: none; cursor: pointer; padding: 6px 0; font: 600 11px var(--ob-font); color: var(--au-ink-4); }
+.care-app .ob-nav-more svg { transition: transform .2s; }
+.care-app .ob-nav-more[aria-expanded="true"] svg { transform: rotate(180deg); }
+.care-app .care-nav-group.is-collapsed > button:not(.ob-nav-more) { display: none; }
+/* Assistant welcome */
+.care-app .care-ai-window-fullscreen .care-ai-welcome { display: grid; justify-items: center; text-align: center; gap: 8px; }
+.ob-ai-orb { margin-bottom: 8px; }
+.care-app .care-ai-window-fullscreen .care-ai-welcome h3 { font-size: clamp(28px, 4vw, 40px); line-height: 1.05; font-weight: 700; letter-spacing: -.045em; text-transform: uppercase; }
+.care-app .care-ai-window-fullscreen .care-ai-welcome h3 span { background: linear-gradient(90deg, #8f6bff, #ff7ab8); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.care-app .care-ai-window-fullscreen .care-ai-prompts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; width: min(680px, 100%); margin-top: 10px; }
+.care-app .care-ai-window-fullscreen .care-ai-prompts button { border-radius: 18px; padding: 14px 16px; text-align: left; background: rgba(255,255,255,.85); box-shadow: var(--au-shadow); }
+.care-app .care-ai-window-fullscreen .care-ai-log { background: transparent; }
+.care-app .care-ai-window-embedded { background: var(--au-glass); backdrop-filter: blur(24px); border-radius: 28px; border-color: var(--au-stroke); }
+.care-app .care-ai-window-fullscreen .care-ai-head, .care-app .care-ai-window-fullscreen .care-ai-compose, .care-app .care-ai-window-fullscreen .care-ai-tabs, .care-app .care-ai-window-fullscreen .care-ai-sharing { background: transparent; }
+@media (max-width: 760px) { .care-app .care-ai-window-fullscreen .care-ai-prompts { grid-template-columns: 1fr; } }
+.care-app .care-ai-window-fullscreen .care-ai-log { display: flex; flex-direction: column; justify-content: safe center; }
+.care-app .care-ai-window-fullscreen .care-ai-log > .care-ai-welcome { margin: auto 0; padding: 16px 0; }
+.care-app .care-ai-window-fullscreen .care-ai-log > .care-ai-message { align-self: stretch; }
+.care-app .care-ai-window-embedded .care-ai-head { display: none; }
+.care-app .care-ai-window-embedded .care-ai-sharing { padding-top: 10px; padding-bottom: 10px; }

@@ -35,6 +35,7 @@ import {
   Orbit,
   PersonStanding,
   ArrowLeft,
+  ChevronDown,
 } from "lucide-react";
 import Modal from "./Modal";
 import { useAuth } from "./Auth";
@@ -149,6 +150,7 @@ function CareSpace() {
   const [phoneCheckin, setPhoneCheckin] = useState(false);
   const [textSize, setTextSize] = useTextSize();
   const [privacyOn, setPrivacyOn] = usePrivacyScreen();
+  const [moreOpen, setMoreOpen] = useState(false);
   useLiveNotifications(notes.data);
   const portal = ["patient", "caregiver"].includes(user.role) ? "patient" : user.role === "doctor" ? "doctor" : "staff";
   useEffect(() => setFocusedRecordId(null), [pid]);
@@ -266,11 +268,19 @@ function CareSpace() {
     window.addEventListener("keydown", openFinder);
     return () => window.removeEventListener("keydown", openFinder);
   }, []);
-  const navGroups = [
-    ["Workspace", ["home", "scribe", "clinic", "cycle", "bodymap", "checkin", "triage", "approvals", "records", "clinical", "medicines", "companion"]],
-    ["Care", ["day", "schedule", "queue", "staffActivity", "journal", "chat", "transport", "wellness", "wearables", "money", "circle", "share"]],
-    ["Account", ["privacy", "settings"]],
-  ].map(([label, keys]) => [label, keys.map(key => nav.find(n => n[0] === key)).filter(Boolean)]).filter(([, items]) => items.length);
+  const navGroups = (portal === "patient" ? [
+    ["Today", ["home", "cycle", "bodymap", "medicines", "day"]],
+    ["Care", ["records", "companion", "chat", "journal", "checkin"]],
+    ["More", ["clinical", "share", "circle", "wellness", "wearables", "transport", "money", "privacy", "settings"]],
+  ] : portal === "doctor" ? [
+    ["Clinic", ["home", "scribe", "clinic", "approvals", "triage"]],
+    ["Patient", ["records", "cycle", "bodymap", "checkin", "clinical", "medicines", "companion"]],
+    ["More", ["schedule", "journal", "chat", "privacy", "settings"]],
+  ] : [
+    ["Workspace", ["home", "triage", "day", "schedule", "queue", "records", "staffActivity"]],
+    ["Patient", ["bodymap", "checkin", "cycle", "journal", "chat", "transport", "clinical", "medicines"]],
+    ["More", ["wellness", "wearables", "money", "circle", "share", "privacy", "settings"]],
+  ]).map(([label, keys]) => [label, keys.map(key => nav.find(n => n[0] === key)).filter(Boolean)]).filter(([, items]) => items.length);
   const dockKeys = portal === "patient" ? ["home", "medicines", "bodymap", "companion"] : portal === "doctor" ? ["home", "scribe", "clinic", "records"] : ["home", "day", "schedule", "staffActivity", "records", "triage", "journal", "privacy"];
   const dockLabel = { bodymap: "Symptoms", scribe: "Studio", cycle: "Cycle", home: "Home", checkin: "Check-in", records: "Reports", chat: "Messages", clinical: "Journey", clinic: "Clinic", staffActivity: "Activity", approvals: "Approvals", schedule: "Schedule", day: "Visits", privacy: "Privacy", journal: "Plan", triage: "Triage", medicines: "Medicines", companion: "Ask" };
   const dock = dockKeys.map(k => nav.find(n => n[0] === k)).filter(Boolean).slice(0, 4);
@@ -297,7 +307,7 @@ function CareSpace() {
           <span className="ob-edition">{portal === "patient" ? "Care" : portal === "doctor" ? "Clinician" : "Hospital"}</span>
         </Link>
         <nav aria-label="Workspace navigation">
-          {navGroups.map(([group, items]) => <div className="care-nav-group" key={group}><p className="care-nav-label">{group}</p>{items.map(([key, label, Icon]) => (
+          {navGroups.map(([group, items]) => <div className={`care-nav-group ${group === "More" && !moreOpen && !items.some((n) => n[0] === tab) ? "is-collapsed" : ""}`} key={group}>{group === "More" ? <button className="care-nav-label ob-nav-more" aria-expanded={moreOpen} onClick={() => setMoreOpen((v) => !v)}>{group}<ChevronDown size={14} /></button> : <p className="care-nav-label">{group}</p>}{items.map(([key, label, Icon]) => (
             <button
               key={key}
               className={tab === key ? "active" : ""}
