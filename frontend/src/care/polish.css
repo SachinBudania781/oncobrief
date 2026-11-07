@@ -495,3 +495,10 @@ html body { background: var(--ob-bg); font-family: var(--ob-font); color: var(--
 .care-app .care-pass { background: var(--ob-surface-2); border: 1px solid var(--ob-line); border-style: solid; border-radius: var(--ob-radius); }
 .care-app .care-stops article { border-color: var(--ob-line); }
 .care-app .care-step { background: var(--accent-soft); color: var(--accent-dark); font-weight: 650; }
+.care-app .care-ai-form textarea, .care-app .care-ai-form textarea:focus { outline: 0 !important; box-shadow: none !important; border: 0 !important; background: transparent; }
+.care-app .care-ai-form:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-ring); }
+@media (max-width: 760px) {
+  .care-app .care-top { gap: 4px; }
+  .care-app .care-top .care-language { max-width: 78px; font-size: 12.5px; padding-right: 22px; }
+  .care-app .care-mobile-logo b { font-size: 16px; }
+}

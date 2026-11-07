@@ -216,12 +216,12 @@ function DeterministicClinicalPanel({ patient }) {
   ] : [];
 
   return <section className="care-clinical-tools">
-    <Panel title="Deterministic staging" hint="AJCC 8 anatomical stage grouping from clinician-selected source TNM. It does not infer TNM from the report.">
+    <Panel title="TNM stage calculator" hint="AJCC 8 anatomical stage grouping from clinician-selected source TNM. It does not infer TNM from the report.">
       <div className="grid2">
         <label className="field">Primary site<select className="select" value={site} onChange={(e) => { setSite(e.target.value); setTnm({ t: "TX", n: "NX", m: "MX" }); }}><option value="breast">Breast</option><option value="lung">NSCLC / lung</option></select></label>
         {[['t','T'],['n','N'],['m','M']].map(([key,label]) => <label className="field" key={key}>{label} category<select className="select" value={tnm[key]} onChange={(e) => setTnm((old) => ({ ...old, [key]: e.target.value }))}>{(key === 't' ? tOptions : key === 'n' ? nOptions : mOptions).map((option) => <option key={option}>{option}</option>)}</select></label>)}
       </div>
-      <div className="care-success" style={{ marginTop: 14, padding: 16, background: "#e8f5ed", color: "#17633e" }} aria-live="polite"><b>Deterministic Staging</b><div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{stage?.stage || "Calculating…"}</div></div>
+      <div className="care-success" style={{ marginTop: 14, padding: 16, background: "#e8f5ed", color: "#17633e" }} aria-live="polite"><b>AJCC 8 stage group</b><div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{stage?.stage || "Calculating…"}</div></div>
       {stageError && <p className="care-error" role="alert">Staging calculation unavailable: {stageError}</p>}
       {stage?.basis && <p className="small muted">{stage.basis}</p>}
     </Panel>
