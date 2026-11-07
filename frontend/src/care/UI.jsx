@@ -71,6 +71,85 @@ export function Action({ children, run, onDone, className = "btn", disabled = fa
   );
 }
 
+export function PackActions({ pid, label = "Download tumour board pack" }) {
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  const openPack = async (preview) => {
+    // Open synchronously from the click so popup blockers retain the preview tab.
+    const previewWindow = preview ? window.open("about:blank", "_blank") : null;
+    if (previewWindow) previewWindow.opener = null;
+    setBusy(preview ? "preview" : "download");
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch(`/api/v2/patients/${encodeURIComponent(pid)}/pack.pdf`, {
+        credentials: "same-origin",
+        headers: { Accept: "application/pdf" },
+      });
+      if (!response.ok) {
+        if (response.status === 401) window.dispatchEvent(new Event("ob-session-expired"));
+        let detail = response.statusText || `HTTP ${response.status}`;
+        try {
+          const payload = await response.json();
+          detail = payload.detail || detail;
+        } catch {
+          // Keep the readable status if the API returned a non-JSON error page.
+        }
+        throw new Error(`Could not build the case pack (${response.status}): ${detail}`);
+      }
+      const blob = await response.blob();
+      if (response.headers.get("content-type")?.includes("application/pdf") !== true ||
+          (await blob.slice(0, 4).text()) !== "%PDF") {
+        throw new Error("The server response was not a valid PDF. Please retry or contact support.");
+      }
+
+      const url = URL.createObjectURL(blob);
+      if (preview) {
+        if (previewWindow && !previewWindow.closed) {
+          previewWindow.location.replace(url);
+          setMessage("Case pack opened in a new tab.");
+        } else {
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.target = "_blank";
+          anchor.rel = "noopener noreferrer";
+          anchor.click();
+          setMessage("Case pack opened in a new tab. If it did not appear, allow pop-ups for this site.");
+        }
+      } else {
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${pid}-case-pack.pdf`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setMessage("PDF download started. Check your browser’s Downloads if it is not visible on screen.");
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      if (previewWindow && !previewWindow.closed) previewWindow.close();
+      setError(e.message || "The case pack could not be opened.");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return (
+    <div className="care-pack-actions">
+      <button className="btn" type="button" disabled={Boolean(busy)} onClick={() => openPack(false)}>
+        {busy === "download" ? "Preparing PDF…" : label}
+      </button>
+      <button className="btn" type="button" disabled={Boolean(busy)} onClick={() => openPack(true)}>
+        {busy === "preview" ? "Opening preview…" : "Preview case pack"}
+      </button>
+      <Error message={error} />
+      {message && <p className="care-success" role="status">{message}</p>}
+    </div>
+  );
+}
+
 export function Voice({ language = "en", onText, text }) {
   const [listening, setListening] = useState(false),
     [error, setError] = useState("");

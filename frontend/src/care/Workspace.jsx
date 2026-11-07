@@ -53,6 +53,7 @@ import { CheckIn, DoctorMedicineSummary, DoseReminder, Medicines, Wellness } fro
 import {
   AlertConsole,
   ApprovalQueue,
+  CareJourneyBoundary,
   ClinicalChart,
   PatientCheckInHistory,
 } from "./ClinicalTools";
@@ -536,7 +537,16 @@ function CareSpace() {
                   />
               )}
               {tab === "clinical" && (
-                <ClinicalChart pid={pid} user={user} onOpen={setDocId} />
+                <div className="stack">
+                  <CareJourneyBoundary key={`clinical-${pid}`}>
+                    <ClinicalChart pid={pid} user={user} onOpen={setDocId} />
+                  </CareJourneyBoundary>
+                  {["doctor", "nurse"].includes(user.role) && can("activity") && (
+                    <CareJourneyBoundary key={`wearables-${pid}`}>
+                      <Wearables pid={pid} demo={Boolean(user.demo)} viewerRole={user.role} initialDays={365} embedded fullReview />
+                    </CareJourneyBoundary>
+                  )}
+                </div>
               )}
               {tab === "clinic" && (
                 <ClinicDesk
@@ -545,6 +555,8 @@ function CareSpace() {
                   onSelect={setPid}
                   onOpen={setDocId}
                   onRecords={() => change("records")}
+                  demo={Boolean(user.demo)}
+                  canReviewActivity={can("activity")}
                 />
               )}
               {tab === "journal" && (
@@ -564,6 +576,7 @@ function CareSpace() {
                   language={language}
                   canTeachBack={can("notes")}
                   viewerRole={user.role}
+                  canReviewActivity={can("activity")}
                 />
               )}
               {(tab === "transport" || transportOpened) && <Transport pid={pid} user={user} active={tab === "transport"} />}

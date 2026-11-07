@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   CheckCircle2,
@@ -11,6 +11,7 @@ import {
   UserRound,
 } from "lucide-react";
 import Brief from "../apps/doctor/Brief";
+import { PatientCheckInHistory } from "./ClinicalTools";
 import { Empty, Error, Load, Panel } from "./UI";
 import { hospitalDateTime, request, useResource } from "./client";
 import MemoryUpLink from "./MemoryUpLink";
@@ -21,7 +22,42 @@ const VISITS = [
   ["transfer", "Hospital transfer", "History from another hospital"],
 ];
 
-export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords }) {
+function chartSite(value = "") {
+  if (/breast/i.test(value)) return "breast";
+  if (/lung|nsclc|non[- ]small[- ]cell/i.test(value)) return "lung";
+  return "";
+}
+
+function chartTnm(value = "") {
+  const match = String(value).match(/(?:c|p)?T(is|[0-4](?:mi|[a-d])?|x)\s*(?:c|p)?N([0-3](?:mi|[a-c])?|x)\s*(?:c|p)?M([0-1](?:\([i+]+\)|[a-c])?|x)/i);
+  if (!match) return null;
+  return { t: `T${match[1].toLowerCase()}`, n: `N${match[2].toLowerCase()}`, m: `M${match[3].toLowerCase()}` };
+}
+
+function latestLab(labs, pattern) {
+  return Object.entries(labs || {})
+    .filter(([name]) => pattern.test(name))
+    .flatMap(([, rows]) => rows || [])
+    .filter((row) => Number.isFinite(Number(row.value)))
+    .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")))
+    .at(-1) || null;
+}
+
+function labForInput(row, kind) {
+  if (!row) return "";
+  const value = Number(row.value);
+  const unit = String(row.unit || "").toLowerCase().replaceAll("µ", "u").replaceAll("μ", "u");
+  if (["anc", "platelets"].includes(kind) && /(10\s*\^?\s*3|10\s*\*\s*3|thousand|k\/u?l)/i.test(unit)) return Math.round(value * 1000);
+  if (kind === "creatinine" && /(umol|µmol|μmol)/i.test(String(row.unit || ""))) return Number((value / 88.4).toFixed(2));
+  return value;
+}
+
+function labSource(label, row) {
+  return row ? `${label} ${row.value} ${row.unit || ""} · ${String(row.date || "").slice(0, 10)}`.trim() : null;
+}
+
+export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords, demo = false, canReviewActivity = true }) {
+  const briefResult = useRef(null);
   const calendar = useResource("/taxonomy");
   const day = calendar.data?.hospital_today || "";
   const queue = useResource(
@@ -31,6 +67,7 @@ export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords }) 
   const [query, setQuery] = useState("");
   const [visit, setVisit] = useState("follow_up");
   const [brief, setBrief] = useState(null);
+  useEffect(() => { if (brief && briefResult.current) briefResult.current.scrollIntoView({ behavior: "smooth", block: "start" }); }, [brief]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const activePatient = patients.find((p) => p.id === pid);
@@ -136,36 +173,79 @@ export function ClinicDesk({ patients = [], pid, onSelect, onOpen, onRecords }) 
         </div>
       </div>
 
+      {brief && <div ref={briefResult} tabIndex={-1} className="care-generated-result" role="region" aria-label="Generated visit brief"><p className="care-success" role="status">Visit brief ready. Review the structured tumor board brief and guideline sources below.</p><Panel title="Visit brief" hint="Each item includes a source link where the record supports it." action={<span className="care-inline-meta"><CheckCircle2 size={15} /> Ready for review</span>}><Brief data={brief} onOpen={onOpen} /></Panel></div>}
+
+      {activePatient && <section className="stack" aria-label="Patient check-ins and trends">
+        <h2 className="care-section-title">Patient check-ins, graphs & report trends</h2>
+        <PatientCheckInHistory pid={pid} canReviewActivity={canReviewActivity} onOpen={onOpen} demo={demo} />
+      </section>}
+
       <MemoryUpLink pid={pid} appointmentId={selectedAppointment?.id} />
 
-      {activePatient && <DeterministicClinicalPanel patient={activePatient} />}
-
-      {brief && <Panel title="Visit brief" hint="Each item includes a source link where the record supports it." action={<span className="care-inline-meta"><CheckCircle2 size={15} /> Ready for review</span>}><Brief data={brief} onOpen={onOpen} /></Panel>}
+      {activePatient && <DeterministicClinicalPanel key={activePatient.id} patient={activePatient} />}
     </div>
   );
 }
 
 function DeterministicClinicalPanel({ patient }) {
-  const [site, setSite] = useState(/lung|nsclc/i.test(patient.cancer_type || "") ? "lung" : "breast");
-  const [tnm, setTnm] = useState({ t: "TX", n: "NX", m: "MX" });
+  const profileRecords = useResource(`/v2/patients/${encodeURIComponent(patient.id)}/records?kind=clinical_profile`);
+  const labResource = useResource(`/patients/${encodeURIComponent(patient.id)}/labs`);
+  const clinicalProfile = profileRecords.data?.find((row) => row.status === "approved" || row.status === "recorded")?.data || {};
+  const [site, setSite] = useState(chartSite(patient.cancer_type));
+  const [tnm, setTnm] = useState(chartTnm(patient.stage) || { t: "TX", n: "NX", m: "MX" });
   const [stage, setStage] = useState(null);
   const [stageError, setStageError] = useState("");
   const [values, setValues] = useState({
     age_years: patient.age ?? "", weight_kg: "", height_cm: "", serum_creatinine_mg_dl: "",
-    is_female: /^(f|female)/i.test(patient.sex || ""), regimen: "",
+    is_female: /^(f|female)/i.test(patient.sex || ""), regimen: patient.current_regimen || "", recorded_crcl_ml_min: "",
     anc_per_ul: "", lvef_percent: "", platelets_per_ul: "", bilirubin_mg_dl: "",
   });
   const [dosing, setDosing] = useState(null);
   const [dosingError, setDosingError] = useState("");
   const [dosingBusy, setDosingBusy] = useState(false);
+  const labData = labResource.data || {};
+  const latestAnc = latestLab(labData, /^(anc|absolute neutrophil count)$/i);
+  const latestCreatinine = latestLab(labData, /(?:serum )?creatinine(?!.*clearance)/i);
+  const latestCrCl = latestLab(labData, /^(crcl|creatinine clearance)$/i);
+  const latestLvef = latestLab(labData, /(lvef|ejection fraction)/i);
+  const latestPlatelets = latestLab(labData, /^platelets?$/i);
+  const latestBilirubin = latestLab(labData, /^bilirubin( total)?$/i);
+  const explicitIntent = `${clinicalProfile.treatment_intent || ""} ${clinicalProfile.intent || ""} ${patient.current_regimen || ""}`;
+  const recordedIntent = clinicalProfile.treatment_intent || clinicalProfile.intent ||
+    (/neoadjuvant/i.test(explicitIntent) ? "Neoadjuvant" : /adjuvant/i.test(explicitIntent) ? "Adjuvant" : /palliative|metastatic/i.test(explicitIntent) ? "Palliative / metastatic" : /curative/i.test(explicitIntent) ? "Curative" : "Not recorded");
+  const recordedNotes = clinicalProfile.clinical_notes || clinicalProfile.notes || "Not recorded";
   useEffect(() => {
-    setSite(/lung|nsclc/i.test(patient.cancer_type || "") ? "lung" : "breast");
-    setTnm({ t: "TX", n: "NX", m: "MX" });
+    setSite(chartSite(patient.cancer_type));
+    setTnm(chartTnm(patient.stage) || { t: "TX", n: "NX", m: "MX" });
     setStage(null);
-    setValues((old) => ({ ...old, age_years: patient.age ?? "", is_female: /^(f|female)/i.test(patient.sex || "") }));
+    setValues({
+      age_years: patient.age ?? "", weight_kg: "", height_cm: "", serum_creatinine_mg_dl: "",
+      is_female: /^(f|female)/i.test(patient.sex || ""), regimen: patient.current_regimen || "", recorded_crcl_ml_min: "",
+      anc_per_ul: "", lvef_percent: "", platelets_per_ul: "", bilirubin_mg_dl: "",
+    });
     setDosing(null);
   }, [patient.id]);
   useEffect(() => {
+    if (!profileRecords.data && !labResource.data) return;
+    const profileValues = {
+      weight_kg: clinicalProfile.weight_kg ?? "",
+      height_cm: clinicalProfile.height_cm ?? "",
+      serum_creatinine_mg_dl: clinicalProfile.serum_creatinine_mg_dl ?? labForInput(latestCreatinine, "creatinine"),
+      recorded_crcl_ml_min: labForInput(latestCrCl, "crcl"),
+      anc_per_ul: clinicalProfile.anc_per_ul ?? labForInput(latestAnc, "anc"),
+      lvef_percent: clinicalProfile.lvef_percent ?? labForInput(latestLvef, "lvef"),
+      platelets_per_ul: clinicalProfile.platelets_per_ul ?? labForInput(latestPlatelets, "platelets"),
+      bilirubin_mg_dl: clinicalProfile.bilirubin_mg_dl ?? labForInput(latestBilirubin, "bilirubin"),
+      regimen: patient.current_regimen || "",
+    };
+    setValues((old) => Object.fromEntries(Object.entries(profileValues).map(([key, value]) => [key, old[key] === "" ? value : old[key]])));
+  }, [patient.id, patient.current_regimen, profileRecords.data, labResource.data]);
+  useEffect(() => {
+    if (!site) {
+      setStage(null);
+      setStageError("");
+      return undefined;
+    }
     let live = true;
     const timer = setTimeout(() => request("/clinical/stage", "POST", { site, ...tnm })
       .then((result) => { if (live) { setStage(result); setStageError(""); } })
@@ -188,6 +268,7 @@ function DeterministicClinicalPanel({ patient }) {
         age_years: Number(values.age_years), weight_kg: Number(values.weight_kg),
         height_cm: Number(values.height_cm), serum_creatinine_mg_dl: Number(values.serum_creatinine_mg_dl),
         is_female: values.is_female, regimen: values.regimen,
+        recorded_crcl_ml_min: numberOrNull(values.recorded_crcl_ml_min),
         anc_per_ul: numberOrNull(values.anc_per_ul), lvef_percent: numberOrNull(values.lvef_percent),
         platelets_per_ul: numberOrNull(values.platelets_per_ul), bilirubin_mg_dl: numberOrNull(values.bilirubin_mg_dl),
       }).then((result) => { if (live) { setDosing(result); setDosingError(""); } })
@@ -199,40 +280,47 @@ function DeterministicClinicalPanel({ patient }) {
 
   const tOptions = site === "breast"
     ? ["TX", "T0", "Tis", "T1", "T1mi", "T1a", "T1b", "T1c", "T2", "T3", "T4", "T4a", "T4b", "T4c", "T4d"]
-    : ["TX", "Tis", "T1mi", "T1a", "T1b", "T1c", "T2a", "T2b", "T2", "T3", "T4"];
+    : site === "lung" ? ["TX", "Tis", "T1mi", "T1a", "T1b", "T1c", "T2a", "T2b", "T2", "T3", "T4"] : [];
   const nOptions = site === "breast"
     ? ["NX", "N0", "N1mi", "N1", "N1a", "N1b", "N1c", "N2", "N2a", "N2b", "N3", "N3a", "N3b", "N3c"]
-    : ["NX", "N0", "N1", "N2", "N3"];
-  const mOptions = site === "breast" ? ["MX", "M0", "M0(i+)", "M1"] : ["MX", "M0", "M1a", "M1b", "M1c", "M1"];
+    : site === "lung" ? ["NX", "N0", "N1", "N2", "N3"] : [];
+  const mOptions = site === "breast" ? ["MX", "M0", "M0(i+)", "M1"] : site === "lung" ? ["MX", "M0", "M1a", "M1b", "M1c", "M1"] : [];
   const update = (key, value) => setValues((old) => ({ ...old, [key]: value }));
   const field = (key, label, min, max, step = "any") => <label className="field" key={key}>{label}
     <input className="input" type="number" min={min} max={max} step={step} value={values[key]} onChange={(event) => update(key, event.target.value)} />
   </label>;
   const metricCards = dosing?.metrics ? [
     { name: "BSA", value: `${dosing.metrics.bsa_m2} m²` },
-    { name: "CrCl", value: `${dosing.metrics.crcl_ml_min} mL/min` },
+    { name: "Calculated CrCl", value: `${dosing.metrics.crcl_ml_min} mL/min` },
     { name: "Carboplatin AUC 5", value: `${dosing.metrics.carboplatin_auc5_mg} mg` },
     { name: "Carboplatin AUC 6", value: `${dosing.metrics.carboplatin_auc6_mg} mg` },
   ] : [];
 
   return <section className="care-clinical-tools">
-    <Panel title="TNM stage calculator" hint="AJCC 8 anatomical stage grouping from clinician-selected source TNM. It does not infer TNM from the report.">
+    <Panel title="TNM stage calculator" hint="AJCC 8 anatomical stage grouping. Site and recorded TNM are prefilled from the patient chart when available; verify against the source report.">
       <div className="grid2">
-        <label className="field">Primary site<select className="select" value={site} onChange={(e) => { setSite(e.target.value); setTnm({ t: "TX", n: "NX", m: "MX" }); }}><option value="breast">Breast</option><option value="lung">NSCLC / lung</option></select></label>
+        <label className="field">Primary site<select className="select" value={site} onChange={(e) => { setSite(e.target.value); setTnm(chartTnm(patient.stage) || { t: "TX", n: "NX", m: "MX" }); }}><option value="">Select a recorded site</option><option value="breast">Breast</option><option value="lung">NSCLC / lung</option></select></label>
         {[['t','T'],['n','N'],['m','M']].map(([key,label]) => <label className="field" key={key}>{label} category<select className="select" value={tnm[key]} onChange={(e) => setTnm((old) => ({ ...old, [key]: e.target.value }))}>{(key === 't' ? tOptions : key === 'n' ? nOptions : mOptions).map((option) => <option key={option}>{option}</option>)}</select></label>)}
       </div>
+      <p className="small muted">Chart context · Biomarkers: {clinicalProfile.biomarkers || "not recorded"} · Treatment intent: {recordedIntent} · Current regimen: {patient.current_regimen || "not recorded"} · Notes: {recordedNotes}</p>
       <div className="care-success" style={{ marginTop: 14, padding: 16, background: "#e8f5ed", color: "#17633e" }} aria-live="polite"><b>AJCC 8 stage group</b><div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{stage?.stage || "Calculating…"}</div></div>
       {stageError && <p className="care-error" role="alert">Staging calculation unavailable: {stageError}</p>}
-      {stage?.basis && <p className="small muted">{stage.basis}</p>}
+      {stage?.basis && <p className="small muted">{patient.stage ? `Recorded chart stage: ${patient.stage}. ` : "No recorded stage is available. "}{stage.basis}</p>}
     </Panel>
     <Panel title="Dosing metrics & organ-safety screen" hint="Enter verified measurements. Estimates are calculated by fixed formulas; confirm the regimen-specific protocol before treatment.">
+      <p className="small muted" role="status">Prefilled from the chart where values are recorded. Confirm each value and its report date before using the calculation. Missing measurements are left blank.</p>
+      <div className="small muted">{[
+        labSource("ANC", latestAnc), labSource("Creatinine", latestCreatinine), labSource("CrCl", latestCrCl), labSource("LVEF", latestLvef),
+        labSource("Platelets", latestPlatelets), labSource("Bilirubin", latestBilirubin),
+      ].filter(Boolean).join(" · ") || "No matching lab values found in the chart."}</div>
       <div className="grid2">
         {field("age_years", "Age (years)", 18, 120, "1")}
         {field("weight_kg", "Dosing weight (kg)", 1, 400, "0.1")}
         {field("height_cm", "Height (cm)", 1, 250, "0.1")}
         {field("serum_creatinine_mg_dl", "Serum creatinine (mg/dL)", 0.1, 50, "0.01")}
+        {field("recorded_crcl_ml_min", "Latest reported CrCl (mL/min)", 0, 300, "0.1")}
         <label className="field">Cockcroft–Gault 0.85 factor<select className="select" value={values.is_female ? "yes" : "no"} onChange={(e) => update("is_female", e.target.value === "yes")}><option value="yes">Apply 0.85 factor</option><option value="no">Do not apply 0.85 factor</option></select></label>
-        <label className="field">Selected regimen<select className="select" value={values.regimen} onChange={(e) => update("regimen", e.target.value)}><option value="">Select regimen</option><option value="cisplatin">Cisplatin</option><option value="AC">AC (doxorubicin + cyclophosphamide)</option><option value="epirubicin">Epirubicin</option><option value="paclitaxel">Paclitaxel</option><option value="docetaxel">Docetaxel</option><option value="other">Other / not listed</option></select></label>
+        <label className="field">Proposed regimen for safety screen<input className="input" type="text" maxLength={200} value={values.regimen} onChange={(e) => update("regimen", e.target.value)} placeholder="Enter a clinician-selected regimen" /></label>
         {field("anc_per_ul", "ANC (/µL)", 0, 200000, "1")}
         {field("lvef_percent", "LVEF (%)", 0, 100, "0.1")}
         {field("platelets_per_ul", "Platelets (/µL)", 0, 2000000, "1")}
@@ -242,10 +330,11 @@ function DeterministicClinicalPanel({ patient }) {
       {dosing?.metrics && <div className="grid2" style={{ marginTop: 14 }}>
         {metricCards.map(({ name, value }) => <div className="care-notice info" key={name}><small>{name}</small><div style={{ fontSize: 20, fontWeight: 700 }}>{value}</div></div>)}
       </div>}
+      {dosing && <p className="small muted">Safety screen used CrCl {dosing.screening_crcl_ml_min} mL/min ({dosing.screening_crcl_source}).</p>}
       {dosing?.metrics?.gfr_capped && <p className="care-notice warning">Carboplatin calculation capped the GFR input at 125 mL/min.</p>}
       {dosing?.alerts?.map((alert, index) => <div className={alert.severity === "CRITICAL" ? "care-emergency" : "care-notice warning"} role={alert.severity === "CRITICAL" ? "alert" : "status"} key={`${alert.parameter}-${index}`}><b>{alert.severity}: {alert.parameter}</b><p>{alert.observation}</p><p>{alert.guideline_action}</p></div>)}
       {dosingError && <p className="care-error" role="alert">Calculation unavailable: {dosingError}</p>}
-      <p className="small muted">CrCl is used as the Calvert GFR input. Verify renal measure, weight selection, alerts, and dose with the current local protocol. This tool does not prescribe or place orders.</p>
+      <p className="small muted">A reported CrCl, when available, is used for the safety screen; calculated Cockcroft–Gault CrCl remains separately displayed. Verify renal measure, weight selection, alerts, and dose with the current local protocol. This tool does not prescribe or place orders.</p>
     </Panel>
   </section>;
 }
@@ -277,5 +366,6 @@ export function StaffActivity({ user, onOpen }) {
     </div>
   );
 }
+
 
 

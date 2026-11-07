@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowDownToLine, ArrowRight, CalendarPlus, Check, ChevronRight, ClipboardList, Clock3, FileStack, HeartHandshake, HeartPulse, History, LayoutDashboard, MapPin, MessageCircle, Pill, ShieldCheck, Sparkles, Stethoscope, Upload, Users, Video, BellRing, Smile, Meh, Frown, Laugh, Angry } from "lucide-react";
 import { request, useResource, nice } from "./client";
-import { Action, Empty, Load, Panel, SourceLinks, Voice } from "./UI";
+import { Action, Empty, Load, PackActions, Panel, SourceLinks, Voice } from "./UI";
 import { SmartInbox } from "./ClinicalTools";
 import Brief from "../apps/doctor/Brief";
 import { Skeleton } from "./Extras";
@@ -201,7 +201,7 @@ function TeamHome({ pid, patient, user, onTab, onSelect, onOpen, visibleTabs = [
           <p className="ob-brief-meta">{patient.cancer_type}{patient.stage ? ` · ${patient.stage}` : ""}</p>
           <div className="row wrap">
             <Action className="btn primary" run={() => request("/brief", "POST", { patient_id: pid, visit_type: "follow_up" })} onDone={(b) => { setBrief(b); toast("Brief ready"); }}><Sparkles size={16} />Build pre-visit brief</Action>
-            <a className="btn" href={`/api/v2/patients/${pid}/pack.pdf`} target="_blank" rel="noreferrer"><ArrowDownToLine size={16} />Tumour board pack</a>
+            <PackActions pid={pid} label="Tumour board pack" />
           </div>
           <details className="care-inline-help"><summary>Use voice</summary><p className="small muted">Say “build brief”, or ask a question about this patient.</p><Voice onText={voiceCommand} /></details>
           {commandAnswer && <div className="care-notice"><p>{commandAnswer.answer}</p><SourceLinks sources={commandAnswer.sources} onOpen={onOpen} /></div>}
