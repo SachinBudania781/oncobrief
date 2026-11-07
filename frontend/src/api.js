@@ -37,6 +37,7 @@ export const api = {
   schedule: (day) => req(`/api/schedule${day ? `?day=${day}` : ''}`),
   brief: (patient_id, visit_type) => req('/api/brief', json('POST', { patient_id, visit_type })),
   clinicalDecisionBrief: (body) => req('/api/clinical/decision-brief', json('POST', body)),
+  clinicalCaseEvaluation: (body) => req('/api/clinical/v1/evaluate', json('POST', body)),
   clinicalEvaluation: () => req('/api/clinical/evaluation'),
   audit: (patient_id) => req(`/api/audit${patient_id ? `?patient_id=${patient_id}` : ''}`),
   scan: async (n = 0) => {
