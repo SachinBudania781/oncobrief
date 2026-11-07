@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { CalendarDays, MapPin, QrCode, ScanLine, Upload, ArrowRight, Video, CalendarPlus, Download, Car } from "lucide-react";
 import { googleCalendarUrl, downloadIcs } from "./calendar";
 import { request, useResource, dateTime, nice } from "./client";
-import { Action, Empty, Error, Load, Panel, Status } from "./UI";
+import { Action, Empty, Error, Load, PackActions, Panel, Status } from "./UI";
 import UploadForm from "../components/UploadForm";
 import Records from "../apps/doctor/Records";
 import MemoryUpLink from "./MemoryUpLink";
@@ -867,14 +867,7 @@ export function ShareTools({ pid }) {
             )
           }
         </Load>
-        <a
-          className="btn"
-          href={`/api/v2/patients/${pid}/pack.pdf`}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Download my case pack PDF
-        </a>
+        <PackActions pid={pid} label="Download my case pack PDF" />
       </Panel>
     </div>
   );
