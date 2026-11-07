@@ -102,7 +102,7 @@ export default function ConsultStudio({ pid, patient }) {
         <h2>{recording ? "Listening…" : note ? "Your note is ready" : "Talk. We'll write the note."}</h2>
         <p>{recording ? "Speak naturally. Tap who's talking so the note knows who said what." : note ? "Review, edit and sign. The patient gets a plain-language summary in their language." : "Record the consult and get a SOAP note, a patient summary and the follow-up, ready to sign in seconds."}</p>
         {!note && <div className="ob-studio-controls">
-          <label className="ob-consent"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} disabled={recording} /><span>Patient agreed to this consult being transcribed</span></label>
+          <label className="ob-studio-consent"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} disabled={recording} /><span>Patient agreed to this consult being transcribed</span></label>
           <div className="ob-hero-actions">
             {!recording ? <button className="ob-pill" onClick={start} disabled={busy}><Mic size={17} />{lines.length ? "Resume" : "Start recording"}</button> : <button className="ob-pill" onClick={stop}><Pause size={17} />Pause</button>}
             <select className="ob-pill ghost ob-lang" value={language} onChange={(e) => setLanguage(e.target.value)} aria-label="Patient language" disabled={recording}><option value="en">English</option><option value="hi">हिंदी</option><option value="mr">मराठी</option></select>

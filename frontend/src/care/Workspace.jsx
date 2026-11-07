@@ -241,7 +241,8 @@ function CareSpace() {
   const hour = Number(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata", hour: "numeric", hour12: false }));
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
   const firstName = portal === "patient" ? (patient?.name?.split(" ")[0] || user.name.split(" ")[0]) : user.name.replace(/^(Dr\.?|Nurse|Reception|Navigator|Dietitian|Lab technician)\s+/i, "").split(" ").slice(-1)[0];
-  const title = tab === "home" ? `${greeting}, ${portal === "doctor" ? "Dr. " : ""}${firstName}` : nav.find((n) => n[0] === tab)?.[1] || "Overview";
+  const greetName = firstName ? firstName.charAt(0).toUpperCase() + firstName.slice(1) : "";
+  const title = tab === "home" ? `${greeting}, ${portal === "doctor" ? "Dr. " : ""}${greetName}` : nav.find((n) => n[0] === tab)?.[1] || "Overview";
   useEffect(() => { document.title = `${tab === "home" ? "Home" : nav.find((n) => n[0] === tab)?.[1] || "OncoBrief"} · OncoBrief`; }, [tab]);
   useEffect(() => {
     const onPop = () => {

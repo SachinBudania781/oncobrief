@@ -217,18 +217,14 @@ export function CareChat({ pid, user }) {
           )}
         </form>
       </Panel>
-      <Panel
-        title="Three-line thread recap"
-        hint="Extractive recap of the most recent messages; review the conversation before acting."
+      {resource.data?.summary?.length > 0 && <Panel
+        title="Conversation summary"
+        hint="The latest points at a glance."
       >
-        {resource.data?.summary.map((s, i) => (
+        {resource.data.summary.map((s, i) => (
           <p key={i}>{s}</p>
         ))}
-        <p className="small muted">
-          Urgent language is checked by fixed rules. A chat message does not
-          guarantee immediate staff attendance.
-        </p>
-      </Panel>
+      </Panel>}
     </div>
   );
 }
@@ -417,61 +413,37 @@ export function Privacy({ pid, user }) {
               run={() => request("/v2/audit/verify")}
               onDone={setVerification}
             >
-              Verify audit chain
+              Check log integrity
             </Action>
           }
         >
           {verification && (
             <p className={verification.valid ? "care-success" : "care-error"}>
               {verification.valid
-                ? "Audit hash chain is intact."
-                : `Tampering detected at entry ${verification.first_invalid_id}.`}
+                ? "The access log is complete and unaltered."
+                : `The access log was changed at entry ${verification.first_invalid_id}. The privacy officer has been told.`}
             </p>
           )}
           <Load resource={audit}>
-            {(rows) => (
-              <div className="care-scroll">
-                <table className="list">
-                  <thead>
-                    <tr>
-                      <th>Who</th>
-                      <th>What</th>
-                      <th>When</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((r) => (
-                      <tr key={r.id}>
-                        <td>
-                          {r.actor_name}
-                          <br />
-                          <small>{r.actor_role}</small>
-                        </td>
-                        <td>
-                          {r.action}
-                          <br />
-                          <small className="muted">{r.detail}</small>
-                        </td>
-                        <td className="small">{dateTime(r.at)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            {(rows) => rows.length ? (
+              <ul className="ob-audit-list">
+                {rows.slice(0, 60).map((r) => (
+                  <li key={r.id}>
+                    <span className="ob-audit-avatar">{(r.actor_name || "?").replace(/^(Dr\.?|Nurse|Reception|Navigator|Dietitian|Lab technician)\s+/i, "").slice(0, 1)}</span>
+                    <div><b>{r.actor_name}</b><small>{auditText(r.action, r.detail)}</small></div>
+                    <time>{dateTime(r.at)}</time>
+                  </li>
+                ))}
+              </ul>
+            ) : <Empty>No one has opened these records yet.</Empty>}
           </Load>
-          <p className="small muted">
-            Hash chaining detects edits within the chain. An independently
-            stored head hash is needed to detect complete chain replacement.
-          </p>
         </Panel>
         <Panel title="Signed-in devices">
           <Load resource={devices}>
             {(rows) =>
               rows.map((d) => (
                 <article className="care-record" key={d.id}>
-                  <b>{d.current ? "This device" : "Other device"}</b>
-                  <p className="small care-device">{d.device}</p>
+                  <b>{deviceName(d.device)}{d.current ? " · this device" : ""}</b>
                   <p className="small">Last activity {dateTime(d.last_seen)}</p>
                   <Action
                     run={() => request(`/auth/devices/${d.id}`, "DELETE")}
@@ -1162,4 +1134,28 @@ function PrivacyRequests() {
       </Load>
     </Panel>
   );
+}
+
+
+const AUDIT_PATHS = [
+  [/documents?|\/files?\//, "Viewed reports"], [/day-pass/, "Viewed the day pass"], [/appointments?/, "Viewed appointments"],
+  [/medications?|med-logs/, "Viewed medicines"], [/companion|assistant/, "Used the assistant"], [/wearables?/, "Viewed health readings"],
+  [/records?/, "Viewed the care plan"], [/transport/, "Viewed transport"], [/audit/, "Viewed this access log"], [/chat|messages?/, "Viewed messages"],
+  [/brief/, "Prepared a visit brief"], [/pack/, "Opened the case pack"], [/checkin|check-in/, "Viewed check-ins"], [/clinical|chart/, "Viewed the care journey"],
+];
+function auditText(action = "", detail = "") {
+  const text = String(action);
+  if (/^(GET|POST|PATCH|PUT|DELETE)\s/.test(text)) {
+    const [method, path] = text.split(/\s+/);
+    const hit = AUDIT_PATHS.find(([re]) => re.test(path));
+    const base = hit ? hit[1] : "Opened the patient record";
+    return method === "GET" ? base : base.replace(/^Viewed/, "Updated").replace(/^Opened/, "Updated");
+  }
+  const label = text.replace(/_/g, " ");
+  return (label.charAt(0).toUpperCase() + label.slice(1)) + (detail && !/^[A-Z]?\d+$/.test(detail) && detail.length < 60 ? ` · ${detail}` : "");
+}
+function deviceName(ua = "") {
+  const browser = /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "Browser";
+  const os = /Android/.test(ua) ? "Android" : /iPhone|iPad|iOS/.test(ua) ? "iPhone" : /Windows/.test(ua) ? "Windows" : /Mac OS X/.test(ua) ? "Mac" : /Linux/.test(ua) ? "Linux" : "device";
+  return ua ? `${browser} on ${os}` : "Unknown device";
 }

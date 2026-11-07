@@ -221,12 +221,6 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, onExit
             </button>
           </div>
 
-          {userRole === "patient" && <div className="care-ai-sharing">
-            <label><input type="checkbox" checked={sharing} disabled={sharingBusy || !sharingLoaded} onChange={updateSharing} />
-              <span><b>Share chat excerpts with my care team</b><small>Only your questions from now on. Turn this off any time.</small></span>
-            </label>
-            {sharingError && <small role="alert">{sharingError}</small>}
-          </div>}
 
           <div className="care-ai-log" ref={logRef} aria-live="polite" aria-relevant="additions text">
             {!messages.length && (
@@ -290,7 +284,7 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, onExit
                 <div><b>{listening ? "I’m listening" : voiceSession.current && busy ? "Preparing your reply…" : voiceSession.current ? "Conversation paused" : "Tap to start talking"}</b><span>{voiceSession.current ? "I’ll listen again after each reply. Tap stop to end." : "Your reply will be read aloud."}</span></div>
               </div>
             )}
-            <div className="care-ai-privacy"><ShieldCheck size={12} /> {CARE_TEAM.includes(userRole) ? "Nothing is booked or sent until you confirm" : "Only you and the people you allow can see this"}</div>
+            {CARE_TEAM.includes(userRole) && <div className="care-ai-privacy"><ShieldCheck size={12} /> Nothing is booked or sent until you confirm</div>}
           </div>
         </section>
       )}

@@ -166,11 +166,11 @@ export function PatientCheckInHistory({ pid, canReviewActivity = false, onOpen, 
                 <ResponsiveContainer width="100%" height={280}>
                   <LineChart data={checkins} onClick={(event) => { const point = event?.activePayload?.[0]?.payload; if (point) setSelected(point); }}>
                     <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value) => new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} />
-                    <YAxis domain={[0, 4]} />
+                    <XAxis dataKey="date" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value) => new Date(value).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} tick={{ fontSize: 11 }} minTickGap={18} tickLine={false} />
+                    <YAxis domain={[0, 4]} width={24} tick={{ fontSize: 11 }} tickLine={false} axisLine={false} allowDecimals={false} />
                     <Tooltip labelFormatter={(value) => dateTime(new Date(value).toISOString())} formatter={(value, name) => [`${value ?? "—"}/4`, nice(name)]} />
-                    <Legend />
-                    {symptoms.map((key, index) => <Line key={key} type="monotone" dataKey={(row) => row.data[key] == null ? null : Number(row.data[key])} name={key} stroke={symptomColors[index]} strokeWidth={2.5} connectNulls={false} dot={{ r: 3 }} activeDot={{ r: 6 }} />)}
+                    <Legend iconSize={9} wrapperStyle={{ fontSize: 12, lineHeight: "18px", paddingTop: 4 }} formatter={(name) => nice(name)} />
+                    {symptoms.map((key, index) => <Line key={key} type="monotone" dataKey={(row) => row.data[key] == null ? null : Number(row.data[key])} name={key} stroke={symptomColors[index]} strokeWidth={2.2} connectNulls={false} dot={checkins.length > 14 ? false : { r: 2.5 }} activeDot={{ r: 5 }} />)}
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -243,7 +243,7 @@ function PatientReportTrends({ pid, enabled, onOpen }) {
         </LineChart></ResponsiveContainer></div> : <Empty>No dated readings are available for this measure.</Empty>}
         {selected && <div className="care-notice"><b>{selected.metric}: {selected.value} {selected.unit || ""}</b><p>{selected.date}{selected.document_id ? ` · Source document D${selected.document_id}` : " · Confirmed measurement"}</p>{selected.document_id && <button className="src" onClick={() => onOpen?.(selected.document_id)}>Open source report</button>}</div>}
       </Panel>
-      <Panel title="What changed since the previous report">{record.changes?.length ? record.changes.map((change) => <details key={change.subtype}><summary>{change.subtype} · {change.from} → {change.to}</summary><pre className="care-diff">{change.lines.map((line, index) => <div key={index} className={line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : ""}>{line}</div>)}</pre></details>) : <Empty>No report-to-report changes are available.</Empty>}</Panel>
+      <Panel title="What changed since the previous report">{record.changes?.length ? record.changes.map((change) => <details key={change.subtype}><summary>{cap(nice(change.subtype))}</summary><pre className="care-diff">{change.lines.map((line, index) => <div key={index} className={line.startsWith("+") ? "added" : line.startsWith("-") ? "removed" : ""}>{line}</div>)}</pre></details>) : <Empty>No report-to-report changes are available.</Empty>}</Panel>
     </div>;
   }}</Load>}</Load>;
 }
@@ -304,7 +304,7 @@ function ApprovalReview({ approval: a, onDone }) {
     <article className="care-record">
       <div className="row wrap">
         <b>
-          Request #{a.id} · {a.request}
+          {a.request}
         </b>
         <Status value={a.status} />
       </div>
@@ -529,14 +529,14 @@ export function ClinicalChart({ pid, onOpen, user }) {
             title="This cycle: forecast vs reality"
             hint="Forecast uses the same patient's previous cycle days. Missing history stays blank."
           >
-            <div className="care-chart">
+            {d.forecast.some((x) => x.expected != null || x.actual != null) && <div className="care-chart">
               <ResponsiveContainer width="100%" height={240}>
-                <LineChart data={d.forecast}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="day" />
-                  <YAxis domain={[0, 8]} />
-                  <Tooltip />
-                  <Legend />
+                <LineChart data={d.forecast} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="day" interval="preserveStartEnd" minTickGap={14} tick={{ fontSize: 11 }} tickLine={false} tickFormatter={(v) => `D${v}`} />
+                  <YAxis domain={[0, 8]} width={24} tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                  <Tooltip labelFormatter={(v) => `Cycle day ${v}`} />
+                  <Legend iconSize={9} wrapperStyle={{ fontSize: 12, paddingTop: 4 }} formatter={(n) => (n === "expected" ? "Expected" : "Reported")} />
                   <Line
                     dataKey="expected"
                     stroke="#96bdc6"
@@ -551,11 +551,10 @@ export function ClinicalChart({ pid, onOpen, user }) {
                   />
                 </LineChart>
               </ResponsiveContainer>
-            </div>
+            </div>}
             {!d.forecast.some((x) => x.expected != null) && (
               <p className="small muted">
-                Not enough previous-cycle observations to estimate a personal
-                forecast.
+                Your personal forecast appears after a full cycle of check-ins.
               </p>
             )}
           </Panel>
@@ -666,8 +665,7 @@ export function ClinicalChart({ pid, onOpen, user }) {
                   ))
                 ) : (
                   <Empty>
-                    No rule-based size candidates found. Enter confirmed
-                    measurements in Plans & journal.
+                    No tumour sizes found in the reports yet.
                   </Empty>
                 )}
               </Panel>
@@ -815,7 +813,7 @@ export function BodyMap({ measurements = [], month = 100, onSite }) {
         {Object.values(latest).map((record, index) => (
           <article className="care-bodymap-finding" key={record.id}>
             <span className="care-bodymap-number">{index + 1}</span>
-            <div><b>{nice(record.data.site)}</b><span className="care-bodymap-value">{record.data.size_mm != null ? `${record.data.size_mm} mm measured` : `Pain score ${record.data.score}/10`}</span><small>{record.data.date || dateTime(record.created_at)}</small></div>
+            <div><b>{cap(nice(record.data.site))}</b><span className="care-bodymap-value">{record.data.size_mm != null ? `${record.data.size_mm} mm measured` : `Pain score ${record.data.score}/10`}</span><small>{record.data.date ? new Date(record.data.date + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : dateTime(record.created_at)}</small></div>
           </article>
         ))}
         {!visible.length && <div className="care-bodymap-empty"><Activity size={24} /><b>No recorded findings yet</b><span>New confirmed measurements and pain reports will be marked on the body map.</span></div>}
@@ -959,10 +957,12 @@ function JourneyReplay({ events, progress, onOpen }) {
       </p>
       {current && (
         <button className="src" onClick={() => onOpen(current.id)}>
-          D{current.id} · {current.title}
+          {current.title}
         </button>
       )}
     </div>
   );
 }
 
+
+const cap = (t = "") => String(t).charAt(0).toUpperCase() + String(t).slice(1);

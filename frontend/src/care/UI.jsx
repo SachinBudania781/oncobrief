@@ -429,31 +429,29 @@ export function RecordCard({ record, user, onChange, onOpen }) {
   return (
     <article className="care-record">
       <div className="row wrap">
-        <b>
-          {nice(record.kind)} <small className="muted">R{record.id}</small>
-        </b>
+        <b>{titleCase(nice(record.kind))}</b>
         <Status value={record.status} />
         <span className="spacer" />
         <small className="muted">
           {record.author_name} · {dateTime(record.created_at)}
         </small>
       </div>
+      <dl className="ob-fields">
       {Object.entries(record.data)
-        .filter(([k]) => !["text", "result"].includes(k))
+        .filter(([k, v]) => !["text", "result", "consent", "location_consent"].includes(k) && v !== "" && v != null && !(Array.isArray(v) && !v.length))
         .map(([key, value]) => (
-          <p className="small" key={key}>
-            <span className="muted">{nice(key)}: </span>
+          <div key={key}>
+            <dt>{fieldLabel(key)}</dt>
+            <dd>
             {key === "document_id" || key === "audio_document_id" ? (
               <button className="src" onClick={() => onOpen?.(value)}>
-                D{value}
+                Open report
               </button>
-            ) : typeof value === "object" ? (
-              JSON.stringify(value)
-            ) : (
-              String(value)
-            )}
-          </p>
+            ) : fieldValue(key, value)}
+            </dd>
+          </div>
         ))}
+      </dl>
       {record.data.text && <p className="care-pre">{record.data.text}</p>}
       {record.kind === "integration_result" && (
         <pre className="care-pre small">
@@ -472,7 +470,7 @@ export function RecordCard({ record, user, onChange, onOpen }) {
       )}
       {record.approved_by && (
         <p className="care-signed">
-          Signed by {record.approved_by} · {dateTime(record.approved_at)}
+          Signed by {record.approved_by}{record.approved_at ? ` · ${dateTime(record.approved_at)}` : ""}
         </p>
       )}
       {clinical && record.status === "draft" && user.role === "doctor" && (
@@ -528,4 +526,20 @@ export function RecordCard({ record, user, onChange, onOpen }) {
         )}
     </article>
   );
+}
+
+
+const titleCase = (t = "") => String(t).charAt(0).toUpperCase() + String(t).slice(1);
+const FIELD_LABELS = { size_mm: "Size", cycle_days: "Cycle length", total_cycles: "Total cycles", cycle_start: "Cycle started", side_effect_days: "What to expect", egfr: "eGFR", height_cm: "Height", weight_kg: "Weight", travel_km: "Travel distance", visit_date: "Visit date" };
+const FIELD_UNITS = { size_mm: "mm", height_cm: "cm", weight_kg: "kg", travel_km: "km", cycle_days: "days" };
+function fieldLabel(key) { return FIELD_LABELS[key] || titleCase(nice(key)); }
+function fieldValue(key, value) {
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (Array.isArray(value)) return value.map((v) => (typeof v === "string" ? titleCase(v.replace(/_/g, " ")) : JSON.stringify(v))).join(", ");
+  if (value && typeof value === "object") return Object.entries(value).map(([k, v]) => `${titleCase(nice(k))}: ${v}`).join(" · ");
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return new Date(text + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  if (FIELD_UNITS[key] && /^-?\d+(\.\d+)?$/.test(text)) return `${text} ${FIELD_UNITS[key]}`;
+  if (/^[a-z]+(_[a-z]+)+$|^[a-z]+$/.test(text) && text.length < 40) return titleCase(text.replace(/_/g, " "));
+  return text;
 }

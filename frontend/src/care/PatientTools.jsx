@@ -447,7 +447,7 @@ export function DoctorMedicineSummary({ pid }) {
             const medicineRequests = (items || []).filter((item) => item.kind === "medicine");
             return medicineRequests.length ? <div className="stack">{medicineRequests.map((item) => (
               <article className="care-record" key={item.id}>
-                <div className="row wrap"><b>Request #{item.id}</b><span className="spacer"/><Status value={item.status}/></div>
+                <div className="row wrap"><b>Your request</b><span className="spacer"/><Status value={item.status}/></div>
                 <p>{item.request}</p>
                 <p className="small muted">Submitted by {item.requested_by || "patient"}{item.created_at ? ` · ${dateTime(item.created_at)}` : ""}</p>
                 {item.reason && <p className="small">{item.reason}</p>}
@@ -541,7 +541,7 @@ export function Medicines({ pid, user, onUpdate }) {
                 {remindersEnabled ? "Turn off dose reminders" : "Enable dose reminders"}
               </button>
               <p className="small muted">
-                {reminderMessage || "Get a gentle sound and browser alert at each scheduled dose. The patient app must remain open."}
+                {reminderMessage || "Get a gentle sound and alert at each dose time."}
               </p>
             </div>
           )}
@@ -555,7 +555,7 @@ export function Medicines({ pid, user, onUpdate }) {
                       <span className="care-pill">{m.dose}</span>
                     </div>
                     <p className="small muted">
-                      {m.frequency} · {m.instructions}
+                      {[m.frequency, m.instructions].filter(Boolean).join(" · ")}
                     </p>
                     {m.today.map((d) => (
                       <div className="care-dose row wrap" key={d.time}>
@@ -696,7 +696,7 @@ export function Medicines({ pid, user, onUpdate }) {
                   <article className="care-record" key={a.id}>
                     <div className="row wrap">
                       <b>
-                        #{a.id} · {a.request}
+                        {a.request}
                       </b>
                       <Status value={a.status} />
                     </div>

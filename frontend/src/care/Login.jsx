@@ -6,7 +6,7 @@ import "./interface.css";
 import "./finish.css";
 import "./polish.css";
 import "./aura.css";
-import { ArrowLeft, ArrowRight, Check, Eye, EyeOff, HeartPulse, LockKeyhole } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Eye, EyeOff, HeartPulse } from "lucide-react";
 import { useAuth } from "./Auth";
 import { request } from "./client";
 import { APP_TARGET } from "../deployment";
@@ -107,7 +107,6 @@ export default function Login() {
           {error && <p className="ob-login-error" role="alert">{error}</p>}
           <button className="ob-cta" disabled={busy || !config}>{busy ? <span className="ob-spinner" aria-label="Signing in" /> : <>{portal === "patient" && mode === "phone" && !challenge ? "Send code" : "Sign in"}<span><ArrowRight size={18} /></span></>}</button>
         </form>
-        <p className="ob-login2-foot"><LockKeyhole size={13} />Encrypted in transit and at rest · Every access is logged</p>
       </div>}
     </section>
   </div>;

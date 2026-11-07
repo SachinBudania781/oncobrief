@@ -601,7 +601,7 @@ function DepartmentSlotBoard({ appointments, departments, day, currentTime }) {
         <section key={department} className="stack">
           <h3>{department}</h3>
           <div className="care-scroll">
-            <table className="list">
+            <table className="list care-slot-table">
               <thead><tr><th>Time</th><th>Status</th><th>Patient</th><th>Faculty</th><th>Room</th></tr></thead>
               <tbody>
                 {times.map((time) => {
@@ -614,10 +614,10 @@ function DepartmentSlotBoard({ appointments, departments, day, currentTime }) {
                   };
                   const booking = appointments.find((a) => a.department === department && a.status !== "cancelled" && wallMinutes(a.start) < slotEnd && wallMinutes(a.end) > slotStart);
                   const past = day < today || (day === today && slotStart <= currentMinutes);
-                  return <tr key={time}>
+                  return <tr key={time} className={!booking && past ? "is-past-empty" : ""}>
                     <td>{time}</td>
                     <td><Status value={booking ? "booked" : past ? "past" : "available"} /></td>
-                    <td>{booking ? <>{booking.patient_name}<br /><small>{booking.patient_id}</small></> : "—"}</td>
+                    <td>{booking ? <>{booking.patient_name}<br /><small>{booking.patient_id}</small><small className="care-slot-extra">{[booking.clinician, booking.virtual_visit ? "Google Meet" : booking.room].filter(Boolean).join(" · ")}</small></> : "—"}</td>
                     <td>{booking?.clinician || "—"}</td>
                     <td>{booking?.virtual_visit ? "Google Meet" : booking?.room || "—"}</td>
                   </tr>;
@@ -935,10 +935,6 @@ export function MoneyNavigator({ pid, patient }) {
           ))
         }
       </Load>
-      <p>
-        Add state, a hospital quote and confirmed coverage using the Money &
-        scheme workflow in Plans & journal.
-      </p>
     </Panel>
   );
 }

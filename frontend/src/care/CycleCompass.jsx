@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { CalendarClock, Droplets, Moon, Phone, ShieldAlert, Sparkles, Sun, Thermometer, Utensils } from "lucide-react";
 import { useResource } from "./client";
 import { Skeleton } from "./Extras";
@@ -56,13 +56,19 @@ export function CycleRing({ info, size = 150 }) {
 
 function Wave({ info }) {
   const id = useId().replace(/:/g, "");
-  const W = 640, H = 200, pts = 80;
+  const box = useRef(null), [width, setWidth] = useState(640);
+  useEffect(() => {
+    const el = box.current; if (!el) return;
+    const ro = new ResizeObserver(([e]) => setWidth(Math.max(280, Math.round(e.contentRect.width))));
+    ro.observe(el); return () => ro.disconnect();
+  }, []);
+  const W = width, H = width < 480 ? 170 : 200, pts = 80;
   const path = (fn, close) => {
     const d = Array.from({ length: pts + 1 }, (_, i) => { const x = i / pts; return `${i ? "L" : "M"}${(x * W).toFixed(1)} ${(H - 18 - fn(x) * (H - 40)).toFixed(1)}`; }).join(" ");
     return close ? `${d} L${W} ${H} L0 ${H} Z` : d;
   };
   const tx = info.x * W;
-  return <svg className="ob-wave" viewBox={`0 0 ${W} ${H + 26}`} preserveAspectRatio="none" role="img" aria-label="Expected symptoms across the cycle">
+  return <div ref={box} className="ob-wave-box"><svg className="ob-wave" viewBox={`0 0 ${W} ${H + 26}`} width={W} height={H + 26} role="img" aria-label="Expected symptoms across the cycle">
     <defs>{CURVE_META.map(([k, , c]) => <linearGradient key={k} id={`${id}${k}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={c} stopOpacity=".32" /><stop offset="1" stopColor={c} stopOpacity="0" /></linearGradient>)}
       <filter id={`${id}gl`}><feGaussianBlur stdDeviation="4" /></filter></defs>
     {PHASES.map((p) => <rect key={p.key} x={p.from * W} y="0" width={(Math.min(p.to, 1) - p.from) * W} height={H} fill={p.color} opacity={info.phase.key === p.key ? 0.09 : 0.03} />)}
@@ -72,7 +78,7 @@ function Wave({ info }) {
     <circle cx={tx} cy={H - 18 - curves.infection(info.x) * (H - 40)} r="5" fill="#fff" stroke="#ef4444" strokeWidth="2.5" />
     <rect x={Math.min(Math.max(tx - 30, 0), W - 60)} y={H + 4} width="60" height="20" rx="10" fill="#0b0d12" />
     <text x={Math.min(Math.max(tx, 30), W - 30)} y={H + 18} textAnchor="middle" fontSize="11" fontWeight="700" fill="#fff">Today</text>
-  </svg>;
+  </svg></div>;
 }
 
 export default function CycleCompass({ pid, user }) {

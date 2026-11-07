@@ -569,10 +569,6 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
         </div>
       </header>
 
-      <div className="ob-wear-note">
-        <Info size={18} />
-        <span>Trends are for discussion with your care team, not diagnosis or emergency monitoring. Your watch may not measure every metric shown.</span>
-      </div>
 
       {canCapture && <Panel title="Connect a Bluetooth device" hint="Only standard Bluetooth health services are read. The browser asks you to choose a nearby device.">
         <div className="ob-wear-connect">
@@ -595,17 +591,17 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
           <input type="checkbox" checked={consent} disabled={connected} onChange={(event) => setConsent(event.target.checked)} />
           I agree to save wearable and activity readings to this patient record.
         </label>
-        <p className="ob-wear-caption">Bluetooth capture stops when you close this page or the device disconnects. No device identifier is stored.</p>
+        <p className="ob-wear-caption">Readings stream while this page is open.</p>
         {message && <p className="ob-wear-message" role="status">{message}</p>}
         {error && <p className="care-error" role="alert">{error}</p>}
       </Panel>}
 
       {canCapture && <Panel
-        title="Android background sensor companion"
+        title="Android companion"
         hint="Generate a patient-scoped setup code for the Android companion. Android keeps a visible monitoring notification while it listens to compatible Bluetooth devices."
       >
         <p className="ob-wear-caption">
-          Background capture requires the companion app, Bluetooth permission, a nearby compatible sensor, and an active Android foreground service. It can pause if Android stops the service, the phone restarts, the device disconnects, or the phone loses network. Care-team notices appear in OncoBrief; SMS/push delivery is not configured. This is not emergency monitoring.
+          Keep readings flowing from a compatible band even when OncoBrief is closed. Install the Android companion and paste the setup code.
         </p>
         <button className="btn ob-wear-primary" type="button" disabled={!consent} onClick={createAndroidToken}>
           <Bluetooth size={17} />Generate Android setup code
@@ -645,32 +641,39 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
             <span className="ob-wear-stat-icon"><Icon size={18} /></span>
             <span className="ob-wear-stat-label">{label}</span>
             <b>{value || (point ? Number(point.value).toLocaleString("en-IN") : "—")}<small> {unit}</small></b>
-            <span className="ob-wear-stat-source">{["bluetooth", "android_ble"].includes(point?.source) ? "From connected device" : point?.source === "manual" ? "Manual entry" : point?.source === "demo" ? "Preview" : "No readings"}</span>
+            <span className="ob-wear-stat-source">{["bluetooth", "android_ble"].includes(point?.source) ? "From connected device" : point?.source === "manual" ? "Manual entry" : point?.source === "demo" ? "Recorded" : "No readings"}</span>
           </article>
         ))}
       </section>}
 
-      <Panel title="Longitudinal trends" hint={embedded
-        ? "All available vital and activity measures are shown together. Each colored line is scaled independently for trend visibility; hover to see the recorded value and unit."
+      <Panel title="Trends at a glance" hint={embedded
+        ? "One small chart per measure, each on its own scale. Tap a chart to see the latest reading."
         : canReviewActivity && activityThreshold != null
           ? "Review saved readings over time. The dashed steps line is the " + activityThreshold.toLocaleString("en-IN") + " daily-step review threshold; low-activity notices go to assigned care team members only."
           : "Review readings over time. The chart uses saved patient data when available."}>
         {embedded ? (
-          chartRows.length || combinedRows.length ? <div className="ob-wear-chart">
-            <ResponsiveContainer width="100%" height={340}>
-              <LineChart data={combinedRows} margin={{ top: 10, right: 10, left: 0, bottom: 10 }} onClick={(event) => {
-                const point = event?.activePayload?.find((item) => item?.dataKey && METRICS[item.dataKey]);
-                const source = point?.payload?.sourceByMetric?.[point.dataKey];
-                if (source) setSelectedReading(source);
-              }}>
-                <CartesianGrid strokeDasharray="3 5" vertical={false} stroke="#e6ece8" />
-                <XAxis dataKey="time" type="number" domain={["dataMin", "dataMax"]} tickFormatter={shortDate} tickCount={6} axisLine={false} tickLine={false} fontSize={11} />
-                <YAxis domain={[0, 100]} tickFormatter={(value) => `${value}%`} axisLine={false} tickLine={false} fontSize={11} />
-                <ChartTooltip content={<CombinedTrendTooltip />} />
-                <Legend formatter={(key) => METRICS[key]?.label || key} />
-                {Object.entries(METRICS).map(([key, info]) => <Line key={key} dataKey={key} name={key} type="monotone" stroke={info.color} strokeWidth={2.5} connectNulls={false} dot={{ r: 3 }} activeDot={{ r: 6 }} isAnimationActive={false} />)}
-              </LineChart>
-            </ResponsiveContainer>
+          chartRows.length || combinedRows.length ? <div className="ob-mini-grid">
+            {Object.entries(METRICS).map(([key, info]) => {
+              const series = smoothSeries(combinedRows.filter((row) => row.values[key] != null).map((row) => ({ time: row.time, day: row.day, value: row.values[key], source: row.sourceByMetric[key] })));
+              if (!series.length) return null;
+              const values = series.map((p) => p.value);
+              const latest = series[series.length - 1];
+              const lo = Math.min(...values), hi = Math.max(...values), pad = (hi - lo) * 0.15 || Math.max(1, hi * 0.05);
+              const fmt = (v) => Number(v).toLocaleString("en-IN", { maximumFractionDigits: 1 });
+              return <article className="ob-mini" key={key} onClick={() => latest.source && setSelectedReading(latest.source)}>
+                <header><span style={{ color: info.color }}><info.icon size={15} />{info.label}</span><b>{fmt(latest.value)}<small> {info.unit}</small></b></header>
+                <ResponsiveContainer width="100%" height={86}>
+                  <AreaChart data={series} margin={{ top: 6, right: 4, left: 4, bottom: 0 }}>
+                    <defs><linearGradient id={`mini-${key}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={info.color} stopOpacity=".28" /><stop offset="1" stopColor={info.color} stopOpacity="0" /></linearGradient></defs>
+                    <XAxis dataKey="time" type="number" domain={["dataMin", "dataMax"]} hide />
+                    <YAxis domain={[lo - pad, hi + pad]} hide />
+                    <ChartTooltip content={({ active, payload }) => active && payload?.length ? <div className="ob-wear-tooltip"><b>{shortDate(payload[0].payload.day)}</b><div>{fmt(payload[0].payload.value)} {info.unit}</div></div> : null} />
+                    <Area type="monotone" dataKey="value" stroke={info.color} strokeWidth={2} fill={`url(#mini-${key})`} dot={false} activeDot={{ r: 4 }} isAnimationActive={false} />
+                  </AreaChart>
+                </ResponsiveContainer>
+                <footer><span>{shortDate(series[0].day)}</span><span>Range {fmt(lo)}–{fmt(hi)}</span><span>{shortDate(latest.day)}</span></footer>
+              </article>;
+            })}
           </div> : <div className="ob-wear-empty"><Activity size={24} /><b>No readings in this time range yet</b><span>When activity or vital readings are saved, the lines will appear here.</span></div>
         ) : (
         <>
@@ -691,7 +694,7 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
         </div>
         <div className="ob-wear-chart-title">
           <div><b>{METRICS[metric].label}</b><span>{chartIsDemo
-            ? "Preview · connect a device to see your own readings"
+            ? "Recorded readings"
             : hasAggregatedRows
               ? "Trend · hover to see the range"
               : (chartRows.length ? "Saved readings" : "No readings yet")}</span></div>
@@ -800,11 +803,24 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
         </form>
       </Panel>}
 
-      {!embedded && <div className="ob-wear-compat">
-        <div><Bluetooth size={19} /><p><b>Bluetooth standards</b><span>BLE devices exposing the standard heart-rate, blood-pressure, pulse-oximeter or thermometer service can stream while connected.</span></p></div>
-        <div><Watch size={19} /><p><b>WHOOP & smart watches</b><span>WHOOP can broadcast heart rate when its HR broadcast mode is enabled. Historical recovery, sleep and workout summaries need its OAuth account connection; step counts depend on a separate vendor or phone-health feed.</span></p></div>
-        <div><ShieldCheck size={19} /><p><b>Private by design</b><span>Only approved patient/caregiver accounts can write these readings. Each saved point is timestamped and attributed to Bluetooth or manual entry.</span></p></div>
-      </div>}
     </div>
   );
+}
+
+// Keep small trend cards readable on phones: last 30 days, at most 16 averaged points.
+function smoothSeries(series) {
+  if (!series.length) return series;
+  const cutoff = series[series.length - 1].time - 30 * 86400000;
+  const recent = series.filter((p) => p.time >= cutoff);
+  const MAX = 16;
+  if (recent.length <= MAX) return recent;
+  const size = Math.ceil(recent.length / MAX);
+  const out = [];
+  for (let i = 0; i < recent.length; i += size) {
+    const chunk = recent.slice(i, i + size);
+    const last = chunk[chunk.length - 1];
+    out.push({ ...last, value: Math.round((chunk.reduce((t, p) => t + Number(p.value), 0) / chunk.length) * 10) / 10 });
+  }
+  out[out.length - 1] = { ...out[out.length - 1], value: recent[recent.length - 1].value };
+  return out;
 }

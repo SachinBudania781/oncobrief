@@ -174,7 +174,7 @@ function TransportWorkspace({ pid, user, active = true }) {
                 <label className="ob-transport-check ob-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} required />I agree to share these pickup and support details with the hospital transport team and/or my linked caregiver, based on the option I selected.</label>
                 <label className="ob-transport-check ob-consent"><input type="checkbox" checked={locationConsent} onChange={(event) => setLocationConsent(event.target.checked)} />Share my live trip location with the hospital transport team and linked caregiver(s). Location starts only when I press Start trip and can be stopped at any time.</label>
                 {locationConsent && <p className="small muted">A private link goes to these contacts. The last received location stays visible until you stop sharing or the link expires. Keep this page open; if updates pause, recipients will see a stale-location warning.</p>}
-                <p className="small muted">Uber and Rapido booking happens in their service. OncoBrief does not book or pay for rides. For urgent or emergency transport, contact local emergency services.</p>
+                <p className="small muted">Rides are booked and paid in the Uber or Rapido app. In an emergency, call 108.</p>
                 <div className="row wrap"><button className="btn primary" type="submit" disabled={busy || !consent}><Car size={16} />{busy ? "Sending…" : "Save transport plan"}</button>{success && <span className="care-success">{success}</span>}</div>
                 <Error message={error} />
               </form>
