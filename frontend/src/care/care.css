@@ -501,6 +501,19 @@
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+.care-pack-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.care-pack-actions .care-error,
+.care-pack-actions .care-success {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+}
 .care-success {
   color: #3c8865;
   background: #ecf7ef;
