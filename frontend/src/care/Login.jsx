@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import "./polish.css";
 import { ArrowLeft, ArrowRight, Check, Eye, EyeOff, HeartPulse, LockKeyhole } from "lucide-react";
 import { useAuth } from "./Auth";
 import { request } from "./client";
