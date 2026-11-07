@@ -40,6 +40,7 @@ import {
   Error,
   Load,
   Panel,
+  PackActions,
   SourceLinks,
   Voice,
 } from "./UI";
@@ -813,14 +814,7 @@ function HomeSpace({
                   />
                 </div>
               )}
-              <a
-                className="btn"
-                href={`/api/v2/patients/${pid}/pack.pdf`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Download tumour board pack
-              </a>
+              <PackActions pid={pid} />
             </>
           ) : (
             <>
