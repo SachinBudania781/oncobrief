@@ -245,3 +245,5 @@ def past_briefs(patient: Patient = Depends(load_patient), db: Session = Depends(
 def ai_status():
     return {"llm_enabled": llm.enabled(), "provider": llm.config.LLM_PROVIDER if llm.enabled() else None,
             "model": llm.model_name() if llm.enabled() else "deterministic writer"}
+
+

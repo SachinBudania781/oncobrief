@@ -297,13 +297,13 @@ function DeterministicClinicalPanel({ patient }) {
   ] : [];
 
   return <section className="care-clinical-tools">
-    <Panel title="Deterministic staging" hint="AJCC 8 anatomical stage grouping. Site and recorded TNM are prefilled from the patient chart when available; verify against the source report.">
+    <Panel title="TNM stage calculator" hint="AJCC 8 anatomical stage grouping. Site and recorded TNM are prefilled from the patient chart when available; verify against the source report.">
       <div className="grid2">
         <label className="field">Primary site<select className="select" value={site} onChange={(e) => { setSite(e.target.value); setTnm(chartTnm(patient.stage) || { t: "TX", n: "NX", m: "MX" }); }}><option value="">Select a recorded site</option><option value="breast">Breast</option><option value="lung">NSCLC / lung</option></select></label>
         {[['t','T'],['n','N'],['m','M']].map(([key,label]) => <label className="field" key={key}>{label} category<select className="select" value={tnm[key]} onChange={(e) => setTnm((old) => ({ ...old, [key]: e.target.value }))}>{(key === 't' ? tOptions : key === 'n' ? nOptions : mOptions).map((option) => <option key={option}>{option}</option>)}</select></label>)}
       </div>
       <p className="small muted">Chart context · Biomarkers: {clinicalProfile.biomarkers || "not recorded"} · Treatment intent: {recordedIntent} · Current regimen: {patient.current_regimen || "not recorded"} · Notes: {recordedNotes}</p>
-      <div className="care-success" style={{ marginTop: 14, padding: 16, background: "#e8f5ed", color: "#17633e" }} aria-live="polite"><b>Deterministic Staging</b><div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{stage?.stage || "Calculating…"}</div></div>
+      <div className="care-success" style={{ marginTop: 14, padding: 16, background: "#e8f5ed", color: "#17633e" }} aria-live="polite"><b>AJCC 8 stage group</b><div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{stage?.stage || "Calculating…"}</div></div>
       {stageError && <p className="care-error" role="alert">Staging calculation unavailable: {stageError}</p>}
       {stage?.basis && <p className="small muted">{patient.stage ? `Recorded chart stage: ${patient.stage}. ` : "No recorded stage is available. "}{stage.basis}</p>}
     </Panel>
@@ -366,6 +366,8 @@ export function StaffActivity({ user, onOpen }) {
     </div>
   );
 }
+
+
 
 
 

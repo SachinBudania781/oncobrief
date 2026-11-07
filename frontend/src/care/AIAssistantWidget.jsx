@@ -14,6 +14,7 @@ import { request, speak } from "./client";
 import { Emergency } from "./PatientTools";
 import { Error, SourceLinks, Status } from "./UI";
 import ActionCard, { looksLikeAction } from "./ActionCard";
+import { GlassOrb } from "./Glass3D";
 
 const CARE_TEAM = ["doctor", "nurse", "frontdesk", "admin"];
 
@@ -230,8 +231,8 @@ export default function AIAssistantWidget({ pid, language = "en", onOpen, onExit
           <div className="care-ai-log" ref={logRef} aria-live="polite" aria-relevant="additions text">
             {!messages.length && (
               <div className="care-ai-welcome">
-                <span className="care-ai-welcome-icon"><Bot size={21} /></span>
-                <h3>How can I help today?</h3>
+                {embedded ? <GlassOrb size={104} colors={["#fff0f7", "#ff9ccf", "#8f6bff"]} className="ob-ai-orb" /> : <span className="care-ai-welcome-icon"><Bot size={21} /></span>}
+                <h3>{embedded ? <>One assistant.<br /><span>Many ways to help.</span></> : "How can I help today?"}</h3>
                 <p>{CARE_TEAM.includes(userRole)
                   ? "Ask about this patient’s record, or tell me what to do: book a visit, start a video consult, message the patient or assign a task."
                   : "Ask about your reports and medicines, or get ready for your next visit."}</p>

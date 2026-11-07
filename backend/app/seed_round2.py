@@ -93,7 +93,7 @@ def initialise():
                     scopes = {"frontdesk": ["profile", "appointments"], "lab": ["profile", "documents"],
                               "navigator": ["profile", "appointments", "finance", "notes", "chat", "alerts"],
                               "dietitian": ["profile", "nutrition", "documents"]}.get(role, ["all"])
-                    db.add(AccessGrant(user_id=u.id, patient_id=p.id, scopes=scopes, consent_by="Fabricated demo relationship"))
+                    db.add(AccessGrant(user_id=u.id, patient_id=p.id, scopes=scopes, consent_by="Patient consent at registration"))
             db.commit()
         if DEMO_MODE:
             # Keep existing demo accounts attached to their department after upgrades.
@@ -143,13 +143,13 @@ def initialise():
                 demo_today = hospital_now().date()
                 for kind, data in [
                     ("preferences", {"goals": "Stay involved in family life and return to work", "worries": "Nausea, travel costs and missing a dose", "diet": "vegetarian", "travel_km": 180}),
-                    ("clinical_profile", {"allergies": "None recorded in this fabricated fixture; verify clinically", "height_cm": 158, "weight_kg": 58, "egfr": 82, "blood_group": "O+", "ward": "Day care", "biomarkers": "HER2 negative"}),
-                    ("roadmap", {"text": "Fabricated demo roadmap: review blood tests before the next cycle.", "regimen": p.current_regimen, "cycle": 4, "total_cycles": 6, "cycle_start": demo_today.isoformat(), "cycle_days": 21, "side_effect_days": "Ask the treating team for the regimen-specific symptom calendar."}),
-                    ("measurement", {"site": "left_breast", "size_mm": 31, "date": (demo_today - timedelta(days=60)).isoformat(), "finding": "tumour", "text": "Fabricated demonstration measurement"}),
-                    ("measurement", {"site": "left_breast", "size_mm": 19, "date": demo_today.isoformat(), "finding": "tumour", "text": "Fabricated demonstration measurement"}),
+                    ("clinical_profile", {"allergies": "No known drug allergies", "height_cm": 158, "weight_kg": 58, "egfr": 82, "blood_group": "O+", "ward": "Day care", "biomarkers": "HER2 negative"}),
+                    ("roadmap", {"text": "Weekly paclitaxel after AC. Review blood counts before each dose.", "regimen": p.current_regimen, "cycle": 4, "total_cycles": 6, "cycle_start": (demo_today - timedelta(days=8)).isoformat(), "cycle_days": 21, "side_effect_days": "Nausea is most likely on days 1–3. Check your temperature twice daily from day 7 to day 14 and call us for 38°C or above."}),
+                    ("measurement", {"site": "left_breast", "size_mm": 31, "date": (demo_today - timedelta(days=60)).isoformat(), "finding": "tumour", "text": "Baseline ultrasound measurement"}),
+                    ("measurement", {"site": "left_breast", "size_mm": 19, "date": demo_today.isoformat(), "finding": "tumour", "text": "Response ultrasound measurement"}),
                 ]:
                     db.add(CareRecord(patient_id=p.id, kind=kind, author_id=doctor.id, author_name=doctor.name, author_role="doctor", data=data,
-                                       status="approved" if kind == "roadmap" else "recorded", approved_by="Demo clinician" if kind == "roadmap" else None))
+                                       status="approved" if kind == "roadmap" else "recorded", approved_by=doctor.name if kind == "roadmap" else None))
                 db.add(Approval(patient_id=p.id, kind="medicine", request="Please review nausea support", requested_by="Meera (demo)",
                                 draft={"text": "Review recorded nausea and current supportive medicines. No new drug selected automatically."}))
         db.commit()

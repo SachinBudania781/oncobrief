@@ -58,7 +58,7 @@ for configured_origin in (os.getenv("RENDER_EXTERNAL_URL"), os.getenv("PUBLIC_BA
 app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_credentials=True,
                    allow_methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], allow_headers=["Content-Type", "Authorization"])
 _rates = defaultdict(deque)
-PUBLIC = {"/api/health", "/api/stats", "/api/taxonomy", "/api/ai-status", "/api/auth/config", "/api/auth/login", "/api/auth/guest", "/api/auth/otp", "/api/auth/verify-otp"}
+PUBLIC = {"/api/health", "/api/stats", "/api/taxonomy", "/api/ai-status", "/api/auth/config", "/api/auth/login", "/api/auth/forgot", "/api/auth/reset", "/api/auth/otp", "/api/auth/verify-otp"}
 
 
 @app.middleware("http")

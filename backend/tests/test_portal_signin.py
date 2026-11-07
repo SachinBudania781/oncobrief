@@ -82,14 +82,24 @@ def test_phone_signin_keeps_production_authenticator_requirement(client, monkeyp
     assert client.post("/api/auth/login", json={**body, "totp": pyotp.TOTP(secret).now()}).status_code == 200
 
 
-def test_config_never_exposes_credentials(client):
+def test_config_never_exposes_accounts_or_credentials(client):
     body = client.get("/api/auth/config").json()
-    assert "demo_password" not in body
-    assert all(set(a) == {"sign_in_id", "name", "role"} for a in body["accounts"])
+    assert "demo_password" not in body and "accounts" not in body
+    assert client.post("/api/auth/guest", json={"sign_in_id": "DOC-0001"}).status_code in (401, 404, 405)
 
 
-def test_guest_signin_respects_portal(client):
-    client.cookies.clear()
-    assert client.post("/api/auth/guest", json={"sign_in_id": "DOC-0001", "portal": "patient"}).status_code == 404
-    ok = client.post("/api/auth/guest", json={"sign_in_id": "DOC-0001", "portal": "doctor"})
-    assert ok.status_code == 200 and ok.json()["role"] == "doctor"
+def test_forgot_and_reset_password(client):
+    from app.main import _rates
+    _rates.clear(); client.cookies.clear()
+    start = client.post("/api/auth/forgot", json={"identifier": "STF-0004"}).json()
+    assert start["sent_to"].startswith("••••")
+    weak = client.post("/api/auth/reset", json={"challenge_id": start["challenge_id"], "code": start["demo_code"], "new_password": "short"})
+    assert weak.status_code == 422
+    ok = client.post("/api/auth/reset", json={"challenge_id": start["challenge_id"], "code": start["demo_code"], "new_password": "NewPass2026"})
+    assert ok.status_code == 200, ok.text
+    assert client.post("/api/auth/login", json={"username": "frontdesk", "password": "NewPass2026"}).status_code == 200
+    # put it back for other tests
+    again = client.post("/api/auth/forgot", json={"identifier": "frontdesk"}).json()
+    assert client.post("/api/auth/reset", json={"challenge_id": again["challenge_id"], "code": again["demo_code"], "new_password": "OncoDemo!2026"}).status_code == 200
+    unknown = client.post("/api/auth/forgot", json={"identifier": "nobody-here"}).json()
+    assert unknown["sent_to"] == "" and "demo_code" not in unknown

@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import { ArrowDownToLine, ArrowRight, CalendarPlus, Check, ChevronRight, ClipboardList, Clock3, FileStack, HeartHandshake, HeartPulse, History, LayoutDashboard, MapPin, MessageCircle, Pill, ShieldCheck, Sparkles, Stethoscope, Upload, Users, Video, BellRing, Smile, Meh, Frown, Laugh, Angry } from "lucide-react";
 import { request, useResource, nice } from "./client";
-import { Action, Empty, Load, Panel, SourceLinks, Voice } from "./UI";
+import { Action, Empty, Load, PackActions, Panel, SourceLinks, Voice } from "./UI";
 import { SmartInbox } from "./ClinicalTools";
 import Brief from "../apps/doctor/Brief";
 import { Skeleton } from "./Extras";
 import { googleCalendarUrl, minutesUntil, wallClock, wallTimeLabel } from "./calendar";
 import { toast } from "./toast";
+import { GlassOrb, useTilt } from "./Glass3D";
+import { CycleRing, useCycle } from "./CycleCompass";
+import { BodyFigure } from "./BodyMap";
+import { Mic, PersonStanding, Orbit } from "lucide-react";
 
 const until = (mins) => {
   if (mins <= 0 && mins > -30) return "Now";
@@ -49,7 +53,30 @@ function PatientHome({ pid, patient, can, onTab, visibleTabs = [] }) {
     } catch (e) { toast(e.message, "error"); }
   };
   const moods = [[Angry, "Very bad"], [Frown, "Not good"], [Meh, "Okay"], [Smile, "Good"], [Laugh, "Great"]];
+  const checkins = useResource(visibleTabs.includes("checkin") ? `/v2/patients/${pid}/records?kind=checkin` : null);
+  const cycle = useCycle(visibleTabs.includes("cycle") ? pid : null);
+  const tilt = useTilt(7);
+  const todayIso = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const checkedIn = (checkins.data || []).some((r) => new Date(r.created_at).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }) === todayIso);
+  const score = Math.round((doses.length ? (taken / doses.length) * 45 : 45) + (checkedIn ? 35 : 0) + (cycle.info?.phase.key === "nadir" ? 10 : 20));
+  const orbColors = score >= 75 ? ["#c9fff0", "#34d1b0", "#2f6bff"] : score >= 50 ? ["#fff1c9", "#ffb547", "#ff6b9a"] : ["#ffe3f1", "#ff8fc2", "#8f6bff"];
   return <div className="ob-home">
+    <section className="ob-hero ob-care-hero" ref={tilt}>
+      <div>
+        <span className="ob-hero-eyebrow">Today's care</span>
+        <h2>{score >= 75 ? "You're on track today." : checkedIn ? "A couple of things left." : "Let's start your day."}</h2>
+        <div className="ob-orb-legend">
+          <div><i className={doses.length && taken === doses.length ? "ok" : "todo"}>{doses.length && taken === doses.length ? "✓" : "•"}</i>Medicines {doses.length ? `${taken} of ${doses.length} taken` : "none due today"}</div>
+          <div><i className={checkedIn ? "ok" : "todo"}>{checkedIn ? "✓" : "•"}</i>{checkedIn ? "Check-in done" : "Check-in not done yet"}</div>
+          {cycle.info && !cycle.info.finished && <div><i className={cycle.info.phase.key === "nadir" ? "todo" : "ok"}>{cycle.info.day}</i>Cycle day {cycle.info.day} · {cycle.info.phase.name.toLowerCase()}</div>}
+        </div>
+        <div className="ob-hero-actions">
+          {!checkedIn && visibleTabs.includes("checkin") && <button className="ob-pill" onClick={() => onTab("checkin")}>Check in<ArrowRight size={16} /></button>}
+          {visibleTabs.includes("bodymap") && <button className={checkedIn ? "ob-pill" : "ob-pill ghost"} onClick={() => onTab("bodymap")}><PersonStanding size={16} />Where does it hurt?</button>}
+        </div>
+      </div>
+      <div className="ob-hero-art"><GlassOrb size={176} colors={orbColors} pulse><div className="ob-score"><b>{score}</b><small>care score</small></div></GlassOrb></div>
+    </section>
     <div className="ob-home-grid">
       <section className="ob-card ob-next">
         <div className="ob-card-head"><span className="ob-chip"><Clock3 size={14} />Next appointment</span>{next && <span className={`ob-countdown ${minutesUntil(next.start) <= 30 ? "soon" : ""}`}>{until(minutesUntil(next.start))}</span>}</div>
@@ -79,13 +106,21 @@ function PatientHome({ pid, patient, can, onTab, visibleTabs = [] }) {
       </section>
     </div>
 
-    {visibleTabs.includes("checkin") && <section className="ob-card ob-feel">
-      <div><h2>How are you feeling today?</h2><p>{week.data ? `${week.data.checkin_days} check-in${week.data.checkin_days === 1 ? "" : "s"} this week` : "A quick check-in helps your team spot problems early."}</p></div>
-      <div className="ob-mood-row">{moods.map(([Icon, label], i) => <button key={label} onClick={() => onTab("checkin")} aria-label={label} title={label} className={`mood-${i}`}><Icon size={26} strokeWidth={1.6} /><span>{label}</span></button>)}</div>
-    </section>}
+    <div className="ob-feature-row">
+      {cycle.info && <button className="ob-feature-card tone-cycle" onClick={() => onTab("cycle")}>
+        <CycleRing info={cycle.info} size={104} />
+        <div><span className="ob-chip light"><Orbit size={13} />Treatment cycle</span><b>{cycle.info.finished ? "Cycles complete" : cycle.info.phase.name}</b><small>Cycle {cycle.info.cycle}{cycle.info.total ? ` of ${cycle.info.total}` : ""} · see what to expect</small></div>
+        <ChevronRight size={18} />
+      </button>}
+      {visibleTabs.includes("bodymap") && <button className="ob-feature-card tone-body" onClick={() => onTab("bodymap")}>
+        <div className="ob-feature-body"><BodyFigure /></div>
+        <div><span className="ob-chip"><PersonStanding size={13} />Symptom map</span><b>Show us where it hurts</b><small>Tap the body. Severe pain alerts your team.</small></div>
+        <ChevronRight size={18} />
+      </button>}
+    </div>
 
     <div className="ob-quick-grid">
-      {[["companion", MessageCircle, "Ask a question", "About reports or medicines"], ["records", Upload, "Upload a report", "Photo or PDF"], ["chat", HeartHandshake, "Messages", "Your care circle"], ["share", ShieldCheck, "Emergency card", "Share in one tap"], ["clinical", Sparkles, "Care journey", "Your treatment timeline"], ["money", FileStack, "Financial help", "Schemes and support"]]
+      {[["companion", MessageCircle, "Ask anything", "Reports, medicines, visits"], ["records", Upload, "Add a report", "Snap a photo or PDF"], ["chat", HeartHandshake, "Messages", "Your care circle"], ["share", ShieldCheck, "Emergency card", "Share in one tap"]]
         .filter(([key]) => visibleTabs.includes(key)).slice(0, 4)
         .map(([key, Icon, label, sub]) => <button key={key} className="ob-quick" onClick={() => onTab(key)}><span className="ob-quick-icon"><Icon size={20} /></span><b>{label}</b><small>{sub}</small></button>)}
     </div>
@@ -126,7 +161,10 @@ function TeamHome({ pid, patient, user, onTab, onSelect, onOpen, visibleTabs = [
       else setCommandAnswer(await request(`/v2/patients/${pid}/companion`, "POST", { text, language: "en" }));
     } catch (e) { setCommandAnswer({ answer: e.message, sources: [] }); }
   };
+  const nextUp = upcoming[0];
+  const nextPatient = nextUp ? command.data?.patients.find((p) => p.patient_id === nextUp.patient_id) : null;
   return <div className="ob-home">
+    {user.role === "doctor" && <DoctorHero nextUp={nextUp} nextPatient={nextPatient} patient={patient} onTab={onTab} onSelect={onSelect} pid={pid} />}
     {stats.length > 0 && <div className="ob-stats">{stats.map(([key, Icon, label, tab]) => <button key={key} className="ob-stat" onClick={() => tab && onTab(tab)} disabled={!tab}>
       <span className="ob-stat-icon"><Icon size={18} /></span><b>{values[key] ?? <span className="ob-dash">–</span>}</b><span>{label}</span>
     </button>)}</div>}
@@ -163,7 +201,7 @@ function TeamHome({ pid, patient, user, onTab, onSelect, onOpen, visibleTabs = [
           <p className="ob-brief-meta">{patient.cancer_type}{patient.stage ? ` · ${patient.stage}` : ""}</p>
           <div className="row wrap">
             <Action className="btn primary" run={() => request("/brief", "POST", { patient_id: pid, visit_type: "follow_up" })} onDone={(b) => { setBrief(b); toast("Brief ready"); }}><Sparkles size={16} />Build pre-visit brief</Action>
-            <a className="btn" href={`/api/v2/patients/${pid}/pack.pdf`} target="_blank" rel="noreferrer"><ArrowDownToLine size={16} />Tumour board pack</a>
+            <PackActions pid={pid} label="Tumour board pack" />
           </div>
           <details className="care-inline-help"><summary>Use voice</summary><p className="small muted">Say “build brief”, or ask a question about this patient.</p><Voice onText={voiceCommand} /></details>
           {commandAnswer && <div className="care-notice"><p>{commandAnswer.answer}</p><SourceLinks sources={commandAnswer.sources} onOpen={onOpen} /></div>}
@@ -178,4 +216,22 @@ function TeamHome({ pid, patient, user, onTab, onSelect, onOpen, visibleTabs = [
     {["doctor", "nurse"].includes(user.role) && <SmartInbox onSelect={onSelect} />}
     {brief && <div className="ob-brief-output"><div className="row"><h2>Pre-visit brief · {patient?.name}</h2><span className="spacer" /><button className="btn" onClick={() => window.print()}>Print</button></div><Brief data={brief} onOpen={(tag) => onOpen(Number(tag.slice(1)))} /></div>}
   </div>;
+}
+
+function DoctorHero({ nextUp, patient, onTab, onSelect, pid }) {
+  const tilt = useTilt(7);
+  const who = nextUp ? nextUp.patient_name : patient?.name;
+  const go = (tab) => { if (nextUp && nextUp.patient_id !== pid) onSelect(nextUp.patient_id); onTab(tab); };
+  return <section className="ob-hero ob-doctor-hero" ref={tilt}>
+    <div>
+      <span className="ob-hero-eyebrow"><Clock3 size={13} />{nextUp ? `Next at ${wallClock(nextUp.start)}${nextUp.virtual_visit ? " · video" : ` · ${nextUp.room}`}` : "Selected patient"}</span>
+      <h2>{who ? <>Ready for<br />{who}</> : "Your clinic is clear"}</h2>
+      <p>{who ? "Open the cited brief, then record the consult. The note, patient summary and follow-up write themselves." : "No more patients scheduled today."}</p>
+      {who && <div className="ob-hero-actions">
+        <button className="ob-pill" onClick={() => go("scribe")}><Mic size={16} />Start consult</button>
+        <button className="ob-pill ghost" onClick={() => go("clinic")}><Sparkles size={16} />Open brief</button>
+      </div>}
+    </div>
+    <div className="ob-hero-art"><GlassOrb size={170} colors={["#efe6ff", "#8f6bff", "#3b25a8"]} pulse><div className="ob-score"><Mic size={40} /></div></GlassOrb></div>
+  </section>;
 }
