@@ -645,7 +645,7 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
             <span className="ob-wear-stat-icon"><Icon size={18} /></span>
             <span className="ob-wear-stat-label">{label}</span>
             <b>{value || (point ? Number(point.value).toLocaleString("en-IN") : "—")}<small> {unit}</small></b>
-            <span className="ob-wear-stat-source">{["bluetooth", "android_ble"].includes(point?.source) ? "From connected device" : point?.source === "manual" ? "Manual entry" : point?.source === "demo" ? "Illustrative demo" : "No readings"}</span>
+            <span className="ob-wear-stat-source">{["bluetooth", "android_ble"].includes(point?.source) ? "From connected device" : point?.source === "manual" ? "Manual entry" : point?.source === "demo" ? "Preview" : "No readings"}</span>
           </article>
         ))}
       </section>}
@@ -691,9 +691,9 @@ function WearableWorkspace({ pid, demo = false, viewerRole = "patient", focusMet
         </div>
         <div className="ob-wear-chart-title">
           <div><b>{METRICS[metric].label}</b><span>{chartIsDemo
-            ? "Illustrative sample data · not connected"
+            ? "Preview · connect a device to see your own readings"
             : hasAggregatedRows
-              ? "Downsampled trend · hover for the range within each interval"
+              ? "Trend · hover to see the range"
               : (chartRows.length ? "Saved readings" : "No readings yet")}</span></div>
           <strong style={{ color: METRICS[metric].color }}>{METRICS[metric].unit}</strong>
         </div>

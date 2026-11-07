@@ -154,6 +154,11 @@ function TeamHome({ pid, patient, user, onTab, onSelect, onOpen, visibleTabs = [
           </li>)}</ol> : <div className="ob-empty-state compact"><span><Check size={20} /></span><b>Nothing left today</b></div>}
         </Panel>}
 
+        {["frontdesk", "nurse", "navigator", "admin"].includes(user.role) && <Panel title="Reduce no-shows" className="ob-remind">
+          <p className="ob-brief-meta">Send every patient booked for tomorrow a reminder with their time, room and what to bring.</p>
+          <Action className="btn primary" run={() => request("/v2/schedule/remind", "POST", {})} onDone={(r) => toast(r.patients ? `Reminders sent to ${r.patients} patient${r.patients > 1 ? "s" : ""} for ${new Date(r.day + "T00:00").toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" })}` : "No appointments booked for tomorrow")}><BellRing size={16} />Remind tomorrow's patients</Action>
+        </Panel>}
+
         {user.role === "doctor" && patient && <Panel title={`Prepare for ${patient.name.split(" ")[0]}`} className="ob-brief-card">
           <p className="ob-brief-meta">{patient.cancer_type}{patient.stage ? ` · ${patient.stage}` : ""}</p>
           <div className="row wrap">

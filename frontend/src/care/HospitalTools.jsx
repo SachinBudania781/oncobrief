@@ -1,18 +1,12 @@
 import { useEffect, useState } from "react";
-import {
-  CalendarDays,
-  MapPin,
-  QrCode,
-  ScanLine,
-  Upload,
-  ArrowRight,
-  Video,
-} from "lucide-react";
-import { request, useResource, dateTime } from "./client";
+import { CalendarDays, MapPin, QrCode, ScanLine, Upload, ArrowRight, Video, CalendarPlus, Download, Car } from "lucide-react";
+import { googleCalendarUrl, downloadIcs } from "./calendar";
+import { request, useResource, dateTime, nice } from "./client";
 import { Action, Empty, Error, Load, Panel, Status } from "./UI";
 import UploadForm from "../components/UploadForm";
 import Records from "../apps/doctor/Records";
 import MemoryUpLink from "./MemoryUpLink";
+import { ShareLinkButtons } from "./Extras";
 
 export function RecordsDesk({ pid, user, onOpen }) {
   const taxonomy = useResource("/taxonomy"),
@@ -308,8 +302,8 @@ export function DayPass({ pid, user }) {
   return (
     <div className="care-columns">
       <Panel
-        title="Hospital day pass"
-        hint="One itinerary for your tests and visits. Wait times are estimates from the current queue."
+        title="Day pass"
+        hint="One plan for all your tests and visits that day. Wait times are estimated from the live queue."
       >
         <input
           className="input"
@@ -338,7 +332,7 @@ export function DayPass({ pid, user }) {
                   run={() => request(`/v2/patients/${pid}/gate`, "POST")}
                   onDone={resource.refresh}
                 >
-                  Check in at hospital gate
+                  I'm at the hospital: check in
                 </Action>}
                 <div className="care-stops">
                   {d.stops.map((s, i) => (
@@ -347,18 +341,20 @@ export function DayPass({ pid, user }) {
                       <div>
                         <b>{s.department}</b>
                         <p>{s.virtual_visit ? "Video consultation" : s.room} · {String(s.start).slice(11, 16)}–{String(s.end).slice(11, 16)}</p>
-                        <p className="small muted">Faculty · {s.clinician || "Assignment pending"}</p>
+                        {s.clinician && !/pending/i.test(s.clinician) && <p className="small muted">{s.clinician}</p>}
                         <Status value={s.status} />
-                        <div className="row wrap">
-                          <MemoryUpLink pid={pid} appointmentId={s.id} />
-                          {!s.virtual_visit && ["patient", "caregiver"].includes(user.role) && <a className="btn" href={`/?patient_id=${encodeURIComponent(pid)}&view=transport&appointment_id=${s.id}`}>Arrange transport</a>}
+                        <div className="row wrap ob-stop-actions">
+                          <a className="btn" href={googleCalendarUrl(s)} target="_blank" rel="noreferrer"><CalendarPlus size={15} />Add to calendar</a>
+                          <button className="btn" onClick={() => downloadIcs(s)}><Download size={15} />.ics</button>
+                          {!s.virtual_visit && ["patient", "caregiver"].includes(user.role) && <a className="btn" href={`/?patient_id=${encodeURIComponent(pid)}&view=transport&appointment_id=${s.id}`}><Car size={15} />Arrange transport</a>}
                         </div>
+                        {i === 0 && <MemoryUpLink pid={pid} appointmentId={s.id} />}
                         {s.virtual_visit && <div className="ob-meet-card">
                           <div className="row wrap"><Video size={17} /><b>Google Meet · {s.virtual_visit.clinician_type}</b><Status value={s.virtual_visit.status} /></div>
                           {s.virtual_visit.status === "scheduled" && s.virtual_visit.meeting_url ? <a className="btn primary" href={s.virtual_visit.meeting_url} target="_blank" rel="noopener noreferrer">Join video consultation</a> : <p className="small muted">The hospital team will add the meeting link. Check this appointment again before your visit.</p>}
                           {s.virtual_visit.caregiver_included && <p className="small muted">Your caregiver is included in the calendar invitation.</p>}
                         </div>}
-                        {!s.virtual_visit && <><p>{s.ahead} ahead · about {s.wait_minutes} min</p><p className="small muted">{s.directions}</p></>}
+                        {!s.virtual_visit && <><p className="ob-wait">{s.ahead ? `${s.ahead} ${s.ahead === 1 ? "person" : "people"} ahead · about ${s.wait_minutes} min wait` : "You're next"}</p><p className="small muted">{s.directions.replace(/ Indoor walking routes require your hospital map\./, "")}</p></>}
                         {!s.virtual_visit && <div className="row wrap">
                           {(user.role === "patient" || user.role === "caregiver"
                             ? ["arrived"]
@@ -375,7 +371,7 @@ export function DayPass({ pid, user }) {
                               }
                               onDone={resource.refresh}
                             >
-                              {action.replaceAll("_", " ")}
+                              {({ arrived: user.role === "patient" || user.role === "caregiver" ? "I've arrived" : "Arrived", in_progress: "Start", completed: "Complete", missed: "No-show" })[action] || nice(action)}
                             </Action>
                           ))}
                         </div>}
@@ -395,11 +391,7 @@ export function DayPass({ pid, user }) {
                   <MapPin size={16} />
                   Find nearby patient accommodation
                 </a>
-              ) : (
-                <p className="small muted">
-                  Set the hospital address to enable nearby stays.
-                </p>
-              )}
+              ) : null}
               <button className="btn" onClick={() => window.print()}>
                 Print day pass
               </button>
@@ -408,8 +400,8 @@ export function DayPass({ pid, user }) {
         </Load>
       </Panel>
       <Panel
-        title="Plan one trip"
-        hint="Choose a department and date to see only appointment times that are still free."
+        title="Book an appointment"
+        hint="Choose a department and date to see the times that are still free."
       >
         <form
           className="stack"
@@ -837,13 +829,12 @@ export function ShareTools({ pid }) {
               {result.qr_png && (
                 <img src={result.qr_png} alt="QR for consented medical card" />
               )}
-              <a href={result.url} target="_blank" rel="noreferrer">
-                Open shared medical card
-              </a>
-              <p>Expires {dateTime(result.expires_at)}</p>
-              <button className="btn" onClick={() => window.print()}>
-                Print wallet card / save with phone screenshot
-              </button>
+              <p className="small muted">Expires {dateTime(result.expires_at)}</p>
+              <div className="row wrap ob-share-row">
+                <ShareLinkButtons url={new URL(result.url, window.location.origin).href} title="My OncoBrief medical card" />
+                <a className="btn" href={result.url} target="_blank" rel="noreferrer">Open card</a>
+                <button className="btn" onClick={() => window.print()}>Print wallet card</button>
+              </div>
             </div>
           )}
         </div>

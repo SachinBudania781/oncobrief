@@ -187,24 +187,25 @@ export default function ClinicalDecisionSupport({ patient }) {
             </div>
           </section>
         )}
-        <section className="panel">
+        <details className="panel">
+          <summary className="small muted">Validation results</summary>
           <div className="panel-head">
-            <h3>System evaluation benchmark</h3>
-            <button className="btn" type="button" onClick={runEvaluation} disabled={benchmarkBusy}>{benchmarkBusy ? 'Running…' : 'Run benchmark'}</button>
+            <h3>Retrieval and safety-check validation</h3>
+            <button className="btn" type="button" onClick={runEvaluation} disabled={benchmarkBusy}>{benchmarkBusy ? 'Running…' : 'Run validation'}</button>
           </div>
           {benchmarkError && <p className="care-error" role="alert">{benchmarkError}</p>}
           {evaluation && (
             <div className="stack" aria-live="polite">
               <div className="grid2">
-                <div><b>{evaluation.cases_evaluated}</b><p className="small muted">Supplied benchmark cases</p></div>
+                <div><b>{evaluation.cases_evaluated}</b><p className="small muted">Validation cases</p></div>
                 <div><b>{evaluation.retrieval_recall_at_1_percent}%</b><p className="small muted">Retrieval Recall@1</p></div>
-                <div><b>{evaluation.guardrail_test_accuracy_percent}%</b><p className="small muted">Guardrail test accuracy</p></div>
+                <div><b>{evaluation.guardrail_test_accuracy_percent}%</b><p className="small muted">Safety-check accuracy</p></div>
                 <div><b>Not measured</b><p className="small muted">Regimen accuracy and hallucination rate; no regimen generator is enabled.</p></div>
               </div>
               <ul>{evaluation.case_results.map((item) => <li key={item.case_id}>{item.case_id}: retrieval {item.retrieval_hit ? 'hit' : 'miss'} · guardrail {item.guardrail_expectation_met ? 'pass' : 'fail'}</li>)}</ul>
             </div>
           )}
-        </section>
+        </details>
       </div>
     </details>
   )

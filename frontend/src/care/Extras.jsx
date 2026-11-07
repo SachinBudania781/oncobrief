@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, CheckCircle2, Download, EyeOff, Info, MapPin, Phone, Siren, Type, WifiOff, X, Keyboard, HeartPulse, FileHeart, Pill, MessageCircle, ArrowRight } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, EyeOff, Info, MapPin, Phone, Siren, Type, WifiOff, X, Keyboard, HeartPulse, FileHeart, Pill, MessageCircle, ArrowRight, Share2, Copy } from "lucide-react";
 import Modal from "./Modal";
 import { request } from "./client";
 import { toast } from "./toast";
@@ -206,4 +206,41 @@ export function GlobalSearch({ nav, patients = [], pid, onTab, onPatient, onOpen
       {!results.length && <p className="ob-search-empty">No matches for “{query}”.</p>}
     </div>
   </Modal>;
+}
+
+/* ---------- Share a link (native share, WhatsApp, copy) ---------- */
+export function ShareLinkButtons({ url, title = "OncoBrief" }) {
+  const text = `${title}: ${url}`;
+  const native = async () => { try { await navigator.share({ title, url }); } catch { /* cancelled */ } };
+  const copy = async () => { try { await navigator.clipboard.writeText(url); toast("Link copied"); } catch { toast("Couldn't copy. Long-press the link instead.", "error"); } };
+  return <>
+    {typeof navigator !== "undefined" && navigator.share && <button className="btn primary" onClick={native}><Share2 size={15} />Share</button>}
+    <a className="btn ob-wa" href={`https://wa.me/?text=${encodeURIComponent(text)}`} target="_blank" rel="noreferrer"><MessageCircle size={15} />WhatsApp</a>
+    <button className="btn" onClick={copy}><Copy size={15} />Copy link</button>
+  </>;
+}
+
+/* ---------- Live notifications: toast + system notification for new items ---------- */
+export function useLiveNotifications(items) {
+  const seen = useRef(null);
+  useEffect(() => {
+    if (!items) return;
+    const unread = items.filter((n) => n.status === "unread");
+    if (seen.current === null) { seen.current = new Set(items.map((n) => n.id)); return; }
+    const fresh = unread.filter((n) => !seen.current.has(n.id));
+    items.forEach((n) => seen.current.add(n.id));
+    if (!fresh.length) return;
+    const first = fresh[0];
+    toast(fresh.length > 1 ? `${fresh.length} new notifications` : first.title, "info");
+    try { if (document.hidden && "Notification" in window && Notification.permission === "granted") new Notification(first.title, { body: first.body, icon: "/icons/app-192.png", tag: `ob-${first.id}` }); } catch { /* unsupported */ }
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = 880; g.gain.setValueAtTime(.0001, ctx.currentTime); g.gain.exponentialRampToValueAtTime(.08, ctx.currentTime + .02); g.gain.exponentialRampToValueAtTime(.0001, ctx.currentTime + .35);
+      o.connect(g).connect(ctx.destination); o.start(); o.stop(ctx.currentTime + .36);
+    } catch { /* audio blocked until interaction */ }
+  }, [items]);
+}
+export function askNotificationPermission() {
+  try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch { /* unsupported */ }
 }

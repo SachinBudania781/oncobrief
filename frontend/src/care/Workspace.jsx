@@ -77,7 +77,7 @@ import "./finish.css";
 import "./polish.css";
 import Dashboard from "./Dashboard";
 import QueueBoard from "./QueueBoard";
-import { GlobalSearch, InstallButton, OfflineBanner, PrivacyCurtain, ShortcutsHelp, SosButton, TextSizeControl, Toaster, WelcomeTour, usePrivacyScreen, useTextSize } from "./Extras";
+import { askNotificationPermission, useLiveNotifications, GlobalSearch, InstallButton, OfflineBanner, PrivacyCurtain, ShortcutsHelp, SosButton, TextSizeControl, Toaster, WelcomeTour, usePrivacyScreen, useTextSize } from "./Extras";
 import { toast } from "./toast";
 
 const NAV = [
@@ -137,6 +137,7 @@ function CareSpace() {
   const [phoneCheckin, setPhoneCheckin] = useState(false);
   const [textSize, setTextSize] = useTextSize();
   const [privacyOn, setPrivacyOn] = usePrivacyScreen();
+  useLiveNotifications(notes.data);
   const portal = ["patient", "caregiver"].includes(user.role) ? "patient" : user.role === "doctor" ? "doctor" : "staff";
   useEffect(() => setFocusedRecordId(null), [pid]);
   useEffect(() => {
@@ -315,7 +316,7 @@ function CareSpace() {
           <button
             className="btn icon-btn care-bell"
             aria-label={`Notifications${unread ? `, ${unread} unread` : ""}`}
-            onClick={() => setShowNotifications((v) => !v)}
+            onClick={() => { askNotificationPermission(); setShowNotifications((v) => !v); }}
           >
             <Bell size={19} />
             {unread > 0 && <span>{unread > 9 ? "9+" : unread}</span>}

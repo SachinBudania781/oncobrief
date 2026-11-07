@@ -312,3 +312,41 @@ def sos(patient_id: str, body: SosIn, db: Session = Depends(get_db), actor: Acto
     row = alert(db, patient_id, reason[:400], "sos", "emergency")
     append_audit(db, user, "patient_sos", patient_id, "SOS raised")
     return {"alert_id": row.id, "status": "alerted"}
+
+
+# ---------- Appointment reminders (front desk) ----------
+class RemindIn(BaseModel):
+    day: str = Field(default="", max_length=10)
+
+
+@sos_router.post("/schedule/remind")
+def send_reminders(body: RemindIn, db: Session = Depends(get_db), actor: Actor = Depends(get_actor)):
+    user = db.get(User, actor.id)
+    if not user or user.role not in {"frontdesk", "nurse", "navigator", "admin"}:
+        raise HTTPException(403, "Reminders are sent by the hospital team")
+    from ..models import Appointment
+    try:
+        target = datetime.fromisoformat(body.day).date() if body.day else (hospital_now() + timedelta(days=1)).date()
+    except ValueError:
+        raise HTTPException(422, "Use a date like 2026-11-08")
+    start = datetime(target.year, target.month, target.day)
+    allowed = set(visible_ids(db, user, "appointments"))
+    rows = db.scalars(select(Appointment).where(Appointment.start >= start, Appointment.start < start + timedelta(days=1),
+                                                Appointment.status != "cancelled").order_by(Appointment.start)).all()
+    by_patient: dict[str, list] = {}
+    for a in rows:
+        if a.patient_id in allowed:
+            by_patient.setdefault(a.patient_id, []).append(a)
+    sent = 0
+    for pid, appts in by_patient.items():
+        first = appts[0]
+        when = first.start.strftime("%I:%M %p").lstrip("0")
+        place = "Video consult" if (first.room or "").startswith("Online-") else f"{first.department}, {first.room}"
+        extra = f" You have {len(appts)} visits that day." if len(appts) > 1 else ""
+        text = f"Reminder: {target:%a %d %b} at {when}. {place}.{extra} Please carry your hospital card and reports."
+        for r in _patient_users(db, pid):
+            db.add(Notification(user_id=r.id, patient_id=pid, title="Appointment reminder", body=text))
+            sent += 1
+    db.commit()
+    append_audit(db, user, "appointment_reminders", None, f"{target} · {len(by_patient)} patients")
+    return {"day": target.isoformat(), "patients": len(by_patient), "messages": sent}

@@ -245,7 +245,7 @@ function DeterministicClinicalPanel({ patient }) {
       {dosing?.metrics?.gfr_capped && <p className="care-notice warning">Carboplatin calculation capped the GFR input at 125 mL/min.</p>}
       {dosing?.alerts?.map((alert, index) => <div className={alert.severity === "CRITICAL" ? "care-emergency" : "care-notice warning"} role={alert.severity === "CRITICAL" ? "alert" : "status"} key={`${alert.parameter}-${index}`}><b>{alert.severity}: {alert.parameter}</b><p>{alert.observation}</p><p>{alert.guideline_action}</p></div>)}
       {dosingError && <p className="care-error" role="alert">Calculation unavailable: {dosingError}</p>}
-      <p className="small muted">CrCl is used as the Calvert GFR input for this demo. Verify renal measure, weight selection, alerts, and dose with the current local protocol. This tool does not prescribe or place orders.</p>
+      <p className="small muted">CrCl is used as the Calvert GFR input. Verify renal measure, weight selection, alerts, and dose with the current local protocol. This tool does not prescribe or place orders.</p>
     </Panel>
   </section>;
 }

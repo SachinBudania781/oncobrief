@@ -190,7 +190,7 @@ export default function DocViewer({ docId, onClose }) {
               {explanation && (
                 <div className="care-notice">
                   <h3>Plain-language explanation · {explanation.source}</h3>
-                  <span className="small muted">{explanation.generation === "ai" ? "AI-assisted" : "From your records"}</span>
+                  <span className="small muted">{explanation.generation === "ai" ? "Summarised from your records" : "From your records"}</span>
                   {explanation.explanation.map((x, i) => (
                     <p key={i}>{x.text}</p>
                   ))}

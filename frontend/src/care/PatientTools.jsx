@@ -170,10 +170,10 @@ export function CheckIn({ pid, language, onUpdate, phoneDemo = false }) {
   };
   return (
     <Panel
-      title={phoneDemo ? "Browser call check-in" : l.title}
+      title={phoneDemo ? "Voice check-in" : l.title}
       hint={
         phoneDemo
-          ? "A browser demonstration. No ordinary phone call is placed; configure telephony for real calls."
+          ? "Answer each question out loud. Your answers are filled in for you to review before sending."
           : l.hint
       }
     >
@@ -353,7 +353,7 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
   };
   return (
     <Panel
-      title={clinician ? "AI Chat · patient records" : "AI Chat"}
+      title={clinician ? "Ask about this patient" : "Ask a question"}
       hint="Answers cite this patient's folder. Clinical questions go to the treating doctor."
     >
       <div className="care-chat-log">
@@ -376,7 +376,7 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
                     <SourceLinks sources={m.sources.filter((s) => item.sources.includes(s.tag))} onOpen={onOpen} />
                   </div>
                 )) : <><p className="care-pre">{m.answer}</p><SourceLinks sources={m.sources} onOpen={onOpen} /></>}
-                {m.generation && <span className="small muted">{m.generation === "ai" ? "AI-assisted" : "From your records"}</span>}
+                {m.generation && <span className="small muted">{m.generation === "ai" ? "Summarised from records" : "From your records"}</span>}
                 <Voice text={m.answer} language={m.language || language} />
                 {m.translation && (
                   <p className="small muted">{m.translation}</p>
@@ -414,7 +414,7 @@ export function Companion({ pid, language, onOpen, clinician = false }) {
         />
         <Error message={error} />
         <button className="btn primary" disabled={busy}>
-          {busy ? "Reading your folder…" : "Send to AI Chat"}
+          {busy ? "Reading your folder…" : "Ask"}
         </button>
       </form>
     </Panel>
@@ -1036,7 +1036,7 @@ function TeachBack({ pid }) {
     [
       "Who approves a new medicine or dose change?",
       [
-        ["ai", "The AI alone"],
+        ["ai", "The assistant alone"],
         ["doctor", "My treating doctor"],
       ],
     ],
