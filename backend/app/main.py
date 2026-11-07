@@ -15,7 +15,7 @@ from .config import FRONTEND_DIST, HOSPITAL_NAME
 from .db import Base, SessionLocal, engine
 from . import round2_models
 from . import memory_up, file_storage
-from .routers import auth, brief, care, documents, patients, round2, document_tools, operations
+from .routers import auth, brief, care, documents, patients, round2, document_tools, operations, decision_support
 from .security import DEMO_MODE, append_audit, digest, require_patient, roles, session_user
 from .round2_models import User, WearableDeviceCredential
 from .timeutil import utcnow
@@ -182,7 +182,7 @@ async def boundaries(request: Request, call_next):
     return response
 
 
-for router in (auth.router, round2.router, document_tools.router, operations.router, patients.router, documents.router, care.router, brief.router, memory_up.router):
+for router in (auth.router, round2.router, document_tools.router, operations.router, patients.router, documents.router, care.router, brief.router, decision_support.router, memory_up.router):
     app.include_router(router)
 
 
