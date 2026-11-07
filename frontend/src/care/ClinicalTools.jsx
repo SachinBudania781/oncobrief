@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Component, useEffect, useState } from "react";
 import {
   Line,
   LineChart,
@@ -697,6 +697,33 @@ export function ClinicalChart({ pid, onOpen, user }) {
       )}
     </Load>
   );
+}
+
+export class CareJourneyBoundary extends Component {
+  state = { error: null };
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error) {
+    console.error("Care journey rendering failed", error);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <section className="care-panel" role="alert">
+          <h3>Care journey could not be displayed</h3>
+          <p>{this.state.error.message || "An unexpected display error occurred."}</p>
+          <button className="btn" onClick={() => this.setState({ error: null })}>
+            Reload care journey
+          </button>
+        </section>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 const sites = {
